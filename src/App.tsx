@@ -8,6 +8,7 @@ import {
   Eraser,
   FileCode2,
   FileDiff,
+  FolderTree,
   GitBranch,
   History,
   Layers,
@@ -87,7 +88,8 @@ import {
 import { buildDeepLinkUrl, parseDeepLinkFromLocation } from './engine/deepLinkEngine';
 import { analyzeStudioLint } from './engine/htmlOutputFormatter';
 import { LOGIC_CALCULATOR_PRESETS, type LogicLabelBinding } from './engine/logicLambdaEngine';
-import type { McpWorkspaceContext } from './engine/mcpServerEngine';
+import { VALID_MCP_SERVER_IDS, type McpWorkspaceContext } from './engine/mcpServerEngine';
+import { GuideBanner } from './components/WorkbenchGuide';
 import {
   BUILTIN_REFERENCED_MODULES,
   buildLiveScopeSuggestions,
@@ -127,7 +129,7 @@ import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
 import { VirtualFilesWorkbench } from './components/VirtualFilesWorkbench';
-import { applyVirtualSubmission, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, VirtualFilesError, virtualEditAllowed, virtualEdits, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
+import { applyVirtualSubmission, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, VirtualFilesError, virtualEditAllowed, virtualEdits, workbenchVirtualFiles, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
 import {
   getWorkbenchPitch,
   STANDALONE_PITCHES,
@@ -214,6 +216,7 @@ interface AutoSavedState {
   primaryLanguage: PrimaryLanguage;
   verifiedSteps: WorkflowSlug[];
   virtualFiles?: VirtualFiles;
+  workbenchFiles?: VirtualFiles;
 }
 
 function loadAutoSavedState(): AutoSavedState | null {
@@ -298,14 +301,22 @@ export default function App() {
     return loadAutoSavedState();
   }, [initialDeepLink]);
   const savedVirtualFiles = useMemo(() => parseVirtualFiles(initialAutoSave?.virtualFiles), [initialAutoSave]);
+  const savedWorkbenchFiles = useMemo(() => parseVirtualFiles(initialAutoSave?.workbenchFiles), [initialAutoSave]);
   const [virtualState, dispatchVirtual] = useReducer(virtualReducer, savedVirtualFiles.files, files => ({
-    files: restoreAutoSavedVirtualEdits(files),
+    files: mergeVirtualFiles(
+      workbenchVirtualFiles(savedWorkbenchFiles.files),
+      restoreAutoSavedVirtualEdits(files),
+    ),
     submissionIssues: {},
     rejectedSubmissions: {},
   }));
   const virtualFiles = virtualState.files;
   const setVirtualFiles = useCallback((value: SetStateAction<VirtualFiles>) => dispatchVirtual({ type: 'update', value }), []);
-  const [recoveryPending, setRecoveryPending] = useState(savedVirtualFiles.issues.length > 0);
+  const [recoveryPending, setRecoveryPending] = useState(savedVirtualFiles.issues.length > 0 || savedWorkbenchFiles.issues.length > 0);
+  const [legacyTree] = useState(() => {
+    try { return window.localStorage.getItem('g2j.sharedTree.v1'); }
+    catch { return null; }
+  });
   const [showVirtualFiles, setShowVirtualFiles] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState(0);
   const submitArtifacts = useCallback((owner: string, submissions: VirtualSubmission[]) => {
@@ -748,6 +759,7 @@ export default function App() {
         primaryLanguage,
         verifiedSteps,
         virtualFiles: historyVirtualEdits,
+        workbenchFiles: workbenchVirtualFiles(virtualFiles),
       });
       if (saved) setLastAutoSavedAt(savedAt);
       else showNotice('Browser autosave failed. Save a workspace snapshot to preserve your virtual edits.');
@@ -769,6 +781,7 @@ export default function App() {
     primaryLanguage,
     verifiedSteps,
     historyVirtualEdits,
+    virtualFiles,
     showNotice,
   ]);
 
@@ -2593,6 +2606,62 @@ export default function App() {
     setActivePage(flows[nextIdx].page);
   };
 
+  const buildWorkbenchFiles = (page: string): VirtualSubmission[] => {
+    const json = (v: unknown) => JSON.stringify(v, null, 2);
+    switch (page) {
+      case 'dialect':
+        return [
+          { path: 'src/data/grammar.g2j', content: grammarText },
+          { path: 'src/data/dialect.json', content: json(dialect) },
+        ];
+      case 'rule_props':
+        return [{ path: 'src/data/ruleConfigs.json', content: json(ruleConfigs) }];
+      case 'logic_calc':
+        return [
+          {
+            path: 'src/data/logic.json',
+            content: json({ statement: logicStatement, labels: logicLabels }),
+          },
+        ];
+      case 'schema':
+        return [{ path: 'src/data/schema.jsonld', content: jsonText, target: 'jsonld' }];
+      case 'mutations':
+        return [{ path: 'src/data/mutations.json', content: json(mutations) }];
+      case 'evaluator':
+        return [{ path: 'src/data/evaluation.json', content: json({ startRule: evalRule, payload: evalPayload }) }];
+      case 'payload_io':
+        return [{ path: 'src/data/payload.json', content: evalPayload }];
+      case 'gdrive':
+        return [{ path: 'module/vault.g2j.json', content: json({
+          ...buildSnapshot(),
+          virtualFiles: Object.fromEntries(Object.entries(virtualFiles).filter(([path]) =>
+            path !== 'workbench/gdrive/module/vault.g2j.json')),
+        }) }];
+      case 'python_ast':
+        return [{ path: 'src/engine/generated.py', content: pythonSource, target: 'python' }];
+      case 'rust_ast':
+        return [{ path: 'src/engine/generated.rs', content: rustSource, target: 'rust' }];
+      case 'wasm_wabt':
+        return [{ path: 'src/engine/generated.wat', content: watSource, target: 'wasm' }];
+      case 'mcp_servers':
+        return [{ path: 'module/mcp.manifest.json', content: json({ verifiedSteps, servers: Array.from(VALID_MCP_SERVER_IDS) }) }];
+      default:
+        return [];
+    }
+  };
+
+  const handleSubmitToTree = () => {
+    const files = buildWorkbenchFiles(currentFlow.page);
+    if (files.length === 0) {
+      showNotice('No output is available for this workbench.');
+      return;
+    }
+    submitArtifacts(`workbench-${currentFlow.page}`, files.map(file => ({
+      ...file, path: `workbench/${currentFlow.page}/${file.path}`,
+    })));
+    showNotice('Submission queued. Check Shared Files for the result or any validation issues.');
+  };
+
   const handleVerifyAndAdvance = (advanceToNext: boolean) => {
     const gate = currentFlow.verify;
     let passed = true;
@@ -2621,7 +2690,7 @@ export default function App() {
     }
 
     setVerifiedSteps((prev) => (prev.includes(currentFlow.page) ? prev : [...prev, currentFlow.page]));
-
+    handleSubmitToTree();
     if (advanceToNext) {
       const nextFlow = flows.find((f) => f.id === currentFlow.next) || flows[(currentStepIndex + 1) % flows.length];
       if (nextFlow) {
@@ -2864,7 +2933,7 @@ export default function App() {
     SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage) ?? SUPPORTED_LANGUAGES[0];
 
   const primaryNavItems: Array<{
-    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'specs';
+    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'files' | 'specs';
     fullLabel: string;
     compactLabel: string;
     icon: typeof Layers;
@@ -2904,6 +2973,14 @@ export default function App() {
       onClick: () => setTopView('api'),
     },
     {
+      id: 'files',
+      fullLabel: 'Shared Files',
+      compactLabel: 'Files',
+      icon: FolderTree,
+      active: topView === 'files',
+      onClick: () => setTopView('files'),
+    },
+    {
       id: 'specs',
       fullLabel: 'Specifications & Bundle',
       compactLabel: 'Specs',
@@ -2941,7 +3018,7 @@ export default function App() {
           </button>
 
           {/* Zone 2: 5 Clean Non-Redundant Single-Line Nav Links (abbreviate ONLY when narrow viewport demands it) */}
-          <nav className="hidden items-center gap-4 md:flex lg:gap-6" aria-label="Primary sections">
+          <nav data-tour="nav" className="hidden items-center gap-4 md:flex lg:gap-6" aria-label="Primary sections">
             {primaryNavItems.map((item) => (
               <button
                 key={item.id}
@@ -2976,7 +3053,9 @@ export default function App() {
 
       <main className="mx-auto max-w-[1440px] space-y-5 px-3 py-4 pb-20 sm:px-6 sm:py-6 md:pb-8">
         {/* WORKSPACE TOOLBAR: GLOBAL SEARCH, 22-LANGUAGE SWITCHER, AUTO-SAVE, UNDO/REDO, CLEAR/RESTORE, DEEP LINKS */}
-        <section className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900">
+        {topView === 'workbench' && <GuideBanner guideId="home" variant="hero" />}
+
+        <section data-tour="toolbar" className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* Search Box */}
             <div className="relative flex-1 lg:max-w-md">
@@ -3313,9 +3392,9 @@ export default function App() {
 
         {recoveryPending && <section role="alert" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
           <p>Autosave is paused because saved virtual files contain invalid entries. Valid edits were restored; rejected data remains in browser storage.</p>
-          <p>{savedVirtualFiles.issues.map(issue => issue.slice(0, 200)).join(' · ')}</p>
+          <p>{[...savedVirtualFiles.issues, ...savedWorkbenchFiles.issues].map(issue => issue.slice(0, 200)).join(' · ')}</p>
           <button type="button" className="mr-3 underline" disabled={!mutationPolicy.allowExportMutation || mutationPolicy.lockedRules.length > 0}
-            onClick={() => triggerTextDownload(JSON.stringify(initialAutoSave?.virtualFiles, null, 2), 'virtual-files-recovery.json', 'application/json')}>Download saved virtual data</button>
+            onClick={() => triggerTextDownload(JSON.stringify({ virtualFiles: initialAutoSave?.virtualFiles, workbenchFiles: initialAutoSave?.workbenchFiles }, null, 2), 'virtual-files-recovery.json', 'application/json')}>Download saved virtual data</button>
           <button type="button" className="underline" disabled={mutationPolicy.lockedRules.length > 0}
             onClick={() => { setRecoveryPending(false); setAutoSaveEnabled(true); }}>Discard rejected entries and resume autosave</button>
         </section>}
@@ -3345,7 +3424,7 @@ export default function App() {
         {/* TOP VIEW ROUTER */}
         {topView !== 'workbench' && (
           <div className="flex justify-end">
-            <GuidedHelp key={topView} context={topView} />
+            <GuidedHelp key={topView} context={topView === 'files' ? 'virtual_files' : topView} />
           </div>
         )}
         {topView === 'graph' ? (
@@ -3399,6 +3478,16 @@ export default function App() {
               void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
             }
           />
+        ) : topView === 'files' ? (
+          <div className="space-y-4">
+            <GuideBanner guideId="files" />
+            {legacyTree && <div role="status" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
+              A previous shared tree is still stored in this browser. It is not automatically merged into this workspace.
+              <button type="button" className="ml-2 underline" disabled={!mutationPolicy.allowExportMutation || mutationPolicy.lockedRules.length > 0}
+                onClick={() => triggerTextDownload(legacyTree, 'previous-shared-tree.json', 'application/json')}>Download previous tree</button>
+            </div>}
+            <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />
+          </div>
         ) : topView === 'api' ? (
           <ApiStudioWorkbench
             onSubmitArtifacts={submitArtifacts}
@@ -3444,6 +3533,7 @@ export default function App() {
         ) : (
           <>
             {/* OPTIMIZED COMPILER PIPELINE GRID (Compact Grid / Stage Lanes / Rail) */}
+            <div data-tour="pipeline">
             <PipelineGrid
               flows={flows}
               stageSummaries={breadcrumbs.stageSummaries}
@@ -3465,6 +3555,7 @@ export default function App() {
               onSplitFlow={handleSplitFlow}
               onOpenMcpServer={handleOpenMcpServer}
             />
+            </div>
 
             <div className="flex flex-wrap justify-end gap-2">
               <GuidedHelp context="home" />
@@ -3504,10 +3595,13 @@ export default function App() {
               )}
             </div>
 
+            <GuideBanner guideId={currentFlow.page} />
+
             {/* ACTIVE DSL-CONTROLLED SPLIT PAGE + BIDIRECTIONAL LIVE STATE MIRROR */}
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
               {/* Left 7 Cols: Active Split Page */}
               <section
+                data-tour="workbench-body"
                 className={`flex flex-col rounded-xl border border-slate-200 bg-white p-4 sm:p-5 xl:col-span-7 dark:border-slate-800 dark:bg-slate-900 ${
                   mobileWorkbenchPane === 'mirror' ? 'hidden xl:flex' : 'flex'
                 }`}
@@ -3525,6 +3619,7 @@ export default function App() {
 
                   <button
                     type="button"
+                    data-tour="workbench-verify"
                     onClick={() => handleVerifyAndAdvance(true)}
                     className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
                   >
@@ -3861,6 +3956,7 @@ export default function App() {
         onViewportChange={setModalViewport}
         onPrevStep={() => stepByOffset(-1)}
         onVerifyAndAdvance={() => handleVerifyAndAdvance(true)}
+        onSubmitToTree={handleSubmitToTree}
         onCopyModalLink={() => void handleCopyDeepLink({ includeFullState: false, forceModalOpen: true })}
         onClose={() => setModalOpen(false)}
       >

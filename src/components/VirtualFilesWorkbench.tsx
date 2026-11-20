@@ -78,6 +78,7 @@ export function VirtualFilesWorkbench({
       <div className="grid gap-3 md:grid-cols-[minmax(12rem,1fr)_3fr]">
         <nav
           data-tour-id="view.virtual_files.tree"
+          data-tour="files-tree"
           aria-label="Generated files"
           className="max-h-96 overflow-auto rounded border p-2 text-sm"
         >
@@ -90,7 +91,7 @@ export function VirtualFilesWorkbench({
             </p>
           )}
         </nav>
-        <div data-tour-id="view.virtual_files.editor">
+        <div data-tour-id="view.virtual_files.editor" data-tour="files-viewer">
           {file ? (
             <>
               <div className="flex flex-wrap items-center gap-2">

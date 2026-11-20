@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
-import { ArrowLeft, CheckCircle2, Link2, Monitor, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, FolderTree, Link2, Monitor, X } from 'lucide-react';
+import { GuideBanner } from './WorkbenchGuide';
 import type { DslFlowNode, ModalStructure, ViewportPreset } from '../types/studio';
 
 interface UniversalWorkbenchModalProps {
@@ -12,6 +13,7 @@ interface UniversalWorkbenchModalProps {
   onViewportChange: (v: ViewportPreset) => void;
   onPrevStep: () => void;
   onVerifyAndAdvance: () => void;
+  onSubmitToTree?: () => void;
   onCopyModalLink?: () => void;
   onClose: () => void;
   children: ReactNode;
@@ -42,6 +44,7 @@ export function UniversalWorkbenchModal({
   onViewportChange,
   onPrevStep,
   onVerifyAndAdvance,
+  onSubmitToTree,
   onCopyModalLink,
   onClose,
   children,
@@ -71,7 +74,7 @@ export function UniversalWorkbenchModal({
     >
       <div className="flex h-[100dvh] w-full max-w-[1340px] flex-col overflow-hidden rounded-none border-slate-200 bg-white shadow-2xl sm:h-auto sm:max-h-[92vh] sm:rounded-xl sm:border dark:border-slate-800 dark:bg-slate-900">
         {/* Modal Header */}
-        <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-5 sm:py-4 dark:border-slate-800">
+        <div data-tour="modal-header" className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-5 sm:py-4 dark:border-slate-800">
           <div className="min-w-0">
             <h2 id="modal-wb-title" className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">
               {flow.label}
@@ -109,7 +112,7 @@ export function UniversalWorkbenchModal({
         </div>
 
         {/* Selectable Structure + Hardcoded Viewport Resolution Subbar */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/60">
+        <div data-tour="modal-structure" className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/60">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="text-xs font-medium text-slate-600 dark:text-slate-400">Structure</span>
             <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5 dark:border-slate-800 dark:bg-slate-900">
@@ -152,7 +155,11 @@ export function UniversalWorkbenchModal({
 
         {/* Viewport Constrained Body */}
         <div className="flex-1 overflow-auto bg-slate-100/70 p-4 sm:p-5 dark:bg-slate-950">
+          <div className="mx-auto mb-4 w-full">
+            <GuideBanner guideId={flow.page} modal />
+          </div>
           <div
+            data-tour="modal-body"
             style={frameStyle}
             className={`mx-auto transition-all duration-150 ${
               viewport !== 'responsive'
@@ -171,7 +178,7 @@ export function UniversalWorkbenchModal({
         </div>
 
         {/* Modal Footer */}
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-3.5 dark:border-slate-800 dark:bg-slate-900">
+        <div data-tour="modal-footer" className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-3.5 dark:border-slate-800 dark:bg-slate-900">
           <button
             type="button"
             onClick={onPrevStep}
@@ -181,14 +188,26 @@ export function UniversalWorkbenchModal({
             Previous Workbench
           </button>
 
-          <button
-            type="button"
-            onClick={onVerifyAndAdvance}
-            className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
-          >
-            <CheckCircle2 className="h-4 w-4" />
-            Complete, Verify &amp; Advance Next
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            {onSubmitToTree && (
+              <button
+                type="button"
+                onClick={onSubmitToTree}
+                className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-medium text-blue-700 transition-colors hover:bg-blue-50 dark:border-blue-800 dark:bg-slate-900 dark:text-blue-300 dark:hover:bg-blue-950/40"
+              >
+                <FolderTree className="h-4 w-4" />
+                Submit to Shared Tree
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onVerifyAndAdvance}
+              className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+            >
+              <CheckCircle2 className="h-4 w-4" />
+              Complete, Verify &amp; Advance Next
+            </button>
+          </div>
         </div>
       </div>
     </div>

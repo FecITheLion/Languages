@@ -1,9 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { applyVirtualSubmission, buildVirtualTree, editVirtualFile, hasVirtualConflict, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, resolveVirtualFile, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, submitVirtualFiles, validVirtualPath, virtualEditAllowed, virtualEdits } from '../src/engine/virtualFiles.ts';
+import { applyVirtualSubmission, buildVirtualTree, editVirtualFile, hasVirtualConflict, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, resolveVirtualFile, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, submitVirtualFiles, validVirtualPath, virtualEditAllowed, virtualEdits, workbenchVirtualFiles } from '../src/engine/virtualFiles.ts';
 import type { HistologSnapshotState } from '../src/engine/histologEngine.ts';
 
 const submit = (content: string) => submitVirtualFiles({}, 'engine', [{ path: 'engine/output.txt', content }]);
+
+test('workbench submissions survive autosave with edits and their source', () => {
+  let files = submitVirtualFiles({}, 'workbench-dialect', [{ path: 'workbench/dialect/grammar.txt', content: 'source' }]);
+  files = editVirtualFile(files, 'workbench/dialect/grammar.txt', 'edited');
+  files = submitVirtualFiles(files, 'engine', [{ path: 'engine/output.txt', content: 'generated' }]);
+  const saved = readVirtualFiles(JSON.parse(JSON.stringify(workbenchVirtualFiles(files))));
+  const restored = mergeVirtualFiles(saved, restoreAutoSavedVirtualEdits(virtualEdits(files)));
+  assert.equal(restored['workbench/dialect/grammar.txt'].source, 'source');
+  assert.equal(restored['workbench/dialect/grammar.txt'].edit, 'edited');
+  assert.equal(restored['engine/output.txt'], undefined);
+});
 
 test('versioned submissions reject malformed batches without changing existing files', () => {
   const original = submit('original');

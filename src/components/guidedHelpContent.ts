@@ -1,6 +1,6 @@
 import type { TopView, WorkflowSlug } from '../types/studio';
 
-export type GuidedHelpContext = 'home' | 'virtual_files' | WorkflowSlug | Exclude<TopView, 'workbench'>;
+export type GuidedHelpContext = 'home' | 'virtual_files' | WorkflowSlug | Exclude<TopView, 'workbench' | 'files'>;
 
 export interface GuidedHelpStep {
   title: string;
@@ -51,12 +51,14 @@ export const GUIDED_HELP_CONTEXTS: GuidedHelpContext[] = [
   'bundle',
 ];
 
-export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
-  virtual_files: tour('Shared virtual files', 'Compare generated outputs with your separate editable copies.', [
+const sharedFilesTour = tour('Shared virtual files', 'Compare generated outputs with your separate editable copies.', [
     step('Choose a generated file', 'Pick a file from the list. Some files appear after you visit the workbench that creates them; a JSON-LD package appears after export.', 'view.virtual_files.tree', ['Generated output', 'File list', 'Choose file']),
     step('Edit a separate copy', 'The left pane is the generated source and the right pane is your editable copy. Changes here do not change grammar or other source inputs.', 'view.virtual_files.editor', ['Generated source', 'Your copy', 'Separate edit']),
     step('Resolve a changed source', 'If a newer source arrives, compare both panes. Choose Keep my edit to keep your copy, or Use latest source to replace it. Browser autosave stores edits and their source versions, which may be sensitive; workspace snapshots may contain all outputs.', 'view.virtual_files.actions', ['Compare versions', 'Keep edit / use source', 'Download copy']),
-  ]),
+]);
+
+export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
+  virtual_files: sharedFilesTour,
   home: tour('Studio home', 'Find your way through the grammar-to-output workflow.', [
     step(
       'Start with an example',

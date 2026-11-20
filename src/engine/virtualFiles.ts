@@ -179,6 +179,15 @@ export function virtualEdits(files: VirtualFiles): VirtualFiles {
   }
   return result;
 }
+export function workbenchVirtualFiles(files: VirtualFiles): VirtualFiles {
+  const result: VirtualFiles = Object.create(null);
+  for (const [path, file] of Object.entries(files)) {
+    if (file.owner.startsWith('workbench-') && path.startsWith(`workbench/${file.owner.slice('workbench-'.length)}/`)) {
+      result[path] = file;
+    }
+  }
+  return result;
+}
 export function restoreAutoSavedVirtualEdits(value: unknown): VirtualFiles {
   const result = virtualEdits(readVirtualFiles(value));
   for (const [path, file] of Object.entries(result)) {

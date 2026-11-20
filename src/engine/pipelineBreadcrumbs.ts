@@ -64,6 +64,7 @@ export const TOP_VIEW_LABELS: Record<TopView, string> = {
   workbench: 'Workbench',
   graph: 'Rule Graph',
   histolog: 'Histolog & Diff',
+  files: 'Shared Files',
   api: 'API Studio',
   openapi: 'OpenAPI Spec',
   dsl: 'DSL Flows',

@@ -26,6 +26,8 @@ Open `http://127.0.0.1:8080/studio/`; the router also serves a deep link such as
 
 ## API and offline limits
 
+The Shared Files view uses the validated browser workspace. Workbench submissions and edits are saved locally when autosave is enabled; they are not mirrored to the PHP API. If an older `g2j.sharedTree.v1` tree exists, it remains in browser storage and can be downloaded from Shared Files; it is not automatically merged. Browser storage can contain sensitive workspace data.
+
 The PHP API is **partial**. To enable persistent logic updates, configure PHP with `GRAMMAR2JSON_STATE_DIR` pointing to an existing absolute, canonical, writable directory outside every web-served directory, with permissions `0700`. PHP must have the `pdo_sqlite` extension. The service creates `logic.sqlite3` there with private permissions; keep backups of this directory and restrict access to the web-server user. Without this setting, logic reads and evaluation use the initial preset and updates return 503 rather than silently discarding data. An invalid or inaccessible state directory also returns 503. All clients share the same state; as with the Node API, protect the API with authentication and appropriate origin restrictions before exposing it.
 
 * `GET`/`HEAD /healthz` returns the Express health payload. It does not assert availability of unported endpoints.
