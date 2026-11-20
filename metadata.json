@@ -1,0 +1,8 @@
+{
+  "name": "Grammar2JSON Studio",
+  "description": "OpenAPI and DSL-controlled multi-page bidirectional studio for Grammar, Schema.org JSON, Python AST, and WASM/WABT with Google Drive sync and project ZIP packaging.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
