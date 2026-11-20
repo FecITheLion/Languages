@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -13,18 +15,45 @@ import {
   getLogicBindingDiagnostics,
   getLogicExportUnsupportedReason,
   type CauchySequenceConfig,
+  type LogicExportInputMode,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './src/engine/logicLambdaEngine.ts';
-import { logicInputDiagnostic, normalizeLogicEvaluationInput } from './src/engine/logicInputNormalizer.ts';
+import {
+  assessCauchySequencingSafety,
+  logicInputDiagnostic,
+  normalizeLogicEvaluationInput,
+} from './src/engine/logicInputNormalizer.ts';
 import {
   generateMcpClientConfig,
   generateMcpExportForClient,
+  generateOpenAiApiToolsManifest,
   McpLazyServerRegistry,
   VALID_MCP_SERVER_IDS,
   type McpClientExportTarget,
   type McpWorkspaceContext,
 } from './src/engine/mcpServerEngine.ts';
+import {
+  buildAwsDeploymentBundle,
+  buildAzureDeploymentBundle,
+  computeMiddlewareEtag,
+  createDefaultMiddlewareConfig,
+  DEFAULT_SLUG_PATTERNS,
+  DEFAULT_SLUG_ROUTES,
+  DEFAULT_TEMPLATE_FRAGMENTS,
+  DEFAULT_TEMPLATE_THEMES,
+  isValidSlugName,
+  isValidTemplateIdentifier,
+  mergeMiddlewareConfigPatch,
+  renderFragmentHtmlSafe,
+} from './src/engine/middlewareConfigEngine.ts';
+import { validateModule, type StudioModulePackage } from './src/engine/modulePackageEngine.ts';
+import { evaluateMultilineBooleanProgram } from './src/engine/multilineBooleanEngine.ts';
+import {
+  DEFAULT_JSON_SCHEMA_SAMPLE,
+  DEFAULT_TEST_INSTANCE_SAMPLE,
+  evaluateSchemaPredicateStudio,
+} from './src/engine/schemaPredicateEngine.ts';
 import {
   SUPPORTED_LANGUAGES,
   type EngineSectionKey,
@@ -72,7 +101,22 @@ function sendHal(
   res.status(status).json(body);
 }
 
-async function startServer() {
+interface SessionModuleRecord extends StudioModulePackage {
+  updatedAt: string;
+}
+
+interface SessionContext {
+  sessionId: string;
+  restStore: RestHateoasEngineStore;
+  mcpRegistry: McpLazyServerRegistry;
+  modules: Map<string, SessionModuleRecord>;
+  historyBundle: Record<string, unknown> | null;
+  updatedAt: string;
+}
+
+const SESSION_ID_REGEX = /^[A-Za-z0-9][A-Za-z0-9_-]{2,63}$/;
+
+export function createApiApp(): express.Express {
   const app = express();
   app.use('/api/logic/evaluate', express.text({ type: 'text/plain', limit: '5mb' }));
   app.use('/api/logic/evaluate', express.json({ strict: false, limit: '5mb' }));
@@ -82,38 +126,180 @@ async function startServer() {
     res.status(200).json({ ok: true, service: 'grammar2json-studio' });
   });
 
-  // Single lazy MCP registry + stateful REST/CRUD/HATEOAS store kept in sync
-  const mcpRegistry = new McpLazyServerRegistry();
-  const restStore = new RestHateoasEngineStore();
+  // Session-isolated registries + Middleware config kept in sync per session
+  const sessions = new Map<string, SessionContext>();
+  const sessionStorage = new AsyncLocalStorage<SessionContext>();
+  const writeRateBuckets = new Map<string, number[]>();
 
-  const syncRestToMcp = () => {
-    mcpRegistry.updateContext({
-      grammarText: restStore.workspace.grammarText,
-      dialect: restStore.workspace.dialect,
-      schemaConfig: restStore.workspace.schemaConfig,
-      mutationPolicy: restStore.workspace.mutationPolicy,
-      mutations: restStore.workspace.mutations,
-      ruleConfigs: restStore.workspace.ruleConfigs,
-      evalRule: restStore.workspace.evalRule,
-      evalPayload: restStore.workspace.evalPayload,
-      logicStatement: restStore.workspace.logicStatement,
-      logicLabels: restStore.workspace.logicLabels,
-      dslSource: restStore.workspace.dslSource,
-    });
+  const buildMcpCtx = (rs: RestHateoasEngineStore) => ({
+    grammarText: rs.workspace.grammarText,
+    dialect: rs.workspace.dialect,
+    schemaConfig: rs.workspace.schemaConfig,
+    mutationPolicy: rs.workspace.mutationPolicy,
+    mutations: rs.workspace.mutations,
+    ruleConfigs: rs.workspace.ruleConfigs,
+    evalRule: rs.workspace.evalRule,
+    evalPayload: rs.workspace.evalPayload,
+    logicStatement: rs.workspace.logicStatement,
+    logicLabels: rs.workspace.logicLabels,
+    dslSource: rs.workspace.dslSource,
+  });
+
+  const createSessionContext = (sessionId: string, cloneFrom?: SessionContext): SessionContext => {
+    const rs = new RestHateoasEngineStore();
+    const mcp = new McpLazyServerRegistry();
+    const mods = new Map<string, SessionModuleRecord>();
+    let historyBundle: Record<string, unknown> | null = null;
+    if (cloneFrom) {
+      rs.workspace = JSON.parse(JSON.stringify(cloneFrom.restStore.workspace));
+      rs.callbacks = JSON.parse(JSON.stringify(cloneFrom.restStore.callbacks));
+      rs.histolog = JSON.parse(JSON.stringify(cloneFrom.restStore.histolog));
+      rs.workspaces = new Map(
+        Array.from(cloneFrom.restStore.workspaces.entries()).map(([k, v]) => [k, JSON.parse(JSON.stringify(v))])
+      );
+      mcp.updateContext(buildMcpCtx(rs));
+      for (const [k, v] of cloneFrom.modules.entries()) {
+        mods.set(k, JSON.parse(JSON.stringify(v)));
+      }
+      if (cloneFrom.historyBundle) {
+        historyBundle = {
+          ...JSON.parse(JSON.stringify(cloneFrom.historyBundle)),
+          sessionId,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+    }
+    return {
+      sessionId,
+      restStore: rs,
+      mcpRegistry: mcp,
+      modules: mods,
+      historyBundle,
+      updatedAt: new Date().toISOString(),
+    };
   };
 
-  // Global API CORS + HATEOAS discovery headers
+  const getOrCreateSession = (sessionId: string): SessionContext => {
+    let ctx = sessions.get(sessionId);
+    if (!ctx) {
+      ctx = createSessionContext(sessionId);
+      sessions.set(sessionId, ctx);
+    }
+    return ctx;
+  };
+
+  const defaultSession = getOrCreateSession('default');
+  const currentSession = (): SessionContext => sessionStorage.getStore() ?? defaultSession;
+
+  const wrapSessionProxy = <T extends object>(pick: (ctx: SessionContext) => T): T =>
+    new Proxy({} as T, {
+      get(_target, prop) {
+        const target = pick(currentSession());
+        const val = Reflect.get(target, prop, target);
+        return typeof val === 'function' ? val.bind(target) : val;
+      },
+      set(_target, prop, value) {
+        const target = pick(currentSession());
+        return Reflect.set(target, prop, value, target);
+      },
+    });
+
+  const mcpRegistry = wrapSessionProxy((c) => c.mcpRegistry);
+  const restStore = wrapSessionProxy((c) => c.restStore);
+  let middlewareConfig = createDefaultMiddlewareConfig(process.env as Record<string, string | undefined>);
+  let templateCacheEpoch = 1;
+  const bumpTemplateCache = () => {
+    templateCacheEpoch += 1;
+  };
+
+  const syncRestToMcp = () => {
+    bumpTemplateCache();
+    currentSession().updatedAt = new Date().toISOString();
+    mcpRegistry.updateContext(buildMcpCtx(restStore));
+  };
+
+  const isStateMutatingApiRoute = (method: string, subPath: string): boolean => {
+    if (['PUT', 'PATCH', 'DELETE'].includes(method)) return true;
+    if (method !== 'POST') return false;
+    return [
+      '/rules', '/workspaces', '/callbacks', '/logic/labels',
+      '/histolog', '/engine/clear', '/middleware/reset', '/modules',
+      '/sessions', '/mcp/context', '/mcp/cache/clear',
+    ].includes(subPath) || /^\/histolog\/\d+\/restore$/.test(subPath);
+  };
+
+  // Global API CORS + Session Binding + Optional Write Auth + Rate Limit + HATEOAS discovery headers
   app.use('/api', (req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    const allowed = (process.env.ALLOWED_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const reqOrigin = req.get('origin') || '';
+    if (allowed.length === 0) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else if (reqOrigin) {
+      res.setHeader('Vary', 'Origin');
+      if (allowed.includes(reqOrigin)) {
+        res.setHeader('Access-Control-Allow-Origin', reqOrigin);
+      } else {
+        res.status(403).json({ ok: false, error: 'Origin not allowed by ALLOWED_ORIGINS.' });
+        return;
+      }
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, Mcp-Session-Id');
-    res.setHeader('Access-Control-Expose-Headers', 'Link, Location, Allow');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Authorization, X-API-Key, Mcp-Session-Id, X-Session-Id');
+    res.setHeader('Access-Control-Expose-Headers', 'Link, Location, Allow, Retry-After, X-Session-Id');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+
+    const rawSid = req.get('x-session-id') ?? (typeof req.query.session === 'string' ? req.query.session : '');
+    const sid = rawSid.trim() || 'default';
+    if (sid !== 'default' && !SESSION_ID_REGEX.test(sid)) {
+      res.status(400).json({ ok: false, error: 'Invalid session id. Use 3-64 alphanumeric, underscore, or hyphen characters.' });
+      return;
+    }
+    res.setHeader('X-Session-Id', sid);
+
     if (req.method === 'OPTIONS') {
       res.setHeader('Allow', 'GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS');
       res.status(204).end();
       return;
     }
-    next();
+
+    const writeToken = process.env.GRAMMAR2JSON_WRITE_TOKEN || '';
+    if (writeToken && isStateMutatingApiRoute(req.method, req.path)) {
+      const auth = req.get('authorization') || '';
+      const bearer = /^Bearer\s+(.+)$/i.exec(auth)?.[1]?.trim() || '';
+      const apiKey = (req.get('x-api-key') || '').trim();
+      const supplied = bearer || apiKey;
+      const expectedBuf = Buffer.from(writeToken, 'utf8');
+      const suppliedBuf = Buffer.from(supplied, 'utf8');
+      if (!supplied || expectedBuf.length !== suppliedBuf.length || !crypto.timingSafeEqual(expectedBuf, suppliedBuf)) {
+        res.setHeader('WWW-Authenticate', 'Bearer realm="grammar2json-studio"');
+        res.status(401).json({
+          ok: false,
+          error: 'Write authentication required. Supply Authorization: Bearer <token> or X-API-Key.',
+        });
+        return;
+      }
+    }
+
+    const rawMax = Number(process.env.GRAMMAR2JSON_RATE_LIMIT_MAX || '0');
+    if (Number.isFinite(rawMax) && rawMax > 0 && isStateMutatingApiRoute(req.method, req.path)) {
+      const key = `${req.ip || 'local'}:${sid}`;
+      const now = Date.now();
+      const windowTimes = (writeRateBuckets.get(key) || []).filter((t) => now - t < 60_000);
+      if (windowTimes.length >= rawMax) {
+        res.setHeader('Retry-After', '60');
+        res.status(429).json({ ok: false, error: 'Write rate limit exceeded. Try again shortly.' });
+        return;
+      }
+      windowTimes.push(now);
+      writeRateBuckets.set(key, windowTimes);
+    }
+
+    const ctx = getOrCreateSession(sid);
+    sessionStorage.run(ctx, () => next());
   });
 
   /* ==========================================================================
@@ -690,6 +876,11 @@ async function startServer() {
     }
     const { statement: stmt, labels } = normalized.input;
     const evalRes = evaluateLogicStatement(stmt, labels);
+    const cauchySafety = assessCauchySequencingSafety(req.body, normalized.input, restStore.workspace.cauchyConfig);
+    const cauchyEval =
+      cauchySafety.canEnable && cauchySafety.config
+        ? evaluateCauchySequence(cauchySafety.config, labels)
+        : undefined;
     sendHal(res, 200, {
       statement: stmt,
       ok: evalRes.ok,
@@ -698,6 +889,20 @@ async function startServer() {
       trace: evalRes.trace,
       error: evalRes.error,
       diagnostics: getLogicBindingDiagnostics(evalRes, labels),
+      ...(cauchyEval
+        ? {
+            cauchyAutoEnabled: true,
+            cauchyEvaluation: {
+              ok: cauchyEval.ok,
+              converged: cauchyEval.converged,
+              cauchyIndexN: cauchyEval.cauchyIndexN,
+              limitEstimate: cauchyEval.limitEstimate,
+              resolvedParamNames: cauchyEval.resolvedParamNames,
+            },
+          }
+        : restStore.workspace.cauchyConfig.enabled
+          ? { cauchyAutoEnabled: false, cauchySkippedReason: cauchySafety.reason }
+          : {}),
       _links: { self: { href: `${origin}/api/logic/evaluate`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
     });
   });
@@ -714,6 +919,267 @@ async function startServer() {
       config: cfg,
       ...result,
       _links: { self: { href: `${origin}/api/logic/cauchy`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
+    });
+  });
+
+  app.post('/api/logic/multiline', (req, res) => {
+    const origin = getOrigin(req);
+    const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {};
+    if (
+      (body.preInput !== undefined && typeof body.preInput !== 'string') ||
+      (body.program !== undefined && typeof body.program !== 'string')
+    ) {
+      sendHal(res, 400, {
+        ok: false,
+        error: 'Fields preInput and program must be strings.',
+        _links: { self: { href: `${origin}/api/logic/multiline`, method: 'POST' } },
+      });
+      return;
+    }
+    const preInput = typeof body.preInput === 'string' ? body.preInput : 'e=true';
+    const program = typeof body.program === 'string' ? body.program : 'a(b,c)=b & c\nd=false\na(e,d)';
+    const evalResult = evaluateMultilineBooleanProgram(preInput, program);
+    sendHal(res, 200, {
+      ...evalResult,
+      _links: {
+        self: { href: `${origin}/api/logic/multiline`, method: 'POST' },
+        root: { href: `${origin}/api`, method: 'GET' },
+      },
+    });
+  });
+
+  app.post('/api/schema/predicate-tree', (req, res) => {
+    const origin = getOrigin(req);
+    const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {};
+    const schemaInput =
+      body.schema === undefined
+        ? DEFAULT_JSON_SCHEMA_SAMPLE
+        : typeof body.schema === 'string'
+          ? body.schema
+          : JSON.stringify(body.schema);
+    const instanceInput =
+      body.instance === undefined
+        ? DEFAULT_TEST_INSTANCE_SAMPLE
+        : typeof body.instance === 'string'
+          ? body.instance
+          : JSON.stringify(body.instance);
+    const result = evaluateSchemaPredicateStudio(schemaInput, instanceInput);
+    sendHal(res, 200, {
+      ...result,
+      _links: {
+        self: { href: `${origin}/api/schema/predicate-tree`, method: 'POST' },
+        root: { href: `${origin}/api`, method: 'GET' },
+      },
+    });
+  });
+
+  /* ==========================================================================
+   * 4B. MODULE WORKBENCH DRAFTS & SESSION HISTORY SHARING CRUD
+   * ======================================================================== */
+
+  app.get('/api/modules', (req, res) => {
+    const origin = getOrigin(req);
+    const mods = Array.from(currentSession().modules.values()).map((mod) => ({
+      ...mod,
+      _links: { self: { href: `${origin}/api/modules/${encodeURIComponent(mod.manifest.id)}`, method: 'GET' } },
+    }));
+    sendHal(res, 200, {
+      count: mods.length,
+      modules: mods,
+      _links: { self: { href: `${origin}/api/modules`, method: 'GET' }, root: { href: `${origin}/api`, method: 'GET' } },
+    });
+  });
+
+  app.get('/api/modules/:id', (req, res) => {
+    const origin = getOrigin(req);
+    const mod = currentSession().modules.get(req.params.id);
+    if (!mod) {
+      sendHal(res, 404, { ok: false, error: `Module '${req.params.id}' not found.` });
+      return;
+    }
+    sendHal(res, 200, {
+      ...mod,
+      _links: {
+        self: { href: `${origin}/api/modules/${encodeURIComponent(mod.manifest.id)}`, method: 'GET' },
+        collection: { href: `${origin}/api/modules`, method: 'GET' },
+      },
+    });
+  });
+
+  const handleSaveModule = (req: express.Request, res: express.Response, forcedId?: string) => {
+    const origin = getOrigin(req);
+    try {
+      const body = req.body as StudioModulePackage;
+      const pkg: StudioModulePackage = forcedId
+        ? { ...body, manifest: { ...(body?.manifest || ({} as StudioModulePackage['manifest'])), id: forcedId } }
+        : body;
+      validateModule(pkg);
+      const mods = currentSession().modules;
+      const modId = pkg.manifest.id;
+      if (mods.size >= 64 && !mods.has(modId)) {
+        sendHal(res, 400, { ok: false, error: 'At most 64 stored modules are supported.' });
+        return;
+      }
+      const record: SessionModuleRecord = {
+        manifest: pkg.manifest,
+        files: pkg.files,
+        updatedAt: new Date().toISOString(),
+      };
+      mods.set(modId, record);
+      const selfHref = `${origin}/api/modules/${encodeURIComponent(modId)}`;
+      sendHal(
+        res,
+        forcedId ? 200 : 201,
+        {
+          ok: true,
+          module: record,
+          _links: { self: { href: selfHref, method: 'GET' }, collection: { href: `${origin}/api/modules`, method: 'GET' } },
+        },
+        forcedId ? undefined : { Location: selfHref }
+      );
+    } catch (error) {
+      sendHal(res, 400, { ok: false, error: error instanceof Error ? error.message : 'Invalid module payload.' });
+    }
+  };
+  app.post('/api/modules', (req, res) => handleSaveModule(req, res));
+  app.put('/api/modules/:id', (req, res) => handleSaveModule(req, res, req.params.id));
+  app.patch('/api/modules/:id', (req, res) => handleSaveModule(req, res, req.params.id));
+
+  app.delete('/api/modules/:id', (req, res) => {
+    const origin = getOrigin(req);
+    const existed = currentSession().modules.delete(req.params.id);
+    if (!existed) {
+      sendHal(res, 404, { ok: false, error: `Module '${req.params.id}' not found.` });
+      return;
+    }
+    sendHal(res, 200, {
+      ok: true,
+      deleted: req.params.id,
+      _links: { collection: { href: `${origin}/api/modules`, method: 'GET' } },
+    });
+  });
+
+  app.get('/api/sessions', (req, res) => {
+    const origin = getOrigin(req);
+    const cur = currentSession();
+    const list = Array.from(sessions.values()).map((s) => ({
+      sessionId: s.sessionId,
+      updatedAt: s.updatedAt,
+      hasHistory: Boolean(s.historyBundle),
+      _links: {
+        self: { href: `${origin}/api/sessions/${encodeURIComponent(s.sessionId)}`, method: 'GET' },
+        share: { href: `${origin}/?session=${encodeURIComponent(s.sessionId)}`, method: 'GET' },
+      },
+    }));
+    sendHal(res, 200, {
+      ok: true,
+      count: list.length,
+      currentSessionId: cur.sessionId,
+      sessions: list,
+      _links: { self: { href: `${origin}/api/sessions`, method: 'GET' }, root: { href: `${origin}/api`, method: 'GET' } },
+    });
+  });
+
+  app.post('/api/sessions', (req, res) => {
+    const origin = getOrigin(req);
+    const body = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {};
+    const requestedId = typeof body.sessionId === 'string' && body.sessionId.trim() ? body.sessionId.trim() : '';
+    const newId = requestedId || `s_${crypto.randomBytes(8).toString('hex')}`;
+    if (newId !== 'default' && !SESSION_ID_REGEX.test(newId)) {
+      sendHal(res, 400, { ok: false, error: 'Invalid session id. Use 3-64 alphanumeric, underscore, or hyphen characters.' });
+      return;
+    }
+    const sourceRaw = typeof body.sourceSessionId === 'string' && body.sourceSessionId.trim() ? body.sourceSessionId.trim() : '';
+    if (sourceRaw && sourceRaw !== 'default' && !SESSION_ID_REGEX.test(sourceRaw)) {
+      sendHal(res, 400, { ok: false, error: 'Invalid sourceSessionId.' });
+      return;
+    }
+    const sourceCtx = sourceRaw ? sessions.get(sourceRaw) : undefined;
+    const nextCtx = createSessionContext(newId, sourceCtx);
+    sessions.set(newId, nextCtx);
+    const selfHref = `${origin}/api/sessions/${encodeURIComponent(newId)}`;
+    sendHal(
+      res,
+      201,
+      {
+        ok: true,
+        sessionId: newId,
+        clonedFrom: sourceRaw || null,
+        shareQuery: `?session=${encodeURIComponent(newId)}`,
+        shareUrl: `${origin}/?session=${encodeURIComponent(newId)}`,
+        _links: { self: { href: selfHref, method: 'GET' }, collection: { href: `${origin}/api/sessions`, method: 'GET' } },
+      },
+      { Location: selfHref }
+    );
+  });
+
+  app.get('/api/sessions/:id', (req, res) => {
+    const origin = getOrigin(req);
+    const sid = req.params.id.trim();
+    if (sid !== 'default' && !SESSION_ID_REGEX.test(sid)) {
+      sendHal(res, 400, { ok: false, error: 'Invalid session id. Use 3-64 alphanumeric, underscore, or hyphen characters.' });
+      return;
+    }
+    const ctx = sessions.get(sid);
+    sendHal(res, 200, {
+      ok: true,
+      exists: Boolean(ctx?.historyBundle),
+      sessionId: sid,
+      updatedAt: ctx?.historyBundle ? ctx.updatedAt : null,
+      bundle: ctx?.historyBundle ?? null,
+      _links: {
+        self: { href: `${origin}/api/sessions/${encodeURIComponent(sid)}`, method: 'GET' },
+        collection: { href: `${origin}/api/sessions`, method: 'GET' },
+      },
+    });
+  });
+
+  app.put('/api/sessions/:id', (req, res) => {
+    const origin = getOrigin(req);
+    const sid = req.params.id.trim();
+    if (sid !== 'default' && !SESSION_ID_REGEX.test(sid)) {
+      sendHal(res, 400, { ok: false, error: 'Invalid session id. Use 3-64 alphanumeric, underscore, or hyphen characters.' });
+      return;
+    }
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      sendHal(res, 400, { ok: false, error: 'Session payload must be a JSON object.' });
+      return;
+    }
+    const raw = req.body as Record<string, unknown>;
+    const inner = raw.bundle && typeof raw.bundle === 'object' && !Array.isArray(raw.bundle)
+      ? (raw.bundle as Record<string, unknown>)
+      : raw;
+    const ctx = getOrCreateSession(sid);
+    const now = new Date().toISOString();
+    ctx.historyBundle = { ...inner, sessionId: sid, updatedAt: now };
+    ctx.updatedAt = now;
+    sendHal(res, 200, {
+      ok: true,
+      sessionId: sid,
+      updatedAt: now,
+      shareUrl: `${origin}/?session=${encodeURIComponent(sid)}`,
+      _links: {
+        self: { href: `${origin}/api/sessions/${encodeURIComponent(sid)}`, method: 'GET' },
+        collection: { href: `${origin}/api/sessions`, method: 'GET' },
+      },
+    });
+  });
+
+  app.delete('/api/sessions/:id', (req, res) => {
+    const origin = getOrigin(req);
+    const sid = req.params.id.trim();
+    if (sid !== 'default' && !SESSION_ID_REGEX.test(sid)) {
+      sendHal(res, 400, { ok: false, error: 'Invalid session id. Use 3-64 alphanumeric, underscore, or hyphen characters.' });
+      return;
+    }
+    sessions.delete(sid);
+    if (sid === 'default') {
+      sessions.set('default', createSessionContext('default'));
+    }
+    sendHal(res, 200, {
+      ok: true,
+      deleted: sid,
+      _links: { collection: { href: `${origin}/api/sessions`, method: 'GET' } },
     });
   });
 
@@ -896,6 +1362,32 @@ async function startServer() {
     sendHal(res, 201, { ok: true, workspace: copy, _links: { self: { href: selfHref, method: 'GET' } } }, { Location: selfHref });
   });
 
+  const handleUpdateWorkspace = (req: express.Request, res: express.Response) => {
+    const origin = getOrigin(req);
+    const id = req.params.id;
+    const base = restStore.workspaces.get(id) ?? restStore.workspace;
+    const patch = req.body && typeof req.body === 'object' ? (req.body as Record<string, unknown>) : {};
+    const updated = {
+      ...base,
+      ...patch,
+      id,
+      name: typeof patch.name === 'string' && patch.name.trim() ? patch.name : base.name || id,
+      updatedAt: new Date().toISOString(),
+    };
+    restStore.workspaces.set(id, updated);
+    if (id === 'default') {
+      restStore.workspace = updated;
+      syncRestToMcp();
+    }
+    sendHal(res, 200, {
+      ok: true,
+      workspace: updated,
+      _links: { self: { href: `${origin}/api/workspaces/${encodeURIComponent(id)}`, method: 'GET' } },
+    });
+  };
+  app.put('/api/workspaces/:id', handleUpdateWorkspace);
+  app.patch('/api/workspaces/:id', handleUpdateWorkspace);
+
   app.delete('/api/workspaces/:id', (req, res) => {
     const origin = getOrigin(req);
     if (req.params.id === 'default') {
@@ -945,6 +1437,8 @@ async function startServer() {
   app.get('/api/logic/export/:language', (req, res) => {
     const origin = getOrigin(req);
     const lang = req.params.language as LogicExportTarget;
+    const rawMode = typeof req.query.mode === 'string' ? req.query.mode.toLowerCase() : 'cli';
+    const inputMode: LogicExportInputMode = rawMode === 'hardcoded' ? 'hardcoded' : 'cli';
     const self = { href: `${origin}/api/logic/export/${encodeURIComponent(lang)}`, method: 'GET' };
     const links = { self, logic: { href: `${origin}/api/logic`, method: 'GET' } };
     const unsupportedReason = getLogicExportUnsupportedReason(lang, restStore.workspace.cauchyConfig);
@@ -959,9 +1453,10 @@ async function startServer() {
       return;
     }
     try {
-      const exported = restStore.exportLogic(lang);
+      const exported = restStore.exportLogic(lang, inputMode);
       sendHal(res, 200, {
         language: lang,
+        inputMode,
         filename: exported.filename,
         mime: exported.mime,
         content: exported.content,
@@ -1009,6 +1504,9 @@ async function startServer() {
         _links: {
           self: { href: `${origin}/api/mcp/${s.id}`, method: 'GET' },
           rpc: { href: `${origin}/api/mcp/${s.id}`, method: 'POST' },
+          exportFoundry: { href: `${origin}/api/mcp/${s.id}/export/foundry`, method: 'GET' },
+          exportOpenai: { href: `${origin}/api/mcp/${s.id}/export/openai`, method: 'GET' },
+          exportAwsBedrock: { href: `${origin}/api/mcp/${s.id}/export/aws_bedrock`, method: 'GET' },
           exportVscode: { href: `${origin}/api/mcp/${s.id}/export/vscode`, method: 'GET' },
           exportOllama: { href: `${origin}/api/mcp/${s.id}/export/ollama`, method: 'GET' },
           exportOpenclaw: { href: `${origin}/api/mcp/${s.id}/export/openclaw`, method: 'GET' },
@@ -1144,6 +1642,483 @@ async function startServer() {
     res.json(rpcRes);
   });
 
+  /* ==========================================================================
+   * 7. OPENAI TOOLS & FULL API BASE BRIDGE
+   * ======================================================================== */
+
+  app.get('/api/openai/tools', (req, res) => {
+    const origin = getOrigin(req);
+    const scopeRaw = String(req.query.scope || 'all').toLowerCase();
+    const scope = scopeRaw === 'mcp' || scopeRaw === 'api' ? scopeRaw : 'all';
+    const formatRaw = String(req.query.format || 'responses').toLowerCase();
+    const format = formatRaw === 'chat_completions' ? 'chat_completions' : 'responses';
+    const serverParam = typeof req.query.serverId === 'string' && VALID_MCP_SERVER_IDS.has(req.query.serverId as McpServerId)
+      ? (req.query.serverId as McpServerId)
+      : undefined;
+    const manifest = generateOpenAiApiToolsManifest(origin || `http://localhost:${PORT}`, {
+      scope,
+      format,
+      serverId: serverParam,
+    });
+    sendHal(res, 200, {
+      ...manifest,
+      _links: {
+        self: { href: `${origin}/api/openai/tools`, method: 'GET' },
+        execute: { href: `${origin}/api/openai/tools/execute`, method: 'POST' },
+        mcpServers: { href: `${origin}/api/mcp/servers`, method: 'GET' },
+        root: { href: `${origin}/api`, method: 'GET' },
+      },
+    });
+  });
+
+  app.post('/api/openai/tools/execute', async (req, res) => {
+    const origin = getOrigin(req);
+    const rawBody = req.body as Record<string, unknown> | undefined;
+    const calls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+
+    if (Array.isArray(rawBody?.tool_calls)) {
+      for (const tc of rawBody.tool_calls as Array<Record<string, unknown>>) {
+        const fn = (tc.function as Record<string, unknown> | undefined) ?? tc;
+        const name = String(fn?.name || '');
+        let args: Record<string, unknown> = {};
+        if (typeof fn?.arguments === 'string' && fn.arguments.trim()) {
+          try { args = JSON.parse(fn.arguments) as Record<string, unknown>; } catch { args = {}; }
+        } else if (fn?.arguments && typeof fn.arguments === 'object') {
+          args = fn.arguments as Record<string, unknown>;
+        }
+        calls.push({ id: String(tc.id || `call_${calls.length + 1}`), name, args });
+      }
+    } else if (typeof rawBody?.name === 'string') {
+      const args = typeof rawBody.arguments === 'string'
+        ? (() => { try { return JSON.parse(rawBody.arguments) as Record<string, unknown>; } catch { return {}; } })()
+        : ((rawBody.arguments as Record<string, unknown>) || {});
+      calls.push({ id: String(rawBody.tool_call_id || 'call_1'), name: rawBody.name, args });
+    } else {
+      sendHal(res, 400, { ok: false, error: 'Provide either { "name", "arguments" } or { "tool_calls": [...] }.' });
+      return;
+    }
+
+    const executeOne = async (name: string, args: Record<string, unknown>): Promise<unknown> => {
+      // 1. Unified MCP tool (serverId__toolName)
+      if (name.includes('__')) {
+        const rpc = await mcpRegistry.handleUnifiedJsonRpc({
+          jsonrpc: '2.0',
+          id: name,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        });
+        if (rpc.error) return { ok: false, error: rpc.error.message };
+        return rpc.result;
+      }
+      // 2. REST API base tools
+      switch (name) {
+        case 'api_discover_root':
+          return restStore.buildRootDocument(origin, middlewareConfig.frontend.prettyBasePath);
+        case 'api_list_rules':
+          return { count: restStore.getRules().length, rules: restStore.getRules() };
+        case 'api_create_rule': {
+          const r = restStore.createRule(String(args.name || ''), String(args.expression || ''));
+          if (r.ok) syncRestToMcp();
+          return r;
+        }
+        case 'api_update_rule': {
+          const r = restStore.updateRule(String(args.name || ''), {
+            name: typeof args.newName === 'string' ? args.newName : undefined,
+            expression: typeof args.expression === 'string' ? args.expression : undefined,
+          });
+          if (r.ok) syncRestToMcp();
+          return r;
+        }
+        case 'api_delete_rule': {
+          const r = restStore.deleteRule(String(args.name || ''));
+          if (r.ok) syncRestToMcp();
+          return r;
+        }
+        case 'api_list_symbols':
+          return { symbols: restStore.getGraph().symbolRegistry ?? [] };
+        case 'api_list_nodes': {
+          const all = restStore.listAddressableNodes(origin, middlewareConfig.frontend.prettyBasePath);
+          const kind = typeof args.kind === 'string' ? args.kind : '';
+          return { nodes: kind ? all.filter((n) => n.kind === kind) : all };
+        }
+        case 'api_mutate_node_member': {
+          const out = restStore.mutateNodeMember(
+            String(args.kind || ''),
+            String(args.nodeId || ''),
+            String(args.member || ''),
+            'update',
+            args.value,
+            origin
+          );
+          if (out.status === 200) syncRestToMcp();
+          return out.body;
+        }
+        case 'api_evaluate_grammar':
+          return restStore.evaluatePayload(
+            typeof args.rule === 'string' ? args.rule : undefined,
+            typeof args.payload === 'string' ? args.payload : undefined
+          );
+        case 'api_get_logic':
+          return {
+            statement: restStore.workspace.logicStatement,
+            labels: restStore.workspace.logicLabels,
+            cauchyConfig: restStore.workspace.cauchyConfig,
+            evaluation: evaluateLogicStatement(restStore.workspace.logicStatement, restStore.workspace.logicLabels),
+          };
+        case 'api_evaluate_logic': {
+          const norm = normalizeLogicEvaluationInput(args, {
+            statement: restStore.workspace.logicStatement,
+            labels: restStore.workspace.logicLabels,
+          });
+          if (!norm.ok) return { ok: false, error: norm.error };
+          return evaluateLogicStatement(norm.input.statement, norm.input.labels);
+        }
+        case 'api_evaluate_cauchy':
+          return evaluateCauchySequence(
+            { ...restStore.workspace.cauchyConfig, enabled: true, ...(args as Partial<CauchySequenceConfig>) },
+            restStore.workspace.logicLabels
+          );
+        case 'api_export_workspace':
+          return restStore.exportWorkspace((String(args.language || 'jsonld')) as ExportLanguage);
+        case 'api_export_logic': {
+          const lang = String(args.language || 'python') as LogicExportTarget;
+          const mode = args.mode === 'hardcoded' ? 'hardcoded' : 'cli';
+          return restStore.exportLogic(lang, mode);
+        }
+        case 'api_evaluate_multiline_logic':
+          return evaluateMultilineBooleanProgram(
+            typeof args.preInput === 'string' ? args.preInput : 'e=true',
+            typeof args.program === 'string' ? args.program : 'a(b,c)=b & c\nd=false\na(e,d)'
+          );
+        case 'api_compile_schema_predicate_tree':
+          return evaluateSchemaPredicateStudio(
+            args.schema === undefined
+              ? DEFAULT_JSON_SCHEMA_SAMPLE
+              : typeof args.schema === 'string'
+                ? args.schema
+                : JSON.stringify(args.schema),
+            args.instance === undefined
+              ? DEFAULT_TEST_INSTANCE_SAMPLE
+              : typeof args.instance === 'string'
+                ? args.instance
+                : JSON.stringify(args.instance)
+          );
+        case 'api_list_modules': {
+          const list = Array.from(currentSession().modules.values());
+          return { count: list.length, modules: list };
+        }
+        case 'api_list_callbacks':
+          return { count: restStore.callbacks.length, callbacks: restStore.callbacks };
+        case 'api_list_histolog':
+          return { index: restStore.getHistologIndex(), generations: restStore.histolog };
+        case 'api_list_workspaces':
+          return { workspaces: Array.from(restStore.workspaces.values()).map((w) => ({ id: w.id, name: w.name, updatedAt: w.updatedAt })) };
+        case 'api_get_middleware_config':
+          return middlewareConfig;
+        case 'api_update_middleware_config': {
+          const merged = mergeMiddlewareConfigPatch(middlewareConfig, args);
+          if (!merged.ok) return merged;
+          middlewareConfig = merged.state;
+          bumpTemplateCache();
+          return { ok: true, config: middlewareConfig };
+        }
+        default:
+          return { ok: false, error: `Unknown OpenAI tool '${name}'.` };
+      }
+    };
+
+    const toolMessages = [];
+    for (const call of calls) {
+      const output = await executeOne(call.name, call.args);
+      toolMessages.push({
+        tool_call_id: call.id,
+        role: 'tool',
+        name: call.name,
+        content: JSON.stringify(output),
+        parsed: output,
+      });
+    }
+
+    sendHal(res, 200, {
+      ok: true,
+      count: toolMessages.length,
+      messages: toolMessages,
+      _links: {
+        self: { href: `${origin}/api/openai/tools/execute`, method: 'POST' },
+        tools: { href: `${origin}/api/openai/tools`, method: 'GET' },
+      },
+    });
+  });
+
+  /* ==========================================================================
+   * 8. MIDDLEWARE MANAGEMENT SUITE (TEMPLATES, SLUGS, FRONT-END, AZURE/AWS)
+   * ======================================================================== */
+
+  app.get('/api/middleware/config', (req, res) => {
+    const origin = getOrigin(req);
+    sendHal(res, 200, {
+      ...middlewareConfig,
+      cacheEpoch: templateCacheEpoch,
+      defaults: {
+        templates: DEFAULT_TEMPLATE_THEMES,
+        fragments: DEFAULT_TEMPLATE_FRAGMENTS,
+        slugRoutes: DEFAULT_SLUG_ROUTES,
+        slugPatterns: DEFAULT_SLUG_PATTERNS,
+      },
+      cloudBundles: {
+        azure: buildAzureDeploymentBundle(middlewareConfig.frontend.azure, origin || `http://localhost:${PORT}`),
+        aws: buildAwsDeploymentBundle(middlewareConfig.frontend.aws, origin || `http://localhost:${PORT}`),
+      },
+      _links: {
+        self: { href: `${origin}/api/middleware/config`, method: 'GET' },
+        slugs: { href: `${origin}/api/middleware/slugs`, method: 'GET' },
+        templates: { href: `${origin}/api/middleware/templates`, method: 'GET' },
+        frontend: { href: `${origin}/api/middleware/frontend`, method: 'GET' },
+        reset: { href: `${origin}/api/middleware/reset`, method: 'POST' },
+      },
+    });
+  });
+
+  const handleMiddlewareUpdate = (req: express.Request, res: express.Response) => {
+    const origin = getOrigin(req);
+    const merged = mergeMiddlewareConfigPatch(middlewareConfig, (req.body || {}) as Record<string, unknown>);
+    if (!merged.ok) {
+      sendHal(res, 400, { ok: false, error: merged.error });
+      return;
+    }
+    middlewareConfig = merged.state;
+    bumpTemplateCache();
+    sendHal(res, 200, {
+      ok: true,
+      cacheEpoch: templateCacheEpoch,
+      config: middlewareConfig,
+      _links: { self: { href: `${origin}/api/middleware/config`, method: 'GET' } },
+    });
+  };
+  app.put('/api/middleware/config', handleMiddlewareUpdate);
+  app.patch('/api/middleware/config', handleMiddlewareUpdate);
+
+  app.get('/api/middleware/slugs', (req, res) => {
+    const origin = getOrigin(req);
+    sendHal(res, 200, {
+      prettyBasePath: middlewareConfig.frontend.prettyBasePath,
+      slugRoutes: middlewareConfig.slugRoutes,
+      slugPatterns: middlewareConfig.slugPatterns,
+      hardcodedDefaults: { slugRoutes: DEFAULT_SLUG_ROUTES, slugPatterns: DEFAULT_SLUG_PATTERNS },
+      _links: { self: { href: `${origin}/api/middleware/slugs`, method: 'GET' }, config: { href: `${origin}/api/middleware/config`, method: 'GET' } },
+    });
+  });
+
+  app.put('/api/middleware/slugs/:slug', (req, res) => {
+    const origin = getOrigin(req);
+    const slug = req.params.slug;
+    if (!isValidSlugName(slug)) {
+      sendHal(res, 400, { ok: false, error: `Invalid slug '${slug}'.` });
+      return;
+    }
+    const merged = mergeMiddlewareConfigPatch(middlewareConfig, {
+      slugRoutes: { [slug]: { ...(req.body || {}), slug } },
+    });
+    if (!merged.ok) {
+      sendHal(res, 400, { ok: false, error: merged.error });
+      return;
+    }
+    middlewareConfig = merged.state;
+    bumpTemplateCache();
+    sendHal(res, 200, {
+      ok: true,
+      slug: middlewareConfig.slugRoutes[slug],
+      _links: { self: { href: `${origin}/api/middleware/slugs/${encodeURIComponent(slug)}`, method: 'GET' } },
+    });
+  });
+
+  app.delete('/api/middleware/slugs/:slug', (req, res) => {
+    const origin = getOrigin(req);
+    const slug = req.params.slug;
+    if (!middlewareConfig.slugRoutes[slug]) {
+      sendHal(res, 404, { ok: false, error: `Slug '${slug}' not found.` });
+      return;
+    }
+    if (DEFAULT_SLUG_ROUTES[slug]) {
+      middlewareConfig.slugRoutes[slug] = { ...DEFAULT_SLUG_ROUTES[slug] };
+    } else {
+      delete middlewareConfig.slugRoutes[slug];
+    }
+    middlewareConfig.version += 1;
+    middlewareConfig.updatedAt = new Date().toISOString();
+    bumpTemplateCache();
+    sendHal(res, 200, {
+      ok: true,
+      slug,
+      restoredDefault: Boolean(DEFAULT_SLUG_ROUTES[slug]),
+      _links: { slugs: { href: `${origin}/api/middleware/slugs`, method: 'GET' } },
+    });
+  });
+
+  app.get('/api/middleware/templates', (req, res) => {
+    const origin = getOrigin(req);
+    sendHal(res, 200, {
+      cacheEpoch: templateCacheEpoch,
+      templates: middlewareConfig.templates,
+      fragments: middlewareConfig.fragments,
+      hardcodedDefaults: { templates: DEFAULT_TEMPLATE_THEMES, fragments: DEFAULT_TEMPLATE_FRAGMENTS },
+      _links: { self: { href: `${origin}/api/middleware/templates`, method: 'GET' } },
+    });
+  });
+
+  app.get('/api/middleware/frontend', (req, res) => {
+    const origin = getOrigin(req);
+    sendHal(res, 200, {
+      frontend: middlewareConfig.frontend,
+      cloudBundles: {
+        azure: buildAzureDeploymentBundle(middlewareConfig.frontend.azure, origin || `http://localhost:${PORT}`),
+        aws: buildAwsDeploymentBundle(middlewareConfig.frontend.aws, origin || `http://localhost:${PORT}`),
+      },
+      _links: { self: { href: `${origin}/api/middleware/frontend`, method: 'GET' } },
+    });
+  });
+
+  app.post('/api/middleware/reset', (req, res) => {
+    const origin = getOrigin(req);
+    const branch = String(req.body?.branch || 'all');
+    const defaults = createDefaultMiddlewareConfig(process.env as Record<string, string | undefined>);
+    if (branch === 'slugs') {
+      middlewareConfig.slugRoutes = defaults.slugRoutes;
+      middlewareConfig.slugPatterns = defaults.slugPatterns;
+    } else if (branch === 'templates') {
+      middlewareConfig.templates = defaults.templates;
+      middlewareConfig.fragments = defaults.fragments;
+    } else if (branch === 'frontend') {
+      middlewareConfig.frontend = defaults.frontend;
+    } else {
+      middlewareConfig = defaults;
+    }
+    middlewareConfig.version += 1;
+    middlewareConfig.updatedAt = new Date().toISOString();
+    bumpTemplateCache();
+    sendHal(res, 200, {
+      ok: true,
+      resetBranch: branch,
+      cacheEpoch: templateCacheEpoch,
+      config: middlewareConfig,
+      _links: { self: { href: `${origin}/api/middleware/config`, method: 'GET' } },
+    });
+  });
+
+  app.get('/api/templates', (req, res) => {
+    const requested = typeof req.query.template === 'string' && req.query.template ? req.query.template : middlewareConfig.frontend.defaultTemplate;
+    if (!isValidTemplateIdentifier(requested) || !middlewareConfig.templates[requested]) {
+      res.status(400).json({ error: 'Unknown HTML template name.' });
+      return;
+    }
+    res.status(200).json({
+      template: requested,
+      templates: Object.keys(middlewareConfig.templates),
+      fragments: Object.keys(middlewareConfig.fragments),
+      cacheEpoch: templateCacheEpoch,
+    });
+  });
+
+  // Hardened /template/:template/:fragment with allowlist validation + ETag 304 for text/plain & text/html
+  const handleTemplateFragmentRoute = (req: express.Request, res: express.Response) => {
+    const templateName = req.params.template;
+    const fragmentName = req.params.fragment;
+    if (!isValidTemplateIdentifier(templateName) || !isValidTemplateIdentifier(fragmentName)) {
+      res.status(404).end();
+      return;
+    }
+    const tpl = middlewareConfig.templates[templateName];
+    const frag = middlewareConfig.fragments[fragmentName];
+    if (!tpl || !frag) {
+      res.status(404).end();
+      return;
+    }
+    res.setHeader('Vary', 'Accept');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    const accept = (req.get('accept') || 'text/html').toLowerCase();
+    const wantsPlain = accept.includes('text/plain') && !accept.includes('text/html');
+    const wantsHtml = accept.includes('text/html') || accept.includes('text/*') || accept.includes('*/*') || accept === '';
+    if (!wantsPlain && !wantsHtml) {
+      res.status(406).setHeader('Cache-Control', 'no-store').end();
+      return;
+    }
+
+    if (wantsPlain) {
+      const etag = computeMiddlewareEtag(['plain', templateCacheEpoch, templateName, fragmentName, frag.markup]);
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.setHeader('ETag', etag);
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      if ((req.get('if-none-match') || '').trim() === etag) {
+        res.status(304).end();
+        return;
+      }
+      res.status(200).send(req.method === 'HEAD' ? '' : frag.markup);
+      return;
+    }
+
+    const rawValues = req.method === 'POST' ? (req.body && typeof req.body === 'object' ? req.body : {}) : req.query;
+    const values: Record<string, string> = {};
+    for (const [k, v] of Object.entries(rawValues as Record<string, unknown>)) {
+      if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+        values[k] = String(v);
+      }
+    }
+    const html = renderFragmentHtmlSafe(frag.markup, values);
+    const etag = computeMiddlewareEtag(['html', templateCacheEpoch, templateName, fragmentName, html]);
+    res.setHeader('ETag', etag);
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', req.method === 'POST' ? 'private, no-store' : 'private, no-cache');
+    if (req.method !== 'POST' && (req.get('if-none-match') || '').trim() === etag) {
+      res.status(304).end();
+      return;
+    }
+    res.status(200).send(req.method === 'HEAD' ? '' : html);
+  };
+  app.all('/template/:template/:fragment', (req, res) => {
+    if (!['GET', 'HEAD', 'POST'].includes(req.method)) {
+      res.setHeader('Allow', 'GET, HEAD, POST');
+      res.status(405).end();
+      return;
+    }
+    handleTemplateFragmentRoute(req, res);
+  });
+
+  // Pretty slug redirects honoring PRETTY_BASE_PATH
+  const basePrefix = PRETTY_BASE_PATH === '/' ? '' : PRETTY_BASE_PATH.slice(0, -1);
+  app.all(`${basePrefix}/nodes/:kind/:nodeId/members/:member`, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(
+      307,
+      `${basePrefix}/api/nodes/${encodeURIComponent(req.params.kind)}/${encodeURIComponent(req.params.nodeId)}/members/${encodeURIComponent(req.params.member)}`
+    );
+  });
+  app.all(`${basePrefix}/nodes/:kind/:nodeId`, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(
+      307,
+      `${basePrefix}/api/nodes/${encodeURIComponent(req.params.kind)}/${encodeURIComponent(req.params.nodeId)}`
+    );
+  });
+  app.all(`${basePrefix}/members/:member`, (req, res) => {
+    const nodeParam = typeof req.query.node === 'string' ? req.query.node : '';
+    const parts = nodeParam.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      res.status(400).json({ error: 'The short member URL requires ?node=kind/nodeId.' });
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(
+      307,
+      `${basePrefix}/api/nodes/${encodeURIComponent(parts[0])}/${encodeURIComponent(parts[1])}/members/${encodeURIComponent(req.params.member)}`
+    );
+  });
+
+  return app;
+}
+
+async function startServer() {
+  const app = createApiApp();
+
   if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
@@ -1170,7 +2145,13 @@ async function startServer() {
   });
 }
 
-startServer().catch((err) => {
-  console.error('Fatal server startup error:', err);
-  process.exit(1);
-});
+const isDirectRun =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isDirectRun) {
+  startServer().catch((err) => {
+    console.error('Fatal server startup error:', err);
+    process.exit(1);
+  });
+}

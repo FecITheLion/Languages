@@ -1,6 +1,6 @@
-/* Only the public app shell and fingerprinted build assets are stored. */
+/* Only the public app shell, fingerprinted build assets, and public text/plain templates are stored. */
 const base = new URL(self.registration.scope);
-const cacheName = `grammar2json-shell-v2:${base.pathname}`;
+const cacheName = `grammar2json-shell-v3:${base.pathname}`;
 const shellUrl = new URL('index.html', base).href;
 
 function cacheable(response, type) {
@@ -13,7 +13,12 @@ function cacheable(response, type) {
 function buildAsset(url) {
   return url.origin === base.origin && !url.search &&
     url.pathname.startsWith(`${base.pathname}assets/`) &&
-    /-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2?|png|svg|webp)$/.test(url.pathname);
+    /-[A-Za-z0-9_-]{8,}\.(?:js|css|woff2?|png|svg|webp|webm)$/.test(url.pathname);
+}
+
+function publicTemplateRoute(url) {
+  const relative = url.pathname.startsWith(base.pathname) ? url.pathname.slice(base.pathname.length) : '';
+  return url.origin === base.origin && !url.search && /^template\/[a-z0-9][a-z0-9_-]*\/[a-z0-9][a-z0-9_-]*$/i.test(relative);
 }
 
 function assetResponse(response) {
@@ -74,6 +79,17 @@ self.addEventListener('fetch', event => {
         return await fetch(request);
       } catch {
         return (await (await caches.open(cacheName)).match(shellUrl)) || Response.error();
+      }
+    })());
+  } else if (publicTemplateRoute(url)) {
+    event.respondWith((async () => {
+      const cache = await caches.open(cacheName);
+      try {
+        const response = await fetch(request);
+        if (cacheable(response, 'text/plain')) await cache.put(request, response.clone());
+        return response;
+      } catch {
+        return (await cache.match(request)) || Response.error();
       }
     })());
   } else if (buildAsset(url)) {

@@ -5020,12 +5020,13 @@ ${commentPrefix} Bound labels summary:${commentSuffix}\n${labelsText
   )
 
   ;; Evaluates logic from a single UTF-8 string slice in linear memory ($ptr, $len)
+  ;; In CLI mode, rejects non-empty dynamic input instead of silently returning a static value.
   (func (export "eval_logic_from_input") (param $ptr i32) (param $len i32) (result i32)
     (local.get $ptr)
     (drop)
-    (local.get $len)
-    (drop)
-    (i32.const ${numericResult})
+${inputMode === 'cli' ? `    (if (local.get $len)
+      (then (unreachable))
+    )\n` : `    (local.get $len)\n    (drop)\n`}    (i32.const ${numericResult})
   )
 
   ;; Returns number of required grammar inputs / bound labels

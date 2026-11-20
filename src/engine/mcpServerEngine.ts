@@ -48,6 +48,12 @@ import {
   type LogicLabelBinding,
 } from './logicLambdaEngine.ts';
 import { logicInputDiagnostic, normalizeLogicEvaluationInput } from './logicInputNormalizer.ts';
+import { evaluateMultilineBooleanProgram } from './multilineBooleanEngine.ts';
+import {
+  DEFAULT_JSON_SCHEMA_SAMPLE,
+  DEFAULT_TEST_INSTANCE_SAMPLE,
+  evaluateSchemaPredicateStudio,
+} from './schemaPredicateEngine.ts';
 import {
   buildPipelineBreadcrumbs,
   PAGE_TO_MCP_SERVER,
@@ -508,7 +514,19 @@ export const MCP_SERVER_DESCRIPTORS: McpServerDescriptor[] = [
             labels: { type: 'array', description: 'Optional array of { name, value, kind } bindings.' },
           },
         },
-        sampleArgs: { statement: '(apply_discount(double)(price) ≥ 80) ∧ ¬is_locked' },
+        sampleArgs: { statement: '(apply_discount(double)(price) ≥ 80) ∧ ¬(is_locked)' },
+      },
+      {
+        name: 'evaluate_multiline_logic',
+        description: 'Evaluate a multiline formal boolean, predicate & lambda block program and build its truth table.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            preInput: { type: 'string', description: 'Valuation Γ key=value literal bindings.' },
+            program: { type: 'string', description: 'Multiline formula blocks and callable definitions.' },
+          },
+        },
+        sampleArgs: { preInput: 'e=true', program: 'a(b,c)=b & c\nd=false\na(e,d)' },
       },
     ],
   },
@@ -552,6 +570,18 @@ export const MCP_SERVER_DESCRIPTORS: McpServerDescriptor[] = [
           },
         },
         sampleArgs: { targets: ['jsonld', 'python', 'rust', 'wasm'] },
+      },
+      {
+        name: 'compile_schema_predicate_tree',
+        description: 'Compile a JSON Schema into Schema EBNF + Predicate-Argument Tree + Logic/Lambda expressions and validate an instance.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            schema: { type: ['string', 'object'], description: 'JSON Schema string or object.' },
+            instance: { type: ['string', 'object'], description: 'JSON test instance string or object.' },
+          },
+        },
+        sampleArgs: {},
       },
     ],
   },
@@ -1953,10 +1983,30 @@ export class McpLazyServerRegistry {
           valueType: evalRes.valueType,
         };
       }
+      if (toolName === 'evaluate_multiline_logic') {
+        const preInput = typeof args.preInput === 'string' ? args.preInput : 'e=true';
+        const program = typeof args.program === 'string' ? args.program : 'a(b,c)=b & c\nd=false\na(e,d)';
+        return evaluateMultilineBooleanProgram(preInput, program);
+      }
     }
 
     // 4. JSON-LD SERVER
     if (serverId === 'jsonld') {
+      if (toolName === 'compile_schema_predicate_tree') {
+        const schemaInput =
+          args.schema === undefined
+            ? DEFAULT_JSON_SCHEMA_SAMPLE
+            : typeof args.schema === 'string'
+              ? args.schema
+              : JSON.stringify(args.schema);
+        const instanceInput =
+          args.instance === undefined
+            ? DEFAULT_TEST_INSTANCE_SAMPLE
+            : typeof args.instance === 'string'
+              ? args.instance
+              : JSON.stringify(args.instance);
+        return evaluateSchemaPredicateStudio(schemaInput, instanceInput);
+      }
       if (toolName === 'compile_grammar_to_jsonld') {
         const compiled = grammarToSchemaJson(
           rules,
@@ -2161,6 +2211,9 @@ export class McpLazyServerRegistry {
 }
 
 export type McpClientExportTarget =
+  | 'foundry'
+  | 'openai'
+  | 'aws_bedrock'
   | 'vscode'
   | 'ollama'
   | 'openclaw'
@@ -2175,9 +2228,37 @@ export interface McpClientExportSpec {
   filename: string;
   mime: string;
   installHint: string;
+  cloudProvider?: 'azure' | 'aws' | 'openai';
 }
 
 export const MCP_CLIENT_EXPORT_TARGETS: McpClientExportSpec[] = [
+  {
+    id: 'foundry',
+    label: 'Microsoft Foundry (Agents & Workflows)',
+    filename: 'microsoft-foundry-mcp-workflow.json',
+    mime: 'application/json',
+    installHint:
+      'Import into Microsoft Foundry Agent Service & Workflows to attach Streamable HTTP MCP tools and JSON-Schema function tools across open (Llama, Mistral, DeepSeek, Phi) or proprietary (GPT-4.1, o4-mini, Claude) models.',
+    cloudProvider: 'azure',
+  },
+  {
+    id: 'openai',
+    label: 'OpenAI Tools & Responses API (Full API Base)',
+    filename: 'openai-tools-manifest.json',
+    mime: 'application/json',
+    installHint:
+      'Use directly with OpenAI Responses API (`tools: [{ type: "mcp", ... }]`), Chat Completions function calling, or `POST /api/openai/tools/execute` across all MCP tools and REST endpoints.',
+    cloudProvider: 'openai',
+  },
+  {
+    id: 'aws_bedrock',
+    label: 'AWS Bedrock / AgentCore MCP (Optional)',
+    filename: 'aws-bedrock-agentcore-mcp.json',
+    mime: 'application/json',
+    installHint:
+      'Optional AWS integration (default disabled). Enable AWS support in Middleware Suite or set ENABLE_AWS_SUPPORT=true to connect with AWS Bedrock Agents & AgentCore MCP Gateway.',
+    cloudProvider: 'aws',
+  },
   {
     id: 'vscode',
     label: 'VS Code (.vscode/mcp.json)',
@@ -2229,6 +2310,335 @@ export const MCP_CLIENT_EXPORT_TARGETS: McpClientExportSpec[] = [
   },
 ];
 
+export interface OpenAiRestApiToolSpec {
+  name: string;
+  description: string;
+  method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  path: string;
+  parameters: Record<string, unknown>;
+}
+
+/** Complete OpenAI tool catalog covering the entire Grammar2JSON Studio REST API base. */
+export const OPENAI_REST_API_TOOLS: OpenAiRestApiToolSpec[] = [
+  {
+    name: 'api_discover_root',
+    description: 'Discover the Grammar2JSON Studio HATEOAS API root and available links.',
+    method: 'GET',
+    path: '/api',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_list_rules',
+    description: 'List all grammar rules, operators, configs, and mutations in the active workspace.',
+    method: 'GET',
+    path: '/api/rules',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_create_rule',
+    description: 'Create a new grammar rule in the active workspace.',
+    method: 'POST',
+    path: '/api/rules',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Grammar rule identifier' },
+        expression: { type: 'string', description: 'Grammar rule expression body' },
+      },
+      required: ['name', 'expression'],
+    },
+  },
+  {
+    name: 'api_update_rule',
+    description: 'Update or rename an existing grammar rule.',
+    method: 'PUT',
+    path: '/api/rules/{name}',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Current rule name' },
+        newName: { type: 'string', description: 'Optional replacement name' },
+        expression: { type: 'string', description: 'Updated expression' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'api_delete_rule',
+    description: 'Delete a grammar rule by name.',
+    method: 'DELETE',
+    path: '/api/rules/{name}',
+    parameters: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Rule name to delete' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'api_list_symbols',
+    description: 'List extended DAG grammar symbols and usage counts.',
+    method: 'GET',
+    path: '/api/symbols',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_list_nodes',
+    description: 'List addressable HATEOAS nodes across rules, symbols, dialect, logic, callbacks, and histolog.',
+    method: 'GET',
+    path: '/api/nodes',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['rule', 'symbol', 'dialect', 'logic', 'callback', 'histolog'] },
+      },
+    },
+  },
+  {
+    name: 'api_mutate_node_member',
+    description: 'Update or reset a mutable member on any addressable HATEOAS node.',
+    method: 'PATCH',
+    path: '/api/nodes/{kind}/{nodeId}/members/{member}',
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string' },
+        nodeId: { type: 'string' },
+        member: { type: 'string' },
+        value: { description: 'New member value' },
+      },
+      required: ['kind', 'nodeId', 'member', 'value'],
+    },
+  },
+  {
+    name: 'api_evaluate_grammar',
+    description: 'Evaluate an input payload against a grammar rule and return the parse trace.',
+    method: 'POST',
+    path: '/api/evaluate',
+    parameters: {
+      type: 'object',
+      properties: {
+        rule: { type: 'string', description: 'Start rule name (defaults to active evalRule)' },
+        payload: { type: 'string', description: 'Payload string to match against the grammar' },
+      },
+    },
+  },
+  {
+    name: 'api_get_logic',
+    description: 'Read active logic statement, labels, evaluation, and Cauchy sequence configuration.',
+    method: 'GET',
+    path: '/api/logic',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_evaluate_logic',
+    description: 'Evaluate a symbolic logic, arithmetic, or lambda calculus expression with optional label bindings.',
+    method: 'POST',
+    path: '/api/logic/evaluate',
+    parameters: {
+      type: 'object',
+      properties: {
+        logic_statement: { type: 'string', description: 'Symbolic logic or lambda expression' },
+        logic_labels: { type: 'string', description: 'Named or positional bindings or JSON object' },
+        input: { type: 'string', description: 'Combined statement or JSON input' },
+      },
+    },
+  },
+  {
+    name: 'api_evaluate_cauchy',
+    description: 'Evaluate a numeric Cauchy recurrence sequence for convergence and limit estimate.',
+    method: 'POST',
+    path: '/api/logic/cauchy',
+    parameters: {
+      type: 'object',
+      properties: {
+        paramStyle: { type: 'string', enum: ['positional', 'directional', 'named'] },
+        seedValues: { type: 'string', description: 'Comma-separated initial seed terms (e.g. "0, 1")' },
+        recurrenceExpr: { type: 'string', description: 'Recurrence expression (e.g. "(left + right) / 2")' },
+        maxIterations: { type: 'number' },
+        epsilon: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'api_export_workspace',
+    description: 'Export the active grammar/schema workspace in any of the 22+ supported programming languages.',
+    method: 'GET',
+    path: '/api/export/{language}',
+    parameters: {
+      type: 'object',
+      properties: {
+        language: { type: 'string', description: 'Target language export ID (e.g. jsonld, python, rust, typescript, php, wat)' },
+      },
+      required: ['language'],
+    },
+  },
+  {
+    name: 'api_export_logic',
+    description: 'Export the active logic & lambda statement as executable code in any supported target language.',
+    method: 'GET',
+    path: '/api/logic/export/{language}',
+    parameters: {
+      type: 'object',
+      properties: {
+        language: { type: 'string', description: 'Logic target language (python, javascript, typescript, rust, ruby, jsonld, etc.)' },
+        mode: { type: 'string', enum: ['cli', 'hardcoded'], description: 'CLI dynamic input mode (default) or hardcoded inputs' },
+      },
+      required: ['language'],
+    },
+  },
+  {
+    name: 'api_evaluate_multiline_logic',
+    description: 'Evaluate a multiline formal boolean & lambda program with per-block truth tables.',
+    method: 'POST',
+    path: '/api/logic/multiline',
+    parameters: {
+      type: 'object',
+      properties: {
+        preInput: { type: 'string', description: 'Valuation Γ key=value bindings' },
+        program: { type: 'string', description: 'Multiline formula blocks and callables' },
+      },
+    },
+  },
+  {
+    name: 'api_compile_schema_predicate_tree',
+    description: 'Compile a JSON Schema into Schema EBNF and Predicate-Argument Tree and validate an instance.',
+    method: 'POST',
+    path: '/api/schema/predicate-tree',
+    parameters: {
+      type: 'object',
+      properties: {
+        schema: { type: ['string', 'object'], description: 'JSON Schema string or object' },
+        instance: { type: ['string', 'object'], description: 'Test JSON instance string or object' },
+      },
+    },
+  },
+  {
+    name: 'api_list_modules',
+    description: 'List persisted Module Workbench drafts and processing pipeline rules.',
+    method: 'GET',
+    path: '/api/modules',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_list_callbacks',
+    description: 'List all saved global lambda callbacks.',
+    method: 'GET',
+    path: '/api/callbacks',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_list_histolog',
+    description: 'List Histolog generations, fingerprints, and diffs.',
+    method: 'GET',
+    path: '/api/histolog',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_list_workspaces',
+    description: 'List saved workspace snapshots.',
+    method: 'GET',
+    path: '/api/workspaces',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_get_middleware_config',
+    description: 'Inspect the Middleware Management Suite configuration (templates, slugs, slug patterns, front-end, optional Azure/AWS/OpenAI settings).',
+    method: 'GET',
+    path: '/api/middleware/config',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'api_update_middleware_config',
+    description: 'Mutate or override template themes, HTML fragments, route slugs, slug patterns, or front-end settings.',
+    method: 'PATCH',
+    path: '/api/middleware/config',
+    parameters: {
+      type: 'object',
+      properties: {
+        templates: { type: 'object' },
+        fragments: { type: 'object' },
+        slugRoutes: { type: 'object' },
+        slugPatterns: { type: 'object' },
+        frontend: { type: 'object' },
+      },
+    },
+  },
+];
+
+export function generateOpenAiApiToolsManifest(
+  baseUrl: string,
+  options?: {
+    scope?: 'all' | 'mcp' | 'api';
+    format?: 'responses' | 'chat_completions';
+    serverId?: McpServerId;
+  }
+) {
+  const origin = baseUrl.replace(/\/+$/, '');
+  const scope = options?.scope ?? 'all';
+  const format = options?.format ?? 'responses';
+  const targets = options?.serverId
+    ? MCP_SERVER_DESCRIPTORS.filter((d) => d.id === options.serverId)
+    : MCP_SERVER_DESCRIPTORS;
+
+  const mcpTools = targets.flatMap((t) =>
+    t.tools.map((tool) => ({
+      serverId: t.id,
+      name: `${t.id}__${tool.name}`,
+      description: `[MCP:${t.id}] ${tool.description}`,
+      parameters: tool.inputSchema,
+    }))
+  );
+
+  const functionTools: Array<Record<string, unknown>> = [];
+  if (scope === 'all' || scope === 'mcp') {
+    for (const t of mcpTools) {
+      functionTools.push(
+        format === 'responses'
+          ? { type: 'function', name: t.name, description: t.description, parameters: t.parameters, strict: false }
+          : { type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters, strict: false } }
+      );
+    }
+  }
+  if (scope === 'all' || scope === 'api') {
+    for (const apiTool of OPENAI_REST_API_TOOLS) {
+      functionTools.push(
+        format === 'responses'
+          ? { type: 'function', name: apiTool.name, description: apiTool.description, parameters: apiTool.parameters, strict: false }
+          : { type: 'function', function: { name: apiTool.name, description: apiTool.description, parameters: apiTool.parameters, strict: false } }
+      );
+    }
+  }
+
+  const responsesApiMcpTools = targets.map((t) => ({
+    type: 'mcp',
+    server_label: `grammar2json_${t.id}`,
+    server_url: `${origin}/api/mcp/${t.id}`,
+    require_approval: 'never',
+    allowed_tools: t.tools.map((tool) => tool.name),
+  }));
+
+  return {
+    schemaVersion: 'openai.tools/v1',
+    format,
+    scope,
+    origin,
+    executionEndpoint: `${origin}/api/openai/tools/execute`,
+    unifiedMcpUrl: `${origin}/api/mcp`,
+    recommendedModels: {
+      proprietary: ['gpt-4.1', 'o4-mini', 'gpt-4o'],
+      openCompatible: ['meta-llama/Llama-3.3-70B-Instruct', 'deepseek-ai/DeepSeek-R1', 'mistralai/Mistral-Large'],
+    },
+    responsesApiMcpTools,
+    tools: functionTools,
+    counts: {
+      mcpServers: targets.length,
+      mcpTools: scope === 'api' ? 0 : mcpTools.length,
+      restApiTools: scope === 'mcp' ? 0 : OPENAI_REST_API_TOOLS.length,
+      totalFunctionTools: functionTools.length,
+    },
+  };
+}
+
 export function generateMcpExportForClient(
   client: McpClientExportTarget,
   baseUrl: string,
@@ -2239,6 +2649,136 @@ export function generateMcpExportForClient(
     ? MCP_SERVER_DESCRIPTORS.filter((d) => d.id === serverId)
     : MCP_SERVER_DESCRIPTORS;
   const spec = MCP_CLIENT_EXPORT_TARGETS.find((c) => c.id === client) || MCP_CLIENT_EXPORT_TARGETS[0];
+
+  if (client === 'foundry') {
+    const mcpConnections = targets.map((t) => ({
+      type: 'mcp',
+      server_label: `grammar2json_${t.id}`,
+      server_url: `${origin}/api/mcp/${t.id}`,
+      transport: 'streamable-http',
+      protocol_version: '2025-03-26',
+      require_approval: 'never',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      allowed_tools: t.tools.map((tool) => tool.name),
+    }));
+    const openAiManifest = generateOpenAiApiToolsManifest(origin, {
+      scope: 'all',
+      format: 'chat_completions',
+      serverId,
+    });
+    const foundryBundle = {
+      schemaVersion: 'microsoft.foundry.agent-workflow/v1',
+      platform: 'Microsoft Foundry',
+      purpose: 'Build AI agents and workflows in Microsoft Foundry, experiment with open or proprietary models.',
+      agent: {
+        name: serverId ? `grammar2json-${serverId}-agent` : 'grammar2json-studio-agent',
+        instructions:
+          'You are a Grammar2JSON Studio compiler, formal logic, and API orchestration agent. Use the attached Microsoft Foundry MCP servers and function tools to inspect grammars, evaluate symbolic logic and Cauchy sequences, manage slugs/templates, and generate multi-language code.',
+        modelExperimentation: {
+          defaultDeployment: '${AZURE_FOUNDRY_MODEL_DEPLOYMENT:-gpt-4.1}',
+          proprietaryModels: [
+            { id: 'gpt-4.1', provider: 'Azure OpenAI', capabilities: ['mcp', 'function_calling', 'structured_outputs'] },
+            { id: 'o4-mini', provider: 'Azure OpenAI', capabilities: ['mcp', 'reasoning', 'function_calling'] },
+            { id: 'claude-3-7-sonnet', provider: 'Foundry Partner Models', capabilities: ['mcp', 'function_calling'] },
+          ],
+          openModels: [
+            { id: 'Llama-3.3-70B-Instruct', provider: 'Foundry Models (Open)', capabilities: ['function_calling', 'openai_compatible'] },
+            { id: 'Mistral-Large-2411', provider: 'Foundry Models (Open)', capabilities: ['function_calling', 'openai_compatible'] },
+            { id: 'DeepSeek-R1', provider: 'Foundry Models (Open)', capabilities: ['reasoning', 'function_calling'] },
+            { id: 'Phi-4', provider: 'Microsoft Open Weights', capabilities: ['function_calling', 'lightweight'] },
+          ],
+        },
+        tools: [...mcpConnections, ...openAiManifest.tools],
+      },
+      mcpServers: Object.fromEntries(
+        targets.map((t) => [
+          `grammar2json-${t.id}`,
+          {
+            type: 'streamable-http',
+            url: `${origin}/api/mcp/${t.id}`,
+            unifiedUrl: `${origin}/api/mcp`,
+            activation: 'build-on-call',
+            tools: t.tools.map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema,
+            })),
+          },
+        ])
+      ),
+      workflow: {
+        name: 'grammar2json-foundry-pipeline',
+        trigger: { type: 'http_or_chat', hateoasRoot: `${origin}/api`, openAiExecute: `${origin}/api/openai/tools/execute` },
+        steps: [
+          { id: 'discover', action: 'mcp.tools/list', server: `grammar2json_${targets[0]?.id ?? 'pipeline'}` },
+          { id: 'analyze_grammar', action: 'tool.call', tool: 'grammar__analyze_grammar_dag' },
+          { id: 'evaluate_logic', action: 'tool.call', tool: 'logic_calc__evaluate_logic_lambda' },
+          { id: 'export_artifacts', action: 'tool.call', tool: 'api_export_workspace' },
+        ],
+      },
+      azureConfiguration: {
+        optionalCloudFlag: 'ENABLE_AZURE_SUPPORT',
+        projectEndpointEnv: 'AZURE_FOUNDRY_PROJECT_ENDPOINT',
+        apiVersion: '2025-05-01-preview',
+      },
+    };
+    return {
+      content: JSON.stringify(foundryBundle, null, 2),
+      filename: spec.filename,
+      mime: spec.mime,
+      installHint: spec.installHint,
+    };
+  }
+
+  if (client === 'openai') {
+    const manifest = generateOpenAiApiToolsManifest(origin, {
+      scope: 'all',
+      format: 'responses',
+      serverId,
+    });
+    return {
+      content: JSON.stringify(manifest, null, 2),
+      filename: spec.filename,
+      mime: spec.mime,
+      installHint: spec.installHint,
+    };
+  }
+
+  if (client === 'aws_bedrock') {
+    const bedrockBundle = {
+      schemaVersion: 'aws.bedrock.agentcore-mcp/v1',
+      optionalSupportFlag: 'ENABLE_AWS_SUPPORT',
+      defaultEnabled: false,
+      region: '${AWS_REGION:-us-east-1}',
+      models: {
+        proprietary: 'anthropic.claude-3-7-sonnet-20250219-v1:0',
+        open: 'meta.llama3-3-70b-instruct-v1:0',
+      },
+      mcpTargets: targets.map((t) => ({
+        targetName: `grammar2json-${t.id}`,
+        transport: 'streamable-http',
+        endpointUrl: `${origin}/api/mcp/${t.id}`,
+        toolSchema: t.tools.map((tool) => ({
+          toolSpec: {
+            name: `${t.id}__${tool.name}`,
+            description: tool.description,
+            inputSchema: { json: tool.inputSchema },
+          },
+        })),
+      })),
+      apiBaseRoot: `${origin}/api`,
+      openAiToolBridge: `${origin}/api/openai/tools/execute`,
+    };
+    return {
+      content: JSON.stringify(bedrockBundle, null, 2),
+      filename: spec.filename,
+      mime: spec.mime,
+      installHint: spec.installHint,
+    };
+  }
 
   if (client === 'vscode') {
     const servers: Record<string, Record<string, unknown>> = {};

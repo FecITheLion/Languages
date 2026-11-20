@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, Compass, Film, ImageIcon, Pause, Play, X } from 'lucide-react';
 import { getGuide, type GuideEntry } from '../data/workbenchGuides';
+import { resolveAssetUrl } from '../engine/runtimePaths';
 
 const btn =
   'inline-flex min-h-[32px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800';
@@ -103,7 +104,19 @@ export function LiveTour({ guide, onClose, modal }: { guide: GuideEntry; onClose
 }
 
 function StoryboardImage({ index, total, title, caption, outputs, src }: { index: number; total: number; title: string; caption: string; outputs: string[]; src?: string }) {
-  if (src) return <img src={src} alt={`${title}: ${caption}`} className="h-full w-full rounded-lg object-cover" />;
+  const [imgError, setImgError] = useState(false);
+  if (src && !imgError) {
+    return (
+      <img
+        src={resolveAssetUrl(src)}
+        alt={`${title}: ${caption}`}
+        loading="lazy"
+        decoding="async"
+        onError={() => setImgError(true)}
+        className="h-full w-full rounded-lg object-cover"
+      />
+    );
+  }
   return (
     <svg viewBox="0 0 480 270" role="img" aria-label={`Step ${index + 1} of ${total}: ${title}. ${caption}`} className="h-full w-full rounded-lg">
       <defs>
@@ -154,7 +167,7 @@ export function HowToPanel({ guide, mode, onClose }: { guide: GuideEntry; mode: 
         </div>
         <div className="aspect-video overflow-hidden rounded-lg bg-slate-900">
           {realVideo ? (
-            <video src={guide.videoSrc} controls autoPlay muted playsInline className="h-full w-full" onError={() => setVideoFailed(true)} />
+            <video src={guide.videoSrc} preload="none" controls autoPlay muted playsInline className="h-full w-full" onError={() => setVideoFailed(true)} />
           ) : (
             <StoryboardImage index={i} total={total} title={f.title} caption={f.caption} outputs={guide.outputs} src={f.imageSrc} />
           )}
@@ -193,37 +206,52 @@ export function GuideBanner({ guideId, variant = 'compact', modal = false }: { g
   const guide = getGuide(guideId);
   const [tour, setTour] = useState(false);
   const [howto, setHowto] = useState<null | 'video' | 'images'>(null);
+  const [collapsed, setCollapsed] = useState(false);
   const hero = variant === 'hero';
 
   return (
     <section
       data-tour="pitch"
       aria-label={`${guide.title} elevator pitch`}
-      className={`rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white dark:border-blue-900/60 dark:from-blue-950/40 dark:to-slate-900 ${hero ? 'p-5 sm:p-6' : 'p-3 sm:p-4'}`}
+      className={`rounded-xl border border-blue-200 bg-gradient-to-br from-blue-50 to-white dark:border-blue-900/60 dark:from-blue-950/40 dark:to-slate-900 ${hero ? 'p-4 sm:p-5' : 'p-3 sm:p-4'}`}
     >
-      <h2 className={`${hero ? 'text-xl sm:text-2xl' : 'text-sm sm:text-base'} font-bold tracking-tight text-slate-900 dark:text-slate-100`}>
-        {guide.headline}
-      </h2>
-      <p className={`mt-1.5 max-w-3xl leading-relaxed text-slate-600 dark:text-slate-300 ${hero ? 'text-sm' : 'text-xs'}`}>{guide.pitch}</p>
-      <ul className="mt-2 flex flex-wrap gap-1.5">
-        {guide.proof.map((p) => (
-          <li key={p} className="rounded-full border border-blue-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-blue-700 dark:border-blue-800 dark:bg-slate-900 dark:text-blue-300">
-            {p}
-          </li>
-        ))}
-      </ul>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button type="button" className={btn} onClick={() => setTour(true)}>
-          <Compass className="h-3.5 w-3.5" /> Live tour
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <h2 className={`${hero ? 'text-lg sm:text-xl' : 'text-sm sm:text-base'} font-bold tracking-tight text-slate-900 dark:text-slate-100`}>
+          {guide.headline}
+        </h2>
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          aria-expanded={!collapsed}
+          className="rounded-md border border-blue-200 bg-white px-2 py-0.5 text-[11px] font-medium text-blue-700 hover:bg-blue-50 dark:border-blue-800 dark:bg-slate-900 dark:text-blue-300"
+        >
+          {collapsed ? 'Expand guide' : 'Minimize'}
         </button>
-        <button type="button" className={btn} onClick={() => setHowto('video')}>
-          <Film className="h-3.5 w-3.5" /> Video how-to
-        </button>
-        <button type="button" className={btn} onClick={() => setHowto('images')}>
-          <ImageIcon className="h-3.5 w-3.5" /> Image how-to
-        </button>
-        <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">→ {guide.outputs.join(', ')}</span>
       </div>
+      {!collapsed && (
+        <>
+          <p className={`mt-1.5 max-w-3xl leading-relaxed text-slate-600 dark:text-slate-300 ${hero ? 'text-sm' : 'text-xs'}`}>{guide.pitch}</p>
+          <ul className="mt-2 flex flex-wrap gap-1.5">
+            {guide.proof.map((p) => (
+              <li key={p} className="rounded-full border border-blue-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-blue-700 dark:border-blue-800 dark:bg-slate-900 dark:text-blue-300">
+                {p}
+              </li>
+            ))}
+          </ul>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button type="button" className={btn} onClick={() => setTour(true)}>
+              <Compass className="h-3.5 w-3.5" /> Live tour
+            </button>
+            <button type="button" className={btn} onClick={() => setHowto('video')}>
+              <Film className="h-3.5 w-3.5" /> Video how-to
+            </button>
+            <button type="button" className={btn} onClick={() => setHowto('images')}>
+              <ImageIcon className="h-3.5 w-3.5" /> Image how-to
+            </button>
+            <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">→ {guide.outputs.join(', ')}</span>
+          </div>
+        </>
+      )}
       {tour && <LiveTour guide={guide} modal={modal} onClose={() => setTour(false)} />}
       {howto && <HowToPanel guide={guide} mode={howto} onClose={() => setHowto(null)} />}
     </section>

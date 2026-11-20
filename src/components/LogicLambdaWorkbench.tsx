@@ -58,6 +58,7 @@ import type { StudioLintIssue } from '../engine/htmlOutputFormatter';
 import { DocTooltip } from './DocTooltip';
 import { HtmlCodeOutput } from './HtmlCodeOutput';
 import { AutocompleteField } from './AutocompleteField';
+import { MultilineBooleanCalculator } from './MultilineBooleanCalculator';
 import type { DialectConfig, GrammarRule, MutationPolicy, PrimaryLanguage } from '../types/studio';
 
 interface LogicLambdaWorkbenchProps {
@@ -386,6 +387,7 @@ export function LogicLambdaWorkbench({
     onLogicFalse: '',
   });
   const [cauchyConfig, setCauchyConfig] = useState<CauchySequenceConfig>(DEFAULT_CAUCHY_CONFIG);
+  const [calculatorMode, setCalculatorMode] = useState<'lambda' | 'multiline'>('lambda');
   const [activeTab, setActiveTab] = useState<'export' | 'trace' | 'truth'>('export');
   const [exportTarget, setExportTarget] = useState<LogicExportTarget>(() =>
     mapPrimaryToLogicTarget(primaryLanguage)
@@ -860,19 +862,59 @@ export function LogicLambdaWorkbench({
               Build and evaluate propositional logic statements, labeled arithmetic, and higher-order λ callbacks, then export or parse across Python, JSON-LD, Rust, WABT, and WASM.
             </p>
           </div>
-          <select
-            aria-label="Load logic calculator preset"
-            defaultValue={LOGIC_CALCULATOR_PRESETS[0].id}
-            onChange={(e) => handleLoadPreset(e.target.value)}
-            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-          >
-            {LOGIC_CALCULATOR_PRESETS.map((p) => (
-              <option key={p.id} value={p.id}>
-                Preset: {p.label}
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-wrap items-center gap-2">
+            <div
+              role="group"
+              aria-label="Logic calculator mode"
+              className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs dark:border-slate-700 dark:bg-slate-950"
+            >
+              <button
+                type="button"
+                onClick={() => setCalculatorMode('lambda')}
+                className={`rounded-md px-2.5 py-1 font-medium ${
+                  calculatorMode === 'lambda'
+                    ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Symbolic &amp; λ Calc
+              </button>
+              <button
+                type="button"
+                onClick={() => setCalculatorMode('multiline')}
+                className={`rounded-md px-2.5 py-1 font-medium ${
+                  calculatorMode === 'multiline'
+                    ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                    : 'text-slate-600 dark:text-slate-400'
+                }`}
+              >
+                Formal Logic, Arithmetic &amp; λ Workbench
+              </button>
+            </div>
+            <select
+              aria-label="Load logic calculator preset"
+              defaultValue={LOGIC_CALCULATOR_PRESETS[0].id}
+              onChange={(e) => handleLoadPreset(e.target.value)}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            >
+              {LOGIC_CALCULATOR_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  Preset: {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+
+        {calculatorMode === 'multiline' && (
+          <MultilineBooleanCalculator
+            onSubmitArtifacts={onSubmitArtifacts}
+            onDownloadFile={onExportTextFile}
+            onNotify={onNotify}
+          />
+        )}
+
+        <div className={calculatorMode === 'multiline' ? 'hidden' : 'space-y-4'}>
 
         {/* Statement Input + Built-in Statement History */}
         <div className="space-y-2">
@@ -1887,6 +1929,7 @@ export function LogicLambdaWorkbench({
                 ))}
               </div>
             )}
+          </div>
           </div>
         </div>
       </div>

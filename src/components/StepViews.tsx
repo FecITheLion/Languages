@@ -29,6 +29,7 @@ import {
   executeWasmExport,
   GRAMMAR_SYMBOL_SPECS,
   resolveGrammarSymbols,
+  type ResolvedGrammarSymbols,
 } from '../engine/bidirectionalEngine';
 import type { GlobalCallbackDef } from '../engine/globalCallbacksEngine';
 import type { LogicLabelBinding } from '../engine/logicLambdaEngine';
@@ -40,6 +41,7 @@ import { LogicLambdaWorkbench } from './LogicLambdaWorkbench';
 import { McpServersWorkbench, type PipelineMcpUiEffect } from './McpServersWorkbench';
 import { RuleDependencyGraph } from './RuleDependencyGraph';
 import { RulePropertiesWorkbench } from './RulePropertiesWorkbench';
+import { SchemaPredicateWorkbench } from './SchemaPredicateWorkbench';
 import type {
   DialectConfig,
   DialectPresetId,
@@ -68,6 +70,7 @@ export interface StepViewsProps {
   activePage: WorkflowSlug;
   layoutStructure?: ModalStructure;
   dialect: DialectConfig;
+  lastKnownDialectSymbols?: ResolvedGrammarSymbols;
   schemaConfig: SchemaConfig;
   mutationPolicy: MutationPolicy;
   rules: GrammarRule[];
@@ -183,6 +186,7 @@ export interface StepViewsProps {
   autocompleteSuggestions?: AutocompleteSuggestion[];
   lintIssues?: StudioLintIssue[];
   onRippleModuleExport?: (exp: ReferencedModuleExport, moduleName?: string) => void;
+  onApplyGrammarText?: (grammar: string) => void;
   canUndo: boolean;
   onUndo: () => void;
 }
@@ -236,6 +240,7 @@ export function StepViews(props: StepViewsProps) {
   const wasmInputRef = useRef<HTMLInputElement>(null);
 
   const [dialectInspectorTab, setDialectInspectorTab] = useState<'rules' | 'graph'>('graph');
+  const [schemaStepTab, setSchemaStepTab] = useState<'jsonld' | 'predicate'>('jsonld');
   const [pyInspectorTab, setPyInspectorTab] = useState<'dump' | 'json'>('dump');
   const [rustInspectorTab, setRustInspectorTab] = useState<'dump' | 'json'>('dump');
   const [wasmInspectorTab, setWasmInspectorTab] = useState<'hex' | 'ast' | 'run'>('hex');
@@ -565,7 +570,7 @@ export function StepViews(props: StepViewsProps) {
                   <DocTooltip docKey="extendedDagSymbols" />
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Configure <code className="font-mono">+</code>, <code className="font-mono">*</code>, <code className="font-mono">?</code>, <code className="font-mono">{'{}'}</code>, <code className="font-mono">()</code>, <code className="font-mono">[]</code>, lookahead/lookbehind, and more. Editing an operator live-rewrites prior occurrences in Active Grammar Rules; clearing disables it.
+                  Configure <code className="font-mono">+</code>, <code className="font-mono">*</code>, <code className="font-mono">?</code>, <code className="font-mono">{'{}'}</code>, <code className="font-mono">()</code>, <code className="font-mono">[]</code>, lookahead/lookbehind, and more. Editing an operator live-rewrites prior occurrences in Active Grammar Rules; clearing or toggling off disables it and remembers its last known symbol for restore or live rewrite when re-enabled.
                 </div>
               </div>
               <button
@@ -582,29 +587,45 @@ export function StepViews(props: StepViewsProps) {
                 return GRAMMAR_SYMBOL_SPECS.map((spec) => {
                   const val = resolved[spec.key];
                   const isEnabled = val.length > 0;
+                  const savedSym = props.lastKnownDialectSymbols?.[spec.key] || spec.defaultValue;
                   return (
                     <div key={spec.key} className="space-y-1">
-                      <label
-                        htmlFor={`sym-${spec.key}`}
-                        className="flex items-center justify-between gap-1 text-[11px] font-medium text-slate-600 dark:text-slate-400"
-                      >
-                        <span className="truncate">{spec.label}</span>
-                        <span
-                          className={`shrink-0 font-mono text-[10px] ${
+                      <div className="flex items-center justify-between gap-1 text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                        <label htmlFor={`sym-${spec.key}`} className="truncate">
+                          {spec.label}
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            props.onDialectChange({
+                              symbols: {
+                                ...resolved,
+                                [spec.key]: isEnabled ? '' : savedSym,
+                              },
+                            })
+                          }
+                          title={
                             isEnabled
-                              ? 'text-emerald-600 dark:text-emerald-400'
-                              : 'text-amber-600 dark:text-amber-400'
+                              ? `Disable ${spec.label} (saves "${val}")`
+                              : `Re-enable ${spec.label} using last known symbol "${savedSym}"`
+                          }
+                          className={`shrink-0 rounded px-1 py-0.5 font-mono text-[10px] transition-colors ${
+                            isEnabled
+                              ? 'text-emerald-700 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/50'
+                              : 'text-amber-700 hover:bg-amber-50 dark:text-amber-400 dark:hover:bg-amber-950/50'
                           }`}
                         >
-                          <span className="hidden sm:inline">{isEnabled ? 'Enabled' : 'Disabled'}</span>
+                          <span className="hidden sm:inline">
+                            {isEnabled ? 'Enabled' : `Disabled (${savedSym})`}
+                          </span>
                           <span className="sm:hidden">{isEnabled ? 'on' : 'off'}</span>
-                        </span>
-                      </label>
+                        </button>
+                      </div>
                       <input
                         id={`sym-${spec.key}`}
                         type="text"
                         value={val}
-                        placeholder="Disabled"
+                        placeholder={`Disabled (saved: ${savedSym})`}
                         onChange={(e) =>
                           props.onDialectChange({
                             symbols: {
@@ -870,10 +891,54 @@ export function StepViews(props: StepViewsProps) {
   }
 
   /* --------------------------------------------------------------------------
-   * STEP 4: SCHEMA.ORG JSON-LD & MUTATION POLICY DECLARATION
+   * STEP 4: SCHEMA.ORG JSON-LD & MUTATION POLICY + EBNF PREDICATE TREE STUDIO
    * ------------------------------------------------------------------------ */
   if (activePage === 'schema') {
     return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5 dark:border-slate-800">
+          <span className="text-xs font-medium text-slate-600 dark:text-slate-400">
+            Step 4 Mode
+          </span>
+          <div
+            role="group"
+            aria-label="Schema workbench mode"
+            className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs dark:border-slate-700 dark:bg-slate-950"
+          >
+            <button
+              type="button"
+              onClick={() => setSchemaStepTab('jsonld')}
+              className={`rounded-md px-2.5 py-1 font-medium ${
+                schemaStepTab === 'jsonld'
+                  ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              Schema.org JSON-LD &amp; Policy
+            </button>
+            <button
+              type="button"
+              onClick={() => setSchemaStepTab('predicate')}
+              className={`rounded-md px-2.5 py-1 font-medium ${
+                schemaStepTab === 'predicate'
+                  ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                  : 'text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              JSON Schema EBNF &amp; Predicate Tree Studio
+            </button>
+          </div>
+        </div>
+
+        {schemaStepTab === 'predicate' ? (
+          <SchemaPredicateWorkbench
+            studioJsonText={props.jsonText}
+            onSyncEbnfToGrammar={props.onApplyGrammarText}
+            onSubmitArtifacts={props.onSubmitArtifacts}
+            onDownloadFile={props.onExportTextFile}
+            onNotify={props.onNotify}
+          />
+        ) : (
       <div className={gridClass}>
         <div className={`${spans.primary} space-y-4`}>
           <div>
@@ -1028,6 +1093,8 @@ export function StepViews(props: StepViewsProps) {
             {schemaEnvelopePreview}
           </pre>
         </div>
+      </div>
+        )}
       </div>
     );
   }

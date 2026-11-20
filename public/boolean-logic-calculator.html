@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Multiline Boolean Logic Drag & Drop Calculator — Single HTML</title>
+<style>
+  :root { --bg: #0f172a; --panel: #1e293b; --card: #0b1220; --border: #334155; --text: #e2e8f0; --muted: #94a3b8; --blue: #3b82f6; --green: #10b981; --amber: #f59e0b; --purple: #a855f7; --red: #ef4444; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: var(--bg); color: var(--text); padding: 16px; line-height: 1.45; }
+  h1, h2, h3 { margin: 0; }
+  .wrap { max-width: 1360px; margin: 0 auto; display: grid; gap: 14px; }
+  .header { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; }
+  .grid { display: grid; gap: 14px; grid-template-columns: 1.15fr 1fr; }
+  @media (max-width: 960px) { .grid { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  .lbl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 700; color: #f8fafc; }
+  .tip { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 999px; background: #1d4ed8; color: #fff; font-size: 11px; cursor: help; border: none; position: relative; }
+  .std { font-size: 11px; color: var(--muted); font-weight: 400; }
+  textarea { width: 100%; background: var(--card); color: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; resize: vertical; }
+  textarea:focus { outline: 2px solid var(--blue); border-color: var(--blue); }
+  textarea.dragover { border-color: var(--amber); box-shadow: 0 0 0 2px rgba(245,158,11,0.35); }
+  .code-lines { display: flex; flex-direction: column; gap: 4px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .line-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 5px 8px; border-radius: 6px; border: 1px solid transparent; cursor: pointer; transition: background 0.12s, border-color 0.12s; }
+  .line-row:hover, .line-row.active { background: rgba(59,130,246,0.18); border-color: var(--blue); }
+  .line-row.ptr-target { background: rgba(245,158,11,0.18); border-color: var(--amber); }
+  .badge { font-size: 10px; padding: 2px 6px; border-radius: 999px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+  .b-def { background: rgba(168,85,247,0.2); color: #d8b4fe; }
+  .b-assign { background: rgba(245,158,11,0.2); color: #fcd34d; }
+  .b-expr { background: rgba(16,185,129,0.2); color: #6ee7b7; }
+  .b-err { background: rgba(239,68,68,0.2); color: #fca5a5; }
+  .tok-true { color: #34d399; font-weight: 700; }
+  .tok-false { color: #fbbf24; font-weight: 700; }
+  .tok-ptr { color: #fbbf24; background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.45); border-radius: 4px; padding: 0 4px; }
+  .tok-call { color: #93c5fd; font-weight: 600; }
+  .tok-def { color: #d8b4fe; font-style: italic; }
+  .post-box { background: linear-gradient(135deg, rgba(16,185,129,0.12), rgba(59,130,246,0.12)); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; justify-content: space-between; align-items: center; }
+  .post-val { font-family: ui-monospace, monospace; font-size: 20px; font-weight: 800; }
+  .cats { display: flex; flex-direction: column; gap: 8px; }
+  details.cat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+  details.cat summary { cursor: pointer; font-size: 12px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; }
+  .sym-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .sym-btn { display: inline-flex; align-items: center; gap: 5px; background: var(--panel); color: #f8fafc; border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font-size: 12px; cursor: grab; }
+  .sym-btn:hover { border-color: var(--blue); background: #1e3a8a; }
+  table { width: 100%; border-collapse: collapse; font-family: ui-monospace, monospace; font-size: 12px; }
+  th, td { border: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+  th { background: #172554; color: #dbeafe; }
+  tr.active-row { background: rgba(16,185,129,0.18); }
+  .muted { color: var(--muted); font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div>
+      <h1>Multiline Boolean Logic Drag &amp; Drop Calculator</h1>
+      <div class="std">Single-HTML Standalone Edition · Live Truth Table · SSA Pointer Output · Multiline Block Highlighting · Formal &amp; Informal Logic</div>
+    </div>
+    <button id="resetBtn" type="button" style="background:#2563eb;color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer;">Load Reference Example</button>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="lbl-row">
+        <span id="lbl-preInput"></span>
+        <button class="tip" id="tip-preInput" type="button">?</button>
+      </div>
+      <textarea id="preInput" rows="2" spellcheck="false">e=true</textarea>
+      <div id="preErrors" class="muted"></div>
+
+      <div class="lbl-row">
+        <span id="lbl-programInput"></span>
+        <button class="tip" id="tip-programInput" type="button">?</button>
+      </div>
+      <textarea id="programInput" rows="6" spellcheck="false">a(b,c)=b &amp; c
+d=false
+a(e,d)</textarea>
+      <div class="lbl-row"><span class="std">Synchronized Source Block Map (hover/select output to highlight multiline blocks)</span></div>
+      <div id="sourceBlocks" class="code-lines"></div>
+    </div>
+
+    <div class="panel">
+      <div class="lbl-row">
+        <span id="lbl-pointerOutput"></span>
+        <button class="tip" id="tip-pointerOutput" type="button">?</button>
+      </div>
+      <div id="pointerOut" class="code-lines"></div>
+
+      <div class="lbl-row">
+        <span id="lbl-alignedOutput"></span>
+        <button class="tip" id="tip-alignedOutput" type="button">?</button>
+      </div>
+      <div id="alignedOut" class="code-lines"></div>
+
+      <div class="lbl-row">
+        <span id="lbl-postOutput"></span>
+        <button class="tip" id="tip-postOutput" type="button">?</button>
+      </div>
+      <div id="postBox" class="post-box"></div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <div class="lbl-row">
+        <span id="lbl-symbolPalette"></span>
+        <button class="tip" id="tip-symbolPalette" type="button">?</button>
+      </div>
+      <div class="std">Drag any symbol into the Multiline Program Buffer or click to insert at cursor. Hover any symbol for code point, required text syntax &amp; output effect.</div>
+      <div id="categories" class="cats"></div>
+    </div>
+
+    <div class="panel">
+      <div class="lbl-row">
+        <span id="lbl-truthTable"></span>
+        <button class="tip" id="tip-truthTable" type="button">?</button>
+      </div>
+      <div id="truthTables" style="display:flex;flex-direction:column;gap:12px;"></div>
+    </div>
+  </div>
+</div>
+<script>
+const CATEGORIES = [{"id":"classical","title":"1. Classical Propositional & Boolean Algebra","tradition":"formal","description":"Two-valued truth-functional connectives (ISO/IEC 80000-2 & IEEE Std 91).","items":[{"id":"not","unicode":"¬","codePoint":"U+00AC","name":"Logical Negation (NOT)","textRepresentation":"¬x  (ASCII text: !x, ~x, not x)","outputEffect":"Inverts the operand truth value: ¬true → false, ¬false → true.","insert":"¬","arity":"unary"},{"id":"and","unicode":"∧","codePoint":"U+2227","name":"Conjunction (AND)","textRepresentation":"a ∧ b  (ASCII text: a & b, a && b, a and b, a /\\ b)","outputEffect":"Outputs true only if BOTH operands evaluate to true; otherwise false.","insert":" ∧ ","arity":"binary"},{"id":"or","unicode":"∨","codePoint":"U+2228","name":"Disjunction (Inclusive OR)","textRepresentation":"a ∨ b  (ASCII text: a | b, a || b, a or b, a \\/ b)","outputEffect":"Outputs true if AT LEAST ONE operand is true; false only when both are false.","insert":" ∨ ","arity":"binary"},{"id":"xor","unicode":"⊕","codePoint":"U+2295","name":"Exclusive Disjunction (XOR)","textRepresentation":"a ⊕ b  (ASCII text: a ^ b, a xor b)","outputEffect":"Outputs true when operands have DIFFERENT truth values; false when equal.","insert":" ⊕ ","arity":"binary"},{"id":"implies","unicode":"→","codePoint":"U+2192","name":"Material Implication (IF–THEN)","textRepresentation":"a → b  (ASCII text: a -> b, a => b, a implies b)","outputEffect":"Evaluates as ¬a ∨ b: false ONLY when antecedent is true and consequent is false.","insert":" → ","arity":"binary"},{"id":"iff","unicode":"↔","codePoint":"U+2194","name":"Material Biconditional (IFF)","textRepresentation":"a ↔ b  (ASCII text: a \u003c-> b, a \u003c=> b, a iff b)","outputEffect":"Outputs true when both operands share the SAME truth value (equivalence).","insert":" ↔ ","arity":"binary"},{"id":"nand","unicode":"⊼","codePoint":"U+22BC","name":"Sheffer Stroke (NAND)","textRepresentation":"a ⊼ b  (ASCII text: a !& b, a nand b)","outputEffect":"Functionally complete negated AND: false ONLY when both operands are true.","insert":" ⊼ ","arity":"binary"},{"id":"nor","unicode":"⊽","codePoint":"U+22BD","name":"Peirce Arrow (NOR)","textRepresentation":"a ⊽ b  (ASCII text: a !| b, a nor b)","outputEffect":"Functionally complete negated OR: true ONLY when both operands are false.","insert":" ⊽ ","arity":"binary"},{"id":"top","unicode":"⊤","codePoint":"U+22A4","name":"Verum / Tautology Constant","textRepresentation":"⊤  (ASCII text: true, 1)","outputEffect":"Constant truth value always evaluating to boolean true.","insert":"⊤","arity":"nullary"},{"id":"bottom","unicode":"⊥","codePoint":"U+22A5","name":"Falsum / Contradiction Constant","textRepresentation":"⊥  (ASCII text: false, 0)","outputEffect":"Constant truth value always evaluating to boolean false.","insert":"⊥","arity":"nullary"}]},{"id":"predicate","title":"2. First-Order Predicate & Callable Lambda Logic","tradition":"formal","description":"Quantifiers over boolean domains, equivalence, and callable predicates.","items":[{"id":"forall","unicode":"∀","codePoint":"U+2200","name":"Universal Quantifier (For All)","textRepresentation":"∀x. P(x)  (ASCII text: forall x. ...)","outputEffect":"Evaluates body across x=false AND x=true; outputs true only if BOTH hold.","insert":"∀x. ","arity":"binder"},{"id":"exists","unicode":"∃","codePoint":"U+2203","name":"Existential Quantifier (There Exists)","textRepresentation":"∃x. P(x)  (ASCII text: exists x. ...)","outputEffect":"Evaluates body across x=false OR x=true; outputs true if AT LEAST ONE holds.","insert":"∃x. ","arity":"binder"},{"id":"exists_unique","unicode":"∃!","codePoint":"U+2203+0021","name":"Uniqueness Quantifier (Exists Exactly One)","textRepresentation":"∃!x. P(x)  (ASCII text: exists! x. ...)","outputEffect":"Outputs true iff P(false) ⊕ P(true) — true for exactly one boolean witness.","insert":"∃!x. ","arity":"binder"},{"id":"defeq","unicode":"≜","codePoint":"U+225C","name":"Definitional Equality (Callable / Binding)","textRepresentation":"a(b,c) ≜ b ∧ c  (ASCII text: a(b,c)=b & c, :=)","outputEffect":"Declares a callable (\"true or false\", unreferenceable) or referenceable variable.","insert":" ≜ ","arity":"binary"},{"id":"equiv","unicode":"≡","codePoint":"U+2261","name":"Logical Equivalence","textRepresentation":"a ≡ b  (ASCII text: a == b, a equiv b)","outputEffect":"Tests boolean identity; returns true iff both sides evaluate identically.","insert":" ≡ ","arity":"binary"},{"id":"neq","unicode":"≠","codePoint":"U+2260","name":"Logical Inequivalence","textRepresentation":"a ≠ b  (ASCII text: a != b, a \u003c> b)","outputEffect":"Tests boolean distinction; equivalent to XOR (true when sides differ).","insert":" ≠ ","arity":"binary"},{"id":"lambda","unicode":"λ","codePoint":"U+03BB","name":"Lambda Abstraction","textRepresentation":"f(b, c) = ...  (or λx. ... / \\x. ...)","outputEffect":"Creates a reusable parameter-bound boolean abstraction (not a scalar value until called).","insert":"λx. ","arity":"binder"}]},{"id":"modal","title":"3. Modal, Alethic, Epistemic & Deontic Logic","tradition":"formal","description":"Necessity, possibility, strict implication, knowledge (K), belief (B), obligation (O).","items":[{"id":"box","unicode":"□","codePoint":"U+25A1","name":"Necessity / Always / Obligatory (Box)","textRepresentation":"□p  (ASCII text: box(p), []p, nec p)","outputEffect":"Modal necessity operator (Kripke reflexive projection in single-world boolean evaluation: □p → p).","insert":"□(","arity":"unary"},{"id":"diamond","unicode":"◇","codePoint":"U+25C7","name":"Possibility / Permitted (Diamond)","textRepresentation":"◇p  (ASCII text: dia(p), \u003c>p, pos p)","outputEffect":"Modal possibility dual ¬□¬p (single-world boolean projection: ◇p → p).","insert":"◇(","arity":"unary"},{"id":"strict_implies","unicode":"⥽","codePoint":"U+297D","name":"Strict Implication (Lewis Fishhook)","textRepresentation":"a ⥽ b  (ASCII text: a -\u003c b)","outputEffect":"Interpreted as □(a → b): false only when antecedent holds and consequent fails.","insert":" ⥽ ","arity":"binary"},{"id":"knows","unicode":"𝐊","codePoint":"U+1D40A","name":"Epistemic Knowledge Modality Kₐ","textRepresentation":"𝐊(p)  (ASCII text: knows(p))","outputEffect":"Veridical knowledge projection (Kₐ p → p requires truth in the evaluated state).","insert":"𝐊(","arity":"unary"},{"id":"obligatory","unicode":"𝐎","codePoint":"U+1D40E","name":"Deontic Obligation Modality","textRepresentation":"𝐎(p)  (ASCII text: obligatory(p))","outputEffect":"Deontic normative operator evaluating whether p is satisfied in the state.","insert":"𝐎(","arity":"unary"},{"id":"forbidden","unicode":"𝐅","codePoint":"U+1D405","name":"Deontic Prohibition Modality (O¬p)","textRepresentation":"𝐅(p)  (ASCII text: forbidden(p))","outputEffect":"Prohibition dual ¬p (true when the forbidden proposition p is false).","insert":"𝐅(","arity":"unary"}]},{"id":"temporal","title":"4. Temporal & Dynamic Logic (LTL / CTL)","tradition":"formal","description":"Linear and branching-time trace operators over state sequences.","items":[{"id":"next","unicode":"◯","codePoint":"U+25EF","name":"Temporal Next (LTL X)","textRepresentation":"◯p  (ASCII text: next p)","outputEffect":"Evaluates proposition in the immediate state step (◯p → p on a single valuation).","insert":"◯(","arity":"unary"},{"id":"until","unicode":"𝒰","codePoint":"U+1D4B0","name":"Temporal Strong Until (LTL U)","textRepresentation":"a 𝒰 b  (ASCII text: a until b)","outputEffect":"Strong eventuality: satisfied when consequent b holds, or both a ∧ b hold.","insert":" 𝒰 ","arity":"binary"},{"id":"release","unicode":"ℛ","codePoint":"U+211B","name":"Temporal Release (LTL R)","textRepresentation":"a ℛ b  (ASCII text: a release b)","outputEffect":"Dual of Until (¬(¬a 𝒰 ¬b)): holds whenever consequent b holds.","insert":" ℛ ","arity":"binary"},{"id":"weak_until","unicode":"𝒲","codePoint":"U+1D4B2","name":"Temporal Weak Until (LTL W)","textRepresentation":"a 𝒲 b  (ASCII text: a weak_until b)","outputEffect":"Satisfied when a ∨ b holds in the current state.","insert":" 𝒲 ","arity":"binary"}]},{"id":"many_valued","title":"5. Many-Valued, Kleene, Łukasiewicz & Fuzzy Logic","tradition":"formal","description":"Intermediate truth degrees projected cleanly onto boolean decision boundaries.","items":[{"id":"luk_and","unicode":"⊗ₗ","codePoint":"U+2297+2097","name":"Łukasiewicz Strong Conjunction","textRepresentation":"a ⊗ₗ b  (ASCII text: a luk_and b)","outputEffect":"Bounded t-norm max(0, a + b - 1): identical to boolean AND on {false, true}.","insert":" ⊗ₗ ","arity":"binary"},{"id":"luk_imp","unicode":"→ₗ","codePoint":"U+2192+2097","name":"Łukasiewicz Implication","textRepresentation":"a →ₗ b  (ASCII text: a luk_implies b)","outputEffect":"Residuated implication min(1, 1 - a + b): matches classical a → b on boolean inputs.","insert":" →ₗ ","arity":"binary"},{"id":"kleene_not","unicode":"∼","codePoint":"U+223C","name":"Kleene / Fuzzy Complement","textRepresentation":"∼p  (ASCII text: ~p, fuzzy_not p)","outputEffect":"Truth-degree inversion (1 - v): turns true into false and false into true.","insert":"∼","arity":"unary"},{"id":"undef","unicode":"½","codePoint":"U+00BD","name":"Indeterminate Threshold (Conservative False)","textRepresentation":"½  (ASCII text: indeterminate)","outputEffect":"Strict boolean conservative projection: maps indeterminate ½ → false.","insert":"½","arity":"nullary"}]},{"id":"substructural","title":"6. Intuitionistic, Linear & Substructural Logic","tradition":"formal","description":"Constructive provability turnstiles and Girard linear resource connectives.","items":[{"id":"turnstile","unicode":"⊢","codePoint":"U+22A2","name":"Syntactic Turnstile (Proves / Sequent)","textRepresentation":"a ⊢ b  (ASCII text: a |- b, a proves b)","outputEffect":"Deduction check: returns false ONLY if premise a holds while conclusion b fails.","insert":" ⊢ ","arity":"binary"},{"id":"models","unicode":"⊨","codePoint":"U+22A8","name":"Semantic Entailment (Double Turnstile)","textRepresentation":"a ⊨ b  (ASCII text: a |= b, a entails b)","outputEffect":"Semantic validity check: true iff every model satisfying a also satisfies b.","insert":" ⊨ ","arity":"binary"},{"id":"lolli","unicode":"⊸","codePoint":"U+22B8","name":"Linear Implication (Lollipop)","textRepresentation":"a ⊸ b  (ASCII text: a -o b, a lolli b)","outputEffect":"Consumes premise resource a to produce b: false only when a=true and b=false.","insert":" ⊸ ","arity":"binary"},{"id":"tensor","unicode":"⊗","codePoint":"U+2297","name":"Multiplicative Conjunction (Tensor)","textRepresentation":"a ⊗ b  (ASCII text: a tensor b)","outputEffect":"Requires BOTH resources simultaneously (multiplicative AND).","insert":" ⊗ ","arity":"binary"},{"id":"par","unicode":"⅋","codePoint":"U+214B","name":"Multiplicative Disjunction (Par)","textRepresentation":"a ⅋ b  (ASCII text: a par b)","outputEffect":"Parallel resource choice (multiplicative OR): true if at least one branch holds.","insert":" ⅋ ","arity":"binary"}]},{"id":"paraconsistent","title":"7. Paraconsistent, Relevance & Non-Monotonic Logic","tradition":"formal","description":"Defeasible conditionals, forcing, and relevance connectives.","items":[{"id":"defeasible","unicode":"⇝","codePoint":"U+21DD","name":"Defeasible / Non-Monotonic Default","textRepresentation":"a ⇝ b  (ASCII text: a ~> b, a defaults_to b)","outputEffect":"Normally-implies conditional: fails when prerequisite a holds yet default b is falsified.","insert":" ⇝ ","arity":"binary"},{"id":"forces","unicode":"⊩","codePoint":"U+22A9","name":"Cohen / Kripke Forcing Relation","textRepresentation":"a ⊩ b  (ASCII text: a ||- b, a forces b)","outputEffect":"Condition a forces conclusion b (boolean conditional check ¬a ∨ b).","insert":" ⊩ ","arity":"binary"},{"id":"rel_equiv","unicode":"≊","codePoint":"U+224A","name":"Relevance Co-Entailment","textRepresentation":"a ≊ b  (ASCII text: a rel_equiv b)","outputEffect":"Mutual relevance equivalence: true when both propositions have matching truth value.","insert":" ≊ ","arity":"binary"}]},{"id":"informal","title":"8. Informal Logic, Argumentation & Critical Reasoning","tradition":"informal","description":"Everyday deduction/abduction cues, warrant links, and Dung-style rebuttals.","items":[{"id":"therefore","unicode":"∴","codePoint":"U+2234","name":"Therefore (Deductive Inference Marker)","textRepresentation":"p ∴ c  (ASCII text: p therefore c)","outputEffect":"Premise-to-conclusion validity test: false if premise p is true while conclusion c is false (invalid jump).","insert":" ∴ ","arity":"binary"},{"id":"because","unicode":"∵","codePoint":"U+2235","name":"Because (Explanatory Ground Marker)","textRepresentation":"c ∵ p  (ASCII text: c because p)","outputEffect":"Reverse conditional (p → c): verifies that claim c follows when ground p is true.","insert":" ∵ ","arity":"binary"},{"id":"rebut","unicode":"⊘","codePoint":"U+2298","name":"Undefeated After Rebuttal (Arg Unless Defeated)","textRepresentation":"arg ⊘ defeater  (ASCII text: arg rebut defeater)","outputEffect":"Dung argumentation attack check (arg ∧ ¬defeater): true ONLY when argument stands and defeater is false.","insert":" ⊘ ","arity":"binary"},{"id":"co_support","unicode":"⊕ᵥ","codePoint":"U+2295+1D65","name":"Linked Warrant (Co-Premise Support)","textRepresentation":"p ⊕ᵥ w  (ASCII text: p warrant w)","outputEffect":"Linked Toulmin premise + warrant: true only if BOTH premise AND warrant hold together.","insert":" ⊕ᵥ ","arity":"binary"},{"id":"inductive","unicode":"⇒ᵢ","codePoint":"U+21D2+1D62","name":"Inductive Generalization Link","textRepresentation":"evidence ⇒ᵢ claim  (ASCII text: evidence inductively claim)","outputEffect":"Inductive plausibility bridge: fails when evidence holds and claim is explicitly false.","insert":" ⇒ᵢ ","arity":"binary"}]}];
+const LABELS = {"preInput":{"id":"preInput","label":"Pre-Input Literal Environment (Assumed Input Bindings)","standardRef":"Operational Semantics Γ₀ / Precondition Valuation (ISO/IEC 80000-2)","tooltip":"Industry Convention: Initial Valuation Environment (Γ₀). Named for pre-execution state in Hoare logic / denotational semantics. Only line-separated literal boolean assignments (e.g. e=true, flag=false, x=⊤, y=0) are permitted so assumed inputs remain unambiguous constants prior to evaluation."},"programInput":{"id":"programInput","label":"Multiline Boolean & Callable Program Buffer","standardRef":"SSA Binding Sequence + First-Order Callable Definitions (Lambda/Horn)","tooltip":"Industry Convention: Ordered Statement Buffer. Accepts callable predicate definitions f(x, y) = expr, referenceable variable assignments v = expr, and entrypoint invocation expressions. Blocks split across lines that remain valid when whitespace is stripped merge into one logical block."},"pointerOutput":{"id":"pointerOutput","label":"Condensed Pointer-Annotated Output Stream (SSA Value Trace)","standardRef":"Static Single Assignment (SSA) Value Numbering & Dereference Trace","tooltip":"Industry Convention: SSA Value-Pointer Output Stream. Callable definitions are unreferenceable compile-time signatures (\"true or false\") and are excluded from pointer numbering; assignments and entrypoint calls receive sequential pointer indices ([line#1], [line#2], ...). Hovering or selecting highlights the exact source block and dereferenced target."},"alignedOutput":{"id":"alignedOutput","label":"Line-Aligned Evaluation Stream (1:1 Block Semantics)","standardRef":"Denotational Line Mapping (Definition Domain vs. Ground Truth Value)","tooltip":"Industry Convention: 1:1 Block Alignment View. Maps each logical input block to its exact semantic status: \"true or false\" (non-referenceable Boolean function domain), scalar boolean value (referenceable assignment), or ground boolean result (entrypoint expression)."},"postOutput":{"id":"postOutput","label":"Post-Output Entrypoint Register (Terminal Evaluation Result)","standardRef":"Postcondition Register / Program Entrypoint Return Value","tooltip":"Industry Convention: Post-Execution Register (Entrypoint Return). Isolates the ground truth value returned by the final entrypoint call (for example a(e,d) → false) under the Pre-Input Γ₀ valuation."},"truthTable":{"id":"truthTable","label":"Live Truth Table & Semantic Equivalence Matrix","standardRef":"IEEE Std 91 / ISO 80000-2 Complete Truth-Function Enumeration","tooltip":"Industry Convention: Complete Semantic Valuation Matrix. Enumerates all 2ⁿ input combinations for free/pre-input variables across the entire multiline program (or per-callable parameter tuples), highlighting the active Pre-Input valuation and classifying Tautology, Contradiction, or Contingency."},"symbolPalette":{"id":"symbolPalette","label":"Formal & Informal Logic Operator Taxonomy (Drag & Drop)","standardRef":"Unicode Mathematical Operators (U+2200..U+22FF, U+27C0..U+2BFF) & Argumentation Schemes","tooltip":"Industry Convention: Formal & Informal Operator Taxonomy. Organized by recognized logical traditions (Classical Boolean, First-Order/Lambda, Modal/Deontic, LTL/CTL Temporal, Many-Valued/Fuzzy, Intuitionistic/Linear, Paraconsistent/Default, and Informal Argumentation). Drag or click any glyph to insert its canonical Unicode symbol and review its ASCII text syntax + output effect."}};
+for (const [k, meta] of Object.entries(LABELS)) {
+  const el = document.getElementById('lbl-' + k);
+  const tip = document.getElementById('tip-' + k);
+  if (el) el.textContent = meta.label;
+  if (tip) { tip.title = meta.standardRef + '\n\n' + meta.tooltip; tip.setAttribute('aria-label', meta.tooltip); }
+}
+
+const preEl = document.getElementById('preInput');
+const progEl = document.getElementById('programInput');
+let selectedBlock = null;
+let hoverBlock = null;
+let hoverPtrBlock = null;
+
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+const KW = { true:['b',true], false:['b',false], not:['o','¬'], and:['o','∧'], or:['o','∨'], xor:['o','⊕'],
+  nand:['o','⊼'], nor:['o','⊽'], implies:['o','→'], iff:['o','↔'], equiv:['o','≡'], forall:['o','∀'],
+  exists:['o','∃'], box:['o','□'], nec:['o','□'], dia:['o','◇'], pos:['o','◇'], knows:['o','𝐊'],
+  obligatory:['o','𝐎'], forbidden:['o','𝐅'], next:['o','◯'], until:['o','𝒰'], release:['o','ℛ'],
+  weak_until:['o','𝒲'], proves:['o','⊢'], entails:['o','⊨'], lolli:['o','⊸'], tensor:['o','⊗'],
+  par:['o','⅋'], defaults_to:['o','⇝'], forces:['o','⊩'], rel_equiv:['o','≊'], therefore:['o','∴'],
+  because:['o','∵'], rebut:['o','⊘'], defeated_by:['o','⊘'], warrant:['o','⊕ᵥ'], inductively:['o','⇒ᵢ'], indeterminate:['b',false] };
+const PRECED = {'∴':1,'∵':1,'↔':2,'≡':2,'≠':2,'≊':2,'⊢':3,'⊨':3,'⊩':3,'⇝':3,'⇒ᵢ':3,'→':4,'⥽':4,'→ₗ':4,'⊸':4,'∨':5,'⊽':5,'⅋':5,'𝒲':5,'ℛ':5,'⊕':6,'∧':7,'⊼':7,'⊗':7,'⊗ₗ':7,'⊕ᵥ':7,'𝒰':7,'⊘':8};
+const UNARIES = new Set(['¬','□','◇','𝐊','𝐎','𝐅','◯']);
+const MULTI = [['<->','↔'],['<=>','↔'],['||-','⊩'],['->','→'],['=>','→'],['!&','⊼'],['!|','⊽'],['!=','≠'],['<>','≠'],['==','≡'],['&&','∧'],['||','∨'],['/\\','∧'],['\\/','∨'],['|-','⊢'],['|=','⊨'],['-o','⊸'],['-<','⥽'],['~>','⇝'],['∃!','∃!'],['[]','□'],['⊗ₗ','⊗ₗ'],['→ₗ','→ₗ'],['⊕ᵥ','⊕ᵥ'],['⇒ᵢ','⇒ᵢ'],['\\','λ']];
+const SINGLES = new Set(['¬','!','~','∼','&','∧','|','∨','⊕','^','→','↔','≡','≠','=','⊼','⊽','∀','∃','□','◇','⥽','𝐊','𝐎','𝐅','◯','𝒰','ℛ','𝒲','⊢','⊨','⊸','⊗','⅋','⇝','⊩','≊','∴','∵','⊘','λ']);
+
+function tokenize(s) {
+  const t = []; let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (c==='('||c===')') { t.push({k:'p',v:c}); i++; continue; }
+    if (c===',') { t.push({k:'c',v:c}); i++; continue; }
+    if (c==='.') { t.push({k:'d',v:c}); i++; continue; }
+    if (c==='⊤'||c==='1') { t.push({k:'b',v:true}); i++; continue; }
+    if (c==='⊥'||c==='0'||c==='½') { t.push({k:'b',v:false}); i++; continue; }
+    let m = false;
+    for (const [p,mp] of MULTI) { if (s.startsWith(p,i)) { t.push({k:'o',v:mp}); i+=p.length; m=true; break; } }
+    if (m) continue;
+    if (SINGLES.has(c)) { t.push({k:'o',v:(c==='!'||c==='~'||c==='∼')?'¬':c==='&'?'∧':c==='|'?'∨':c==='^'?'⊕':c==='='?'≡':c}); i++; continue; }
+    if (s.startsWith('exists!',i)) { t.push({k:'o',v:'∃!'}); i+=7; continue; }
+    if (/[A-Za-z_]/.test(c)) {
+      let j=i+1; while (j<s.length && /[A-Za-z0-9_]/.test(s[j])) j++;
+      const w=s.slice(i,j), kw=KW[w.toLowerCase()];
+      t.push(kw ? {k:kw[0],v:kw[1]} : {k:'id',v:w}); i=j; continue;
+    }
+    return {ok:false, error:'Unsupported symbol ' + c};
+  }
+  t.push({k:'eof',v:''}); return {ok:true, t};
+}
+
+function parseAst(s) {
+  const lx = tokenize(s); if (!lx.ok) return lx;
+  const tok = lx.t; let p = 0; const pk = () => tok[p]; const tk = () => tok[p++];
+  function prim() {
+    const x = pk();
+    if (x.k==='eof') throw new Error('INC');
+    if (x.k==='o' && (x.v==='∀'||x.v==='∃'||x.v==='∃!')) { tk(); const v=tk(); if (pk().k==='d') tk(); return {type:'Q',q:x.v,v:v.v,body:expr(0)}; }
+    if (x.k==='o' && UNARIES.has(x.v)) { tk(); return {type:'U',op:x.v,arg:prim()}; }
+    if (x.k==='p' && x.v==='(') { tk(); const e=expr(0); if (tk().v!==')') throw new Error('INC'); return e; }
+    if (x.k==='b') { tk(); return {type:'B',v:x.v}; }
+    if (x.k==='id') { tk(); if (pk().v==='(') { tk(); const a=[]; if (pk().v!==')') { a.push(expr(0)); while (pk().k==='c') { tk(); a.push(expr(0)); } } if (tk().v!==')') throw new Error('INC'); return {type:'C',n:x.v,a}; } return {type:'V',n:x.v}; }
+    throw new Error('Syntax error near ' + x.v);
+  }
+  function expr(min) {
+    let l = prim();
+    while (pk().k==='o' && PRECED[pk().v] >= min) { const op=tk().v; const pr=PRECED[op]; l={type:'Bin',op,l,r:expr(op==='→'?pr:pr+1)}; }
+    return l;
+  }
+  try { const ast = expr(0); if (pk().k!=='eof') return {ok:false,error:'Trailing '+pk().v}; return {ok:true,ast}; }
+  catch (e) { return {ok:false, error:e.message==='INC'?'Incomplete':e.message, inc:e.message==='INC'}; }
+}
+
+function segmentBlocks(raw) {
+  const lines = raw.replace(/\r\n/g,'\n').split('\n'); const out = []; let i=0;
+  const pDelta = t => (t.match(/\(/g)||[]).length - (t.match(/\)/g)||[]).length;
+  const trail = /(?:=|:=|≜|->|=>|<->|\|\||&&|[¬!~&∧|∨⊕→↔≡≠⊼⊽⊸⊗⅋⊢⊨⇝⊩∴∵⊘(,])[ \t]*$/;
+  const lead = /^(?:[)&|∧∨⊕→↔≡≠⊼⊽⊸⊗⅋⊢⊨⇝⊩∴∵⊘]|->|=>|<->)/;
+  while (i < lines.length) {
+    const t = lines[i].trim();
+    if (!t || t.startsWith('//') || t.startsWith('#')) { i++; continue; }
+    const startLine = i + 1; let end = i; let comb = t; let d = pDelta(t);
+    while (end + 1 < lines.length) {
+      const nt = lines[end + 1].trim();
+      if (!nt || nt.startsWith('//') || nt.startsWith('#')) break;
+      const rhsCheck = comb.includes('=') ? parseAst(comb.split(/=(.+)/)[1] || '') : parseAst(comb);
+      if (d > 0 || trail.test(comb) || lead.test(nt) || rhsCheck.inc) {
+        comb += ' ' + nt; d += pDelta(nt); end++;
+        if (d <= 0 && !trail.test(comb) && !lead.test(lines[end+1]?.trim()||'')) {
+          const okNow = comb.includes('=') ? parseAst(comb.split(/=(.+)/)[1] || '').ok : parseAst(comb).ok;
+          if (okNow) break;
+        }
+      } else break;
+    }
+    out.push({ blockIndex: out.length, startLine, endLine: end+1, compact: comb.replace(/\s+/g,' ').trim() });
+    i = end + 1;
+  }
+  return out;
+}
+
+function parsePre(raw) {
+  const vals = {}, errs = [];
+  raw.replace(/\r\n/g,'\n').split('\n').forEach((l, idx) => {
+    const t = l.trim(); if (!t) return;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(true|false|⊤|⊥|1|0)$/i.exec(t);
+    if (!m) errs.push('Line '+(idx+1)+': literal assignment only');
+    else vals[m[1]] = ['true','⊤','1'].includes(m[2].toLowerCase());
+  });
+  return {vals, errs};
+}
+
+function evalBin(op,l,r) {
+  if ('∧⊗⊗ₗ⊕ᵥ𝒰'.includes(op)) return l&&r;
+  if ('∨⅋𝒲'.includes(op)) return l||r;
+  if (op==='⊕'||op==='≠') return l!==r;
+  if ('→⥽→ₗ⊸⊢⊨⊩⇝⇒ᵢ∴'.includes(op)) return !l||r;
+  if (op==='∵') return !r||l;
+  if ('↔≡≊'.includes(op)) return l===r;
+  if (op==='⊼') return !(l&&r);
+  if (op==='⊽') return !(l||r);
+  if (op==='ℛ') return r;
+  if (op==='⊘') return l&&!r;
+  return false;
+}
+
+function evaluateProgram(preRaw, progRaw, overrides) {
+  const pre = parsePre(preRaw); const blocks = segmentBlocks(progRaw);
+  const binds = new Map();
+  Object.entries(pre.vals).forEach(([k,v]) => binds.set(k,{v,ptr:null,blk:null,pre:true}));
+  if (overrides) Object.entries(overrides).forEach(([k,v]) => binds.set(k,{v,ptr:null,blk:null,pre:true}));
+  const fns = new Map(); const aligned = []; const condensed = []; const free = new Set(Object.keys(pre.vals));
+  let ptrCount = 0;
+
+  function evalNode(n, loc) {
+    if (n.type==='B') return n.v;
+    if (n.type==='V') {
+      if (loc.has(n.n)) return loc.get(n.n);
+      if (fns.has(n.n)) throw new Error('Definition '+n.n+' may not be referenced');
+      if (!binds.has(n.n)) { free.add(n.n); throw new Error('Unbound '+n.n); }
+      return binds.get(n.n).v;
+    }
+    if (n.type==='U') { const x=evalNode(n.arg,loc); return (n.op==='¬'||n.op==='𝐅')?!x:x; }
+    if (n.type==='Bin') return evalBin(n.op, evalNode(n.l,loc), evalNode(n.r,loc));
+    if (n.type==='Q') {
+      const m1=new Map(loc); m1.set(n.v,false); const a=evalNode(n.body,m1);
+      const m2=new Map(loc); m2.set(n.v,true); const b=evalNode(n.body,m2);
+      return n.q==='∀'?(a&&b):n.q==='∃'?(a||b):(a!==b);
+    }
+    if (n.type==='C') {
+      const fn = fns.get(n.n); if (!fn) throw new Error('Undefined '+n.n);
+      const sc = new Map(); fn.params.forEach((p,i)=>sc.set(p, evalNode(n.a[i],loc)));
+      return evalNode(fn.ast, sc);
+    }
+  }
+  function fmtPtr(n, refs) {
+    if (n.type==='B') return n.v?'true':'false';
+    if (n.type==='V') { const b=binds.get(n.n); if (b && !b.pre && b.ptr!==null) { refs.push(b.blk); return n.n+'[line#'+b.ptr+']'; } return n.n; }
+    if (n.type==='U') return n.op + fmtPtr(n.arg, refs);
+    if (n.type==='Bin') return fmtPtr(n.l,refs)+' '+n.op+' '+fmtPtr(n.r,refs);
+    if (n.type==='C') return n.n+'('+n.a.map(x=>fmtPtr(x,refs)).join(',')+')';
+    return '';
+  }
+
+  for (const b of blocks) {
+    const dm = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:=|:=|≜)\s*(.+)$/.exec(b.compact);
+    if (dm) {
+      const ps = dm[2].trim()?dm[2].split(',').map(x=>x.trim()).filter(Boolean):[];
+      const pr = parseAst(dm[3].trim());
+      if (!pr.ok) { aligned.push({...b,kind:'error',out:pr.error,refs:[]}); continue; }
+      fns.set(dm[1], {name:dm[1], params:ps, raw:dm[3].trim(), ast:pr.ast});
+      aligned.push({...b,kind:'definition',out:'true or false',refs:[]});
+      continue;
+    }
+    const am = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=|≜)\s*(.+)$/.exec(b.compact);
+    if (am) {
+      const pr = parseAst(am[2].trim());
+      if (!pr.ok) { aligned.push({...b,kind:'error',out:pr.error,refs:[]}); continue; }
+      try {
+        const refs=[]; fmtPtr(pr.ast, refs);
+        const val = evalNode(pr.ast, new Map()); ptrCount++;
+        binds.set(am[1], {v:val, ptr:ptrCount, blk:b.blockIndex, pre:false});
+        const vt = val?'true':'false';
+        aligned.push({...b,kind:'assignment',name:am[1],ptr:ptrCount,out:vt,refs});
+        condensed.push({...b,kind:'assignment',ptr:ptrCount,text:vt,val:vt,refs});
+      } catch (e) { aligned.push({...b,kind:'error',out:e.message,refs:[]}); }
+      continue;
+    }
+    const pr = parseAst(b.compact);
+    if (!pr.ok) { aligned.push({...b,kind:'error',out:pr.error,refs:[]}); continue; }
+    try {
+      const refs=[]; const ann = fmtPtr(pr.ast, refs);
+      const val = evalNode(pr.ast, new Map()); ptrCount++;
+      const vt = val?'true':'false'; const lineTxt = ann+'='+vt;
+      aligned.push({...b,kind:'expression',ptr:ptrCount,out:vt,ann:lineTxt,refs});
+      condensed.push({...b,kind:'expression',ptr:ptrCount,text:lineTxt,val:vt,refs});
+    } catch (e) { aligned.push({...b,kind:'error',out:e.message,refs:[]}); }
+  }
+  return {pre, blocks, aligned, condensed, fns:Array.from(fns.values()), free:Array.from(free)};
+}
+
+function updateHighlights() {
+  const active = hoverBlock ?? selectedBlock;
+  document.querySelectorAll('[data-blk]').forEach(el => {
+    const idx = Number(el.getAttribute('data-blk'));
+    el.classList.toggle('active', active === idx);
+    el.classList.toggle('ptr-target', hoverPtrBlock === idx && active !== idx);
+  });
+}
+
+function syntaxHighlight(text) {
+  return esc(text)
+    .replace(/([A-Za-z_][A-Za-z0-9_]*\[line#\d+\])/g, '<span class="tok-ptr">$1</span>')
+    .replace(/\b(true)\b/g, '<span class="tok-true">$1</span>')
+    .replace(/\b(false)\b/g, '<span class="tok-false">$1</span>')
+    .replace(/([A-Za-z_][A-Za-z0-9_]*)(?=\()/g, '<span class="tok-call">$1</span>');
+}
+
+function renderAll() {
+  const res = evaluateProgram(preEl.value, progEl.value);
+  document.getElementById('preErrors').textContent = res.pre.errs.join(' · ') || 'Literal environment valid ('+Object.keys(res.pre.vals).length+' binding(s))';
+
+  document.getElementById('sourceBlocks').innerHTML = res.aligned.map(l => {
+    const span = l.startLine === l.endLine ? 'L'+l.startLine : 'L'+l.startLine+'–L'+l.endLine;
+    const bCls = l.kind==='definition'?'b-def':l.kind==='assignment'?'b-assign':l.kind==='expression'?'b-expr':'b-err';
+    return '<div class="line-row" data-blk="'+l.blockIndex+'"><span style="color:#94a3b8;min-width:44px;">'+span+'</span><span style="flex:1">'+esc(l.compact)+'</span><span class="badge '+bCls+'">'+l.kind+'</span></div>';
+  }).join('') || '<div class="muted">Enter multiline logic rules or drag symbols here.</div>';
+
+  document.getElementById('pointerOut').innerHTML = res.condensed.map(c =>
+    '<div class="line-row" data-blk="'+c.blockIndex+'" data-refs="'+c.refs.join(',')+'"><span style="color:#94a3b8;min-width:46px;">line#'+c.ptr+'</span><span style="flex:1">'+syntaxHighlight(c.text)+'</span><span class="badge '+(c.kind==='assignment'?'b-assign':'b-expr')+'">'+c.kind+'</span></div>'
+  ).join('') || '<div class="muted">No referenceable assignments or calls yet.</div>';
+
+  document.getElementById('alignedOut').innerHTML = res.aligned.map(l =>
+    '<div class="line-row" data-blk="'+l.blockIndex+'" data-refs="'+l.refs.join(',')+'"><span style="color:#94a3b8;min-width:44px;">L'+l.startLine+'</span><span style="flex:1;'+(l.kind==='definition'?'color:#d8b4fe;font-style:italic;':'')+'">'+syntaxHighlight(l.out)+'</span><span class="muted">'+(l.kind==='definition'?'not referenceable':l.kind==='assignment'?'ref: '+l.name:'entrypoint')+'</span></div>'
+  ).join('');
+
+  const term = res.condensed.filter(c=>c.kind==='expression').slice(-1)[0] || res.condensed.slice(-1)[0];
+  document.getElementById('postBox').innerHTML = term
+    ? '<div><div class="muted">Entrypoint Call</div><div style="font-family:monospace;font-size:13px;">'+syntaxHighlight(term.text)+'</div></div><div class="post-val '+(term.val==='true'?'tok-true':'tok-false')+'">'+esc(term.val)+'</div>'
+    : '<div class="muted">No entrypoint result yet.</div>';
+
+  // Attach bidirectional hover/click listeners
+  document.querySelectorAll('[data-blk]').forEach(el => {
+    const idx = Number(el.getAttribute('data-blk'));
+    const refs = (el.getAttribute('data-refs') || '').split(',').filter(Boolean).map(Number);
+    el.addEventListener('mouseenter', () => { hoverBlock = idx; hoverPtrBlock = refs[0] ?? null; updateHighlights(); });
+    el.addEventListener('mouseleave', () => { hoverBlock = null; hoverPtrBlock = null; updateHighlights(); });
+    el.addEventListener('click', () => { selectedBlock = selectedBlock === idx ? null : idx; updateHighlights(); });
+  });
+
+  // Truth table
+  const ttVars = Array.from(new Set([...Object.keys(res.pre.vals), ...res.free])).slice(0, 4);
+  let ttHtml = '';
+  if (ttVars.length > 0) {
+    const cols = res.aligned.filter(l=>l.kind==='assignment'||l.kind==='expression');
+    ttHtml += '<table><thead><tr>' + ttVars.map(v=>'<th>'+esc(v)+'</th>').join('') + cols.map(c=>'<th>'+esc(c.name||c.compact)+'</th>').join('') + '</tr></thead><tbody>';
+    for (let m=0; m < (1<<ttVars.length); m++) {
+      const ov = {}; const vs = ttVars.map((v,i)=>{ const b=Boolean((m>>(ttVars.length-1-i))&1); ov[v]=b; return b; });
+      const rowRes = evaluateProgram(preEl.value, progEl.value, ov);
+      const active = ttVars.every((v,i)=>res.pre.vals[v]===vs[i]);
+      const rCols = rowRes.aligned.filter(l=>l.kind==='assignment'||l.kind==='expression');
+      ttHtml += '<tr class="'+(active?'active-row':'')+'">' + vs.map(b=>'<td class="'+(b?'tok-true':'tok-false')+'">'+b+'</td>').join('') + rCols.map(c=>'<td class="'+(c.out==='true'?'tok-true':'tok-false')+'">'+esc(c.out)+'</td>').join('') + '</tr>';
+    }
+    ttHtml += '</tbody></table>';
+  }
+  for (const fn of res.fns) {
+    const ps = fn.params.slice(0,4);
+    ttHtml += '<div class="muted" style="margin-top:6px;">Callable Truth Table: <strong>'+esc(fn.name)+'('+esc(ps.join(', '))+') = '+esc(fn.raw)+'</strong></div><table><thead><tr>'+ps.map(p=>'<th>'+esc(p)+'</th>').join('')+'<th>'+esc(fn.name)+'</th></tr></thead><tbody>';
+    for (let m=0; m < (1<<ps.length); m++) {
+      const preL = []; const vs = ps.map((p,i)=>{ const b=Boolean((m>>(ps.length-1-i))&1); preL.push(p+'='+b); return b; });
+      const r = evaluateProgram(preL.join('\n'), fn.name+'('+ps.join(',')+')='+fn.raw+'\n'+fn.name+'('+ps.join(',')+')');
+      const out = r.condensed[0]?.val || 'error';
+      ttHtml += '<tr>'+vs.map(b=>'<td>'+b+'</td>').join('')+'<td class="'+(out==='true'?'tok-true':'tok-false')+'">'+esc(out)+'</td></tr>';
+    }
+    ttHtml += '</tbody></table>';
+  }
+  document.getElementById('truthTables').innerHTML = ttHtml || '<div class="muted">Define variables or callables to view live truth tables.</div>';
+  updateHighlights();
+}
+
+// Render formal & informal categories with drag-and-drop
+document.getElementById('categories').innerHTML = CATEGORIES.map((cat, idx) =>
+  '<details class="cat"'+(idx < 2 ? ' open' : '')+'><summary><span>'+esc(cat.title)+'</span><span class="badge '+(cat.tradition==='formal'?'b-expr':'b-assign')+'">'+cat.tradition+' ('+cat.items.length+')</span></summary><div class="muted" style="margin-top:4px;">'+esc(cat.description)+'</div><div class="sym-grid">'+
+  cat.items.map(it => '<button class="sym-btn" type="button" draggable="true" data-ins="'+esc(it.insert)+'" title="'+esc(it.name+' ('+it.codePoint+')\nRequired text: '+it.textRepresentation+'\nOutput effect: '+it.outputEffect)+'"><strong>'+esc(it.unicode)+'</strong><span>'+esc(it.name.split('(')[0].trim())+'</span></button>').join('') +
+  '</div></details>'
+).join('');
+
+function insertAtCursor(txt) {
+  const s = progEl.selectionStart ?? progEl.value.length;
+  const e = progEl.selectionEnd ?? progEl.value.length;
+  progEl.value = progEl.value.slice(0, s) + txt + progEl.value.slice(e);
+  progEl.focus(); progEl.selectionStart = progEl.selectionEnd = s + txt.length;
+  renderAll();
+}
+document.querySelectorAll('.sym-btn').forEach(btn => {
+  const ins = btn.getAttribute('data-ins') || '';
+  btn.addEventListener('click', () => insertAtCursor(ins));
+  btn.addEventListener('dragstart', ev => { ev.dataTransfer?.setData('text/plain', ins); });
+});
+progEl.addEventListener('dragover', ev => { ev.preventDefault(); progEl.classList.add('dragover'); });
+progEl.addEventListener('dragleave', () => progEl.classList.remove('dragover'));
+progEl.addEventListener('drop', ev => {
+  ev.preventDefault(); progEl.classList.remove('dragover');
+  const txt = ev.dataTransfer?.getData('text/plain');
+  if (txt) insertAtCursor(txt);
+});
+preEl.addEventListener('input', renderAll);
+progEl.addEventListener('input', renderAll);
+document.getElementById('resetBtn').addEventListener('click', () => {
+  preEl.value = 'e=true'; progEl.value = 'a(b,c)=b & c\nd=false\na(e,d)'; renderAll();
+});
+renderAll();
+</script>
+</body>
+</html>

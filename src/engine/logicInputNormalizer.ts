@@ -1,5 +1,5 @@
-import type { LogicLabelBinding } from './logicLambdaEngine.ts';
-import { parseLogicExpression } from './logicLambdaEngine.ts';
+import type { CauchySequenceConfig, LogicLabelBinding } from './logicLambdaEngine.ts';
+import { parseLogicExpression, resolveCauchyParamNames } from './logicLambdaEngine.ts';
 
 export interface LogicEvaluationInputDefaults {
   statement: string;
@@ -460,4 +460,126 @@ export function normalizeLogicEvaluationInput(
   defaults: LogicEvaluationInputDefaults
 ): LogicInputNormalizationResult {
   return normalizeRawInput(rawInput, defaults);
+}
+
+export interface CauchyAmbiguityAssessment {
+  canEnable: boolean;
+  reason: string;
+  explicit: boolean;
+  config: CauchySequenceConfig | null;
+}
+
+/**
+ * Determines whether Cauchy recurrence sequencing can be enabled for a logic evaluation
+ * request without being confused by positional, parameter-colliding, or raw-array inputs.
+ */
+export function assessCauchySequencingSafety(
+  rawInput: unknown,
+  normalized: NormalizedLogicEvaluationInput,
+  workspaceCauchy?: CauchySequenceConfig | null
+): CauchyAmbiguityAssessment {
+  const baseConfig = workspaceCauchy ?? null;
+  if (!baseConfig || !baseConfig.enabled) {
+    return {
+      canEnable: false,
+      explicit: false,
+      reason: 'Cauchy sequence configuration is disabled.',
+      config: baseConfig,
+    };
+  }
+
+  // Raw positional arrays or { values: [...] } can be confused with Cauchy seed terms or _# aliases.
+  const isRawPositional =
+    Array.isArray(rawInput) &&
+    rawInput.length > 0 &&
+    !(rawInput.length === 2 && typeof rawInput[0] === 'string' && typeof rawInput[1] === 'string' && !(isLiteralString(rawInput[0]) && isLiteralString(rawInput[1])));
+  const hasValuesArray = isRecord(rawInput) && Object.hasOwn(rawInput, 'values') && Array.isArray(rawInput.values) && rawInput.values.length > 0;
+  if (isRawPositional || hasValuesArray) {
+    return {
+      canEnable: false,
+      explicit: false,
+      reason: 'Positional literal arrays could be confused with Cauchy seed terms or _# window parameters.',
+      config: baseConfig,
+    };
+  }
+
+  const rawSeeds = baseConfig.seedValues
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const arity = Math.max(1, Math.min(8, rawSeeds.length || 2));
+  const cauchyParamNames = new Set<string>([
+    ...resolveCauchyParamNames(baseConfig.paramStyle, arity, baseConfig.customParamNames),
+    ...resolveCauchyParamNames('directional', arity),
+    ...Array.from({ length: arity }, (_, idx) => `_${idx + 1}`),
+    '_0',
+    'left',
+    'right',
+    'prev',
+    'n',
+  ]);
+
+  // Check if any label name explicitly supplied in rawInput collides with a Cauchy recurrence parameter.
+  const suppliedKeys = new Set<string>();
+  if (typeof rawInput === 'string') {
+    const tokens = rawInput.trim().match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+/g) || [];
+    for (const tok of tokens) {
+      const eq = tok.indexOf('=');
+      if (eq > 0) suppliedKeys.add(tok.slice(0, eq).trim());
+    }
+  } else if (isRecord(rawInput)) {
+    const lbls = Object.hasOwn(rawInput, 'logic_labels') ? rawInput.logic_labels : rawInput.labels;
+    if (typeof lbls === 'string') {
+      const tokens = lbls.trim().match(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+/g) || [];
+      if (tokens.length > 0 && tokens.every((t) => !t.includes('='))) {
+        return {
+          canEnable: false,
+          explicit: false,
+          reason: 'Positional text labels could be confused with Cauchy seed terms.',
+          config: baseConfig,
+        };
+      }
+      for (const tok of tokens) {
+        const eq = tok.indexOf('=');
+        if (eq > 0) suppliedKeys.add(tok.slice(0, eq).trim());
+      }
+    } else if (Array.isArray(lbls) && lbls.length > 0 && !lbls.every(isCompleteBinding)) {
+      return {
+        canEnable: false,
+        explicit: false,
+        reason: 'Positional label array could be confused with Cauchy seed terms.',
+        config: baseConfig,
+      };
+    } else if (isRecord(lbls)) {
+      for (const k of Object.keys(lbls)) suppliedKeys.add(k);
+    }
+  }
+
+  for (const key of suppliedKeys) {
+    if (cauchyParamNames.has(key)) {
+      return {
+        canEnable: false,
+        explicit: false,
+        reason: `Supplied label '${key}' collides with a Cauchy recurrence parameter name.`,
+        config: baseConfig,
+      };
+    }
+  }
+
+  // Check if the statement itself references positional _1.._8 fallback names.
+  if (/\b_[0-8]\b/.test(normalized.statement)) {
+    return {
+      canEnable: false,
+      explicit: false,
+      reason: 'Statement references positional _# identifiers that overlap with Cauchy window parameters.',
+      config: baseConfig,
+    };
+  }
+
+  return {
+    canEnable: true,
+    explicit: false,
+    reason: 'Inputs do not collide with Cauchy seeds or recurrence parameters.',
+    config: baseConfig,
+  };
 }

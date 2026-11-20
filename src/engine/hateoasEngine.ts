@@ -30,6 +30,7 @@ import {
   exportLogicStatement,
   LOGIC_CALCULATOR_PRESETS,
   type CauchySequenceConfig,
+  type LogicExportInputMode,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './logicLambdaEngine.ts';
@@ -1032,7 +1033,7 @@ export class RestHateoasEngineStore {
     });
   }
 
-  public exportLogic(target: LogicExportTarget) {
+  public exportLogic(target: LogicExportTarget, inputMode: LogicExportInputMode = 'cli') {
     const evalRes = evaluateLogicStatement(this.workspace.logicStatement, this.workspace.logicLabels);
     const rules = parseGrammar(this.workspace.grammarText, this.workspace.dialect);
     return exportLogicStatement(
@@ -1046,7 +1047,8 @@ export class RestHateoasEngineStore {
         rules,
         dialect: this.workspace.dialect,
         sampleInput: this.workspace.evalPayload,
-      }
+      },
+      inputMode
     );
   }
 

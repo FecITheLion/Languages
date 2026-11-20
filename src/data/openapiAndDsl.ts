@@ -381,6 +381,230 @@ export const OPENAPI_SPEC: OpenApiSpec = {
         responses: { '200': { description: 'application/zip archive' } },
       },
     },
+    '/api/logic/export/{language}': {
+      get: {
+        operationId: 'exportLogicCode',
+        summary: 'Export logic & lambda expression in any supported language (CLI or hardcoded mode)',
+        tags: ['Logic API'],
+        parameters: [
+          { name: 'language', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'mode', in: 'query', required: false, schema: { type: 'string', enum: ['cli', 'hardcoded'] } },
+        ],
+        responses: {
+          '200': { description: 'Generated code artifact in application/hal+json envelope' },
+          '422': { description: 'Cauchy evaluation unsupported for requested foreign target' },
+        },
+      },
+    },
+    '/api/mcp/servers': {
+      get: {
+        operationId: 'listMcpServers',
+        summary: 'Discover all 8 build-on-call Streamable HTTP MCP servers (PHP & Node parity)',
+        tags: ['MCP'],
+        responses: { '200': { description: 'HAL list of MCP servers with Foundry, OpenAI, AWS Bedrock, VS Code, Ollama, and OpenClaw export links' } },
+      },
+    },
+    '/api/mcp/{serverId}/export/{client}': {
+      get: {
+        operationId: 'exportMcpClientConfig',
+        summary: 'Export MCP & AI Agent/Workflow config for Microsoft Foundry, OpenAI, AWS Bedrock, VS Code, Ollama, Cursor, Claude, Windsurf, or cURL',
+        tags: ['MCP', 'Cloud'],
+        parameters: [
+          { name: 'serverId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'client', in: 'path', required: true, schema: { type: 'string', enum: ['foundry', 'openai', 'aws_bedrock', 'vscode', 'ollama', 'openclaw', 'cursor', 'claude', 'windsurf', 'curl'] } },
+        ],
+        responses: { '200': { description: 'Client-ready MCP & Agent Workflow configuration payload' } },
+      },
+    },
+    '/api/openai/tools': {
+      get: {
+        operationId: 'listOpenAiTools',
+        summary: 'Export OpenAI Responses API & Chat Completions tools covering all MCP servers and the full REST API base',
+        tags: ['OpenAI', 'MCP'],
+        parameters: [
+          { name: 'scope', in: 'query', required: false, schema: { type: 'string', enum: ['all', 'mcp', 'api'] } },
+          { name: 'format', in: 'query', required: false, schema: { type: 'string', enum: ['responses', 'chat_completions'] } },
+        ],
+        responses: { '200': { description: 'OpenAI-compatible tools and remote MCP server definitions' } },
+      },
+    },
+    '/api/openai/tools/execute': {
+      post: {
+        operationId: 'executeOpenAiTools',
+        summary: 'Execute OpenAI tool_calls against MCP tools or any core REST API operation',
+        tags: ['OpenAI', 'MCP'],
+        responses: { '200': { description: 'OpenAI role="tool" message results' } },
+      },
+    },
+    '/api/middleware/config': {
+      get: {
+        operationId: 'getMiddlewareConfig',
+        summary: 'Inspect Middleware Management Suite config (templates, fragments, slugs, slug patterns, front-end, optional Azure/AWS)',
+        tags: ['Middleware'],
+        responses: { '200': { description: 'Active middleware configuration with hardcoded defaults and cache epoch' } },
+      },
+      patch: {
+        operationId: 'updateMiddlewareConfig',
+        summary: 'Override or mutate templates, fragments, slugs, slug patterns, or front-end/cloud settings',
+        tags: ['Middleware'],
+        responses: { '200': { description: 'Updated middleware configuration and incremented cache epoch' } },
+      },
+    },
+    '/api/middleware/slugs': {
+      get: {
+        operationId: 'listMiddlewareSlugs',
+        summary: 'List all hardcoded-default and overridden route slugs and pretty slug patterns',
+        tags: ['Middleware', 'Slugs'],
+        responses: { '200': { description: 'Active and default slug routing configuration' } },
+      },
+    },
+    '/api/middleware/slugs/{slug}': {
+      put: {
+        operationId: 'upsertMiddlewareSlug',
+        summary: 'Create or override a route slug mapping',
+        tags: ['Middleware', 'Slugs'],
+        parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Saved slug route' } },
+      },
+      delete: {
+        operationId: 'deleteMiddlewareSlug',
+        summary: 'Delete a custom slug or restore a hardcoded default slug',
+        tags: ['Middleware', 'Slugs'],
+        parameters: [{ name: 'slug', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Deleted or restored slug route' } },
+      },
+    },
+    '/template/{template}/{fragment}': {
+      get: {
+        operationId: 'renderTemplateFragment',
+        summary: 'Content-negotiated (text/plain & text/html) fragment endpoint with strict allowlists and ETag 304 caching',
+        tags: ['Templates'],
+        parameters: [
+          { name: 'template', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'fragment', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: {
+          '200': { description: 'Rendered HTML or raw plain-text fragment with ETag header' },
+          '304': { description: 'Not Modified when If-None-Match matches current ETag' },
+          '404': { description: 'Unknown or disallowed template/fragment identifier' },
+        },
+      },
+    },
+    '/nodes/{kind}/{nodeId}/members/{member}': {
+      get: {
+        operationId: 'resolvePrettyMemberSlug',
+        summary: 'Extended nested pretty slug redirecting (307) to canonical /api/nodes/{kind}/{nodeId}/members/{member}',
+        tags: ['Slugs'],
+        parameters: [
+          { name: 'kind', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'nodeId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'member', in: 'path', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '307': { description: 'Temporary redirect to canonical node member API URL honoring PRETTY_BASE_PATH' } },
+      },
+    },
+    '/members/{member}': {
+      get: {
+        operationId: 'resolveShortMemberSlug',
+        summary: 'Short isolated member slug redirecting (307) using ?node={kind}/{nodeId}',
+        tags: ['Slugs'],
+        parameters: [
+          { name: 'member', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'node', in: 'query', required: true, schema: { type: 'string' } },
+        ],
+        responses: { '307': { description: 'Temporary redirect to canonical node member API URL' } },
+      },
+    },
+    '/api/logic/multiline': {
+      post: {
+        operationId: 'evaluateMultilineLogic',
+        summary: 'Evaluate multiline formal logic, callable definitions, and pointer streams',
+        tags: ['Logic API'],
+        responses: { '200': { description: 'Aligned outputs, pointer stream, and evaluation diagnostics' } },
+      },
+    },
+    '/api/schema/predicate-tree': {
+      post: {
+        operationId: 'compileSchemaPredicateTree',
+        summary: 'Compile JSON Schema into Schema EBNF and Predicate-Argument Tree and validate an instance',
+        tags: ['Schema'],
+        responses: { '200': { description: 'Compiled Schema EBNF, predicate tree AST, and validation report' } },
+      },
+    },
+    '/api/modules': {
+      get: {
+        operationId: 'listModules',
+        summary: 'List persisted Module Workbench packages for the active session',
+        tags: ['Modules'],
+        responses: { '200': { description: 'List of stored module drafts' } },
+      },
+      post: {
+        operationId: 'saveModule',
+        summary: 'Save or update a Module Workbench package',
+        tags: ['Modules'],
+        responses: { '201': { description: 'Persisted module draft' } },
+      },
+    },
+    '/api/modules/{id}': {
+      get: {
+        operationId: 'getModule',
+        summary: 'Retrieve a saved module package by ID',
+        tags: ['Modules'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Saved module package' } },
+      },
+      put: {
+        operationId: 'upsertModule',
+        summary: 'Create or update a module package by ID',
+        tags: ['Modules'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Updated module package' } },
+      },
+      delete: {
+        operationId: 'deleteModule',
+        summary: 'Delete a saved module package by ID',
+        tags: ['Modules'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Deleted module package' } },
+      },
+    },
+    '/api/sessions': {
+      get: {
+        operationId: 'listSessions',
+        summary: 'List persisted session instances and share links',
+        tags: ['Sessions'],
+        responses: { '200': { description: 'Session list and active session ID' } },
+      },
+      post: {
+        operationId: 'createSession',
+        summary: 'Mint a new unique session ID (optionally cloned from an existing session)',
+        tags: ['Sessions'],
+        responses: { '201': { description: 'Created session ID and shareable URL' } },
+      },
+    },
+    '/api/sessions/{id}': {
+      get: {
+        operationId: 'getSessionHistory',
+        summary: 'Fetch saved full workspace & Histolog bundle for a shared session ID',
+        tags: ['Sessions'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Session bundle and metadata' } },
+      },
+      put: {
+        operationId: 'saveSessionHistory',
+        summary: 'Persist full workspace & Histolog bundle under a session ID',
+        tags: ['Sessions'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Saved session confirmation and share link' } },
+      },
+      delete: {
+        operationId: 'deleteSession',
+        summary: 'Delete stored workspace and history for a session ID',
+        tags: ['Sessions'],
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Deleted session confirmation' } },
+      },
+    },
   },
 };
 

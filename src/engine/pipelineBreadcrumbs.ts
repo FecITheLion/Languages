@@ -67,6 +67,7 @@ export const TOP_VIEW_LABELS: Record<TopView, string> = {
   files: 'Shared Files',
   api: 'API Studio',
   modules: 'Module Workbench',
+  middleware: 'Middleware Suite',
   openapi: 'OpenAPI Spec',
   dsl: 'DSL Flows',
   bundle: 'Export Bundle',

@@ -57,11 +57,11 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
       { target: '[data-tour="pipeline"]', title: 'The pipeline', body: 'Pick any step, or open it as a modal workbench. Verified steps turn green.' },
       { target: '[data-tour="pitch"]', title: 'Elevator pitch', body: 'Every workbench opens with a pitch, a live tour and a how-to so you know why it exists in seconds.' },
     ],
-    frames: frames(
-      ['Write a grammar', 'Start with the Dialect and Rules workbenches.'],
-      ['Verify each step', 'Complete & Verify merges output into the shared tree.'],
-      ['Ship it', 'Download the PHP project ZIP or install the PWA.']
-    ),
+    frames: [
+      { title: 'Write a grammar', caption: 'Start with the Dialect and Rules workbenches.', imageSrc: 'assets/guides/home-pipeline.svg' },
+      { title: 'Verify each step', caption: 'Complete & Verify merges output into the shared tree.' },
+      { title: 'Ship it', caption: 'Download the PHP project ZIP or install the PWA.' },
+    ],
   },
   files: {
     id: 'files',
@@ -74,11 +74,11 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
       { target: '[data-tour="files-tree"]', title: 'The tree', body: 'Every file any workbench has submitted, grouped by layer.' },
       { target: '[data-tour="files-viewer"]', title: 'Content and conflicts', body: 'Edit the selected file and compare conflicts with regenerated content.' },
     ],
-    frames: frames(
-      ['Submit', 'Finish a workbench step.'],
-      ['Browse', 'Open the file in the tree.'],
-      ['Review', 'Compare edits with generated content when a conflict appears.']
-    ),
+    frames: [
+      { title: 'Submit', caption: 'Finish a workbench step.', imageSrc: 'assets/guides/shared-files.svg' },
+      { title: 'Browse', caption: 'Open the file in the tree.' },
+      { title: 'Review', caption: 'Compare edits with generated content when a conflict appears.' },
+    ],
   },
   dialect: {
     id: 'dialect', title: 'Dialect',
@@ -87,7 +87,11 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
     proof: ['6 dialect presets', 'Live grammar editing', 'Feeds every later stage'],
     outputs: ['src/data/grammar.g2j', 'src/data/dialect.json'],
     tour: modalTour('Choose a dialect preset, then edit the grammar text. Diagnostics update live.'),
-    frames: frames(['Choose preset', 'Select EBNF, PEG, etc.'], ['Edit grammar', 'Type rules in the editor.'], ['Verify', 'At least one rule is required.']),
+    frames: [
+      { title: 'Choose preset', caption: 'Select EBNF, PEG, etc.', imageSrc: 'assets/guides/dialect-editor.svg' },
+      { title: 'Edit grammar', caption: 'Type rules in the editor.' },
+      { title: 'Verify', caption: 'At least one rule is required.' },
+    ],
   },
   rule_props: {
     id: 'rule_props', title: 'Rule Properties',
@@ -105,7 +109,11 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
     proof: ['Lambda statement evaluator', 'Cauchy sequence support', 'Multi-target export'],
     outputs: ['src/data/logic.json'],
     tour: modalTour('Enter a logic statement and bind labels to see evaluated results.'),
-    frames: frames(['Write a statement', 'Use the calculator layout.'], ['Bind labels', 'Map labels to values.'], ['Export', 'Copy or submit the engine.']),
+    frames: [
+      { title: 'Write a statement', caption: 'Use the calculator layout.', imageSrc: 'assets/guides/logic-calc.svg' },
+      { title: 'Bind labels', caption: 'Map labels to values.' },
+      { title: 'Export', caption: 'Copy or submit the engine.' },
+    ],
   },
   schema: {
     id: 'schema', title: 'Schema.org JSON-LD',

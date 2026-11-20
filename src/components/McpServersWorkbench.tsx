@@ -17,6 +17,7 @@ import {
   type McpClientExportTarget,
   type McpWorkspaceContext,
 } from '../engine/mcpServerEngine';
+import { resolveApiUrl } from '../engine/runtimePaths';
 import { DocTooltip } from './DocTooltip';
 import { HtmlCodeOutput } from './HtmlCodeOutput';
 import type {
@@ -110,7 +111,7 @@ export function McpServersWorkbench({
   const refreshStatuses = useCallback(async () => {
     fallbackRegistryRef.current!.updateContext(workspaceContext);
     try {
-      const res = await fetch('/api/mcp/servers');
+      const res = await fetch(resolveApiUrl('/api/mcp/servers'));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { servers?: McpServerStatus[] };
       if (Array.isArray(data.servers)) {
@@ -175,7 +176,7 @@ export function McpServersWorkbench({
     try {
       let rpcRes: McpJsonRpcResponse;
       try {
-        const res = await fetch(`/api/mcp/${selectedServerId}`, {
+        const res = await fetch(resolveApiUrl(`/api/mcp/${selectedServerId}`), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
           body: JSON.stringify(requestPayload),
@@ -248,7 +249,7 @@ export function McpServersWorkbench({
     setBusy(true);
     try {
       try {
-        const res = await fetch('/api/mcp/cache/clear', {
+        const res = await fetch(resolveApiUrl('/api/mcp/cache/clear'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(serverId ? { serverId } : {}),

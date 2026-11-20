@@ -1213,7 +1213,8 @@ function replaceUnquotedDelimiter(expr: string, prevDelim: string, nextDelim: st
 export function rewriteGrammarDialectTokens(
   rawGrammarText: string,
   prevDialect: DialectConfig,
-  nextDialect: DialectConfig
+  nextDialect: DialectConfig,
+  lastKnownSymbols?: Partial<ResolvedGrammarSymbols>
 ): string {
   const prevOp = prevDialect.ruleOperator.trim();
   const nextOp = nextDialect.ruleOperator.trim();
@@ -1235,11 +1236,36 @@ export function rewriteGrammarDialectTokens(
     'wildcard',
     'regexDelimiter',
   ];
-  const anySymbolChanged = singleTokenSymKeys.some(
-    (k) => prevSyms[k].trim() !== nextSyms[k].trim()
-  );
+  const pairSymKeys: Array<keyof typeof prevSyms> = [
+    'repeatBraces',
+    'groupParens',
+    'charClassBrackets',
+  ];
+  const singleRewrites: Array<[string, string]> = [];
+  for (const k of singleTokenSymKeys) {
+    const fromSym = prevSyms[k].trim() || lastKnownSymbols?.[k]?.trim() || '';
+    const toSym = nextSyms[k].trim();
+    if (fromSym && toSym && fromSym !== toSym) {
+      singleRewrites.push([fromSym, toSym]);
+    }
+  }
+  const pairRewrites: Array<[string, string]> = [];
+  for (const k of pairSymKeys) {
+    const fromPair = pairDelimiters(prevSyms[k].trim() || lastKnownSymbols?.[k]?.trim() || '');
+    const toPair = pairDelimiters(nextSyms[k].trim());
+    if (fromPair && toPair && (fromPair[0] !== toPair[0] || fromPair[1] !== toPair[1])) {
+      if (fromPair[0] !== toPair[0]) pairRewrites.push([fromPair[0], toPair[0]]);
+      if (fromPair[1] !== toPair[1]) pairRewrites.push([fromPair[1], toPair[1]]);
+    }
+  }
 
-  if (prevOp === nextOp && prevChoice === nextChoice && prevComment === nextComment && !anySymbolChanged) {
+  if (
+    prevOp === nextOp &&
+    prevChoice === nextChoice &&
+    prevComment === nextComment &&
+    singleRewrites.length === 0 &&
+    pairRewrites.length === 0
+  ) {
     return rawGrammarText;
   }
 
@@ -1279,26 +1305,11 @@ export function rewriteGrammarDialectTokens(
         ? replaceUnquotedDelimiter(rhs, prevChoice, nextChoice)
         : rhs;
 
-    // Also live-rewrite any changed Extended DAG Symbol operators (e.g., '+', '*', '?', '&', '!', etc.)
-    const prevSyms = resolveGrammarSymbols(prevDialect);
-    const nextSyms = resolveGrammarSymbols(nextDialect);
-    const singleTokenSymKeys: Array<keyof typeof prevSyms> = [
-      'oneOrMore',
-      'zeroOrMore',
-      'optional',
-      'posLookahead',
-      'negLookahead',
-      'posLookbehind',
-      'negLookbehind',
-      'wildcard',
-      'regexDelimiter',
-    ];
-    for (const symKey of singleTokenSymKeys) {
-      const fromSym = prevSyms[symKey].trim();
-      const toSym = nextSyms[symKey].trim();
-      if (fromSym && toSym && fromSym !== toSym) {
-        updatedRhs = replaceUnquotedDelimiter(updatedRhs, fromSym, toSym);
-      }
+    for (const [fromSym, toSym] of singleRewrites) {
+      updatedRhs = replaceUnquotedDelimiter(updatedRhs, fromSym, toSym);
+    }
+    for (const [fromDelim, toDelim] of pairRewrites) {
+      updatedRhs = replaceUnquotedDelimiter(updatedRhs, fromDelim, toDelim);
     }
 
     return `${indent}${formatGrammarRuleLine(lhs, updatedRhs, nextDialect.ruleOperator)}`;

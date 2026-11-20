@@ -22,11 +22,21 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     mkdirSync(target);
     mkdirSync(state, { mode: 0o700 });
     for (const file of ['index.php', 'install.php', 'api.php', 'slug_controller.php']) copyFileSync(`${project}/${file}`, `${source}/${file}`);
+    cpSync(`${project}/php`, `${source}/php`, { recursive: true });
     cpSync(`${project}/public`, `${source}/dist`, { recursive: true });
     writeFileSync(`${source}/dist/index.html`, '<!doctype html><script type="module" src="/studio/assets/app-abcdefgh.js"></script>');
     writeFileSync(`${source}/dist/assets/app-abcdefgh.js`, '/* fixture */');
     assert.notEqual(php(`${source}/install.php`, target, '/wrong/').status, 0);
     assert.notEqual(php(`${source}/install.php`, target, '/../').status, 0);
+    // Reject GRAMMAR2JSON_STATE_DIR placed inside target public webroot
+    const badStateInsideTarget = `${target}/nested-state`;
+    mkdirSync(badStateInsideTarget, { recursive: true, mode: 0o700 });
+    const badEnvInstall = spawnSync('php', [`${source}/install.php`, target, '/studio/'], {
+      encoding: 'utf8',
+      env: { ...process.env, GRAMMAR2JSON_STATE_DIR: badStateInsideTarget },
+    });
+    assert.notEqual(badEnvInstall.status, 0);
+    rmSync(badStateInsideTarget, { recursive: true, force: true });
     assert.equal(php(`${source}/install.php`, target, '/studio/').status, 0);
     assert.equal(php(`${source}/install.php`, target, '/studio/').status, 0);
     assert.match(readFileSync(`${target}/.htaccess`, 'utf8'), /RewriteRule \^\(\[a-z0-9\]\[a-z0-9-\]\*\)\/\?\$ index\.php\?slug=\$1/);
@@ -53,6 +63,15 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     let response = await fetch(`${root}/studio/deep/link`);
     assert.equal(response.status, 200);
     assert.match(await response.text(), /app-abcdefgh/);
+    response = await fetch(`${root}/studio/index.php`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /app-abcdefgh/);
+    response = await fetch(`${root}/studio/index.php?page=logic_calc`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /app-abcdefgh/);
+    response = await fetch(`${root}/studio/index.php/api/logic`);
+    assert.equal(response.status, 200);
+    assert.ok(typeof (await response.json()).statement === 'string');
     response = await fetch(`${root}/studio/?slug=help`);
     assert.equal(response.status, 200);
     assert.match(await response.text(), /Guided help/);
@@ -60,10 +79,10 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.equal(response.status, 404);
     response = await fetch(`${root}/studio/?slug=nodes/rule/quantity/members/expression`, { redirect: 'manual' });
     assert.equal(response.status, 307);
-    assert.equal(response.headers.get('location'), '/api/nodes/rule/quantity/members/expression');
+    assert.equal(response.headers.get('location'), '/studio/api/nodes/rule/quantity/members/expression');
     response = await fetch(`${root}/studio/?slug=members/expression&node=rule%2Fquantity`, { redirect: 'manual' });
     assert.equal(response.status, 307);
-    assert.equal(response.headers.get('location'), '/api/nodes/rule/quantity/members/expression');
+    assert.equal(response.headers.get('location'), '/studio/api/nodes/rule/quantity/members/expression');
     response = await fetch(`${root}/studio/?slug=members/expression`, { redirect: 'manual' });
     assert.equal(response.status, 400);
     response = await fetch(`${root}/studio/?template=unknown`);
@@ -190,9 +209,12 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.equal(response.headers.get('cache-control'), 'no-store');
     response = await fetch(`${root}/studio/api`);
     const discovery = await response.json();
-    assert.equal(discovery.partial, true);
+    assert.equal(discovery.partial, false);
     assert.equal(discovery._links.languages.href, `${root}/studio/api/languages`);
     assert.equal(discovery._links.workspaces.href, `${root}/studio/api/workspaces`);
+    assert.equal(discovery._links.mcpServers.href, `${root}/studio/api/mcp/servers`);
+    assert.equal(discovery._links.openaiTools.href, `${root}/studio/api/openai/tools`);
+    assert.equal(discovery._links.middleware.href, `${root}/studio/api/middleware/config`);
     response = await fetch(`${root}/studio/api/workspaces/default`);
     const { _links: defaultLinks, updatedAt: defaultTimestamp, ...phpDefault } = await response.json();
     const { updatedAt: nodeTimestamp, ...nodeDefault } = nodeStore.workspace;
@@ -238,9 +260,10 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     response = await fetch(`${root}/studio/api/mcp/logic_calc`);
-    assert.equal(response.status, 503);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).id, 'logic_calc');
     response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
-    assert.deepEqual((await response.json()).result.tools.map(tool => tool.name), ['evaluate_logic_lambda']);
+    assert.ok((await response.json()).result.tools.map(tool => tool.name).includes('evaluate_logic_lambda'));
     response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'resources/list' });
     const resource = (await response.json()).result.resources[0];
     assert.equal(resource.uri, 'grammar2json://logic_calc/artifact');
@@ -255,6 +278,14 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.equal(response.status, 200);
     assert.equal(logicLanguage, 'jsonld');
     assert.equal(JSON.parse(logicExport.content)['@type'], 'MathSolver');
+    response = await fetch(`${root}/studio/api/logic/export/python?mode=hardcoded`);
+    assert.equal(response.status, 200);
+    const pyExport = await response.json();
+    assert.equal(pyExport.inputMode, 'hardcoded');
+    assert.match(pyExport.content, /CLI_INPUTS_ENABLED = False/);
+    response = await fetch(`${root}/studio/api/logic/export/javascript?mode=cli`);
+    assert.equal(response.status, 200);
+    assert.match((await response.json()).content, /CLI_INPUTS_ENABLED = true/);
     response = await fetch(`${root}/studio/api/logic/export/notarealtarget`);
     assert.equal(response.status, 404);
     response = await fetch(`${root}/studio/api/logic/export/php`);
@@ -281,7 +312,10 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
       if (expected.structuredContent.ok) assert.deepEqual(actual.structuredContent.truthTable, expected.structuredContent.truthTable);
     }
     response = await mcpCall('api/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/list' });
-    assert.deepEqual((await response.json()).result.tools.map(tool => tool.name), ['logic_calc__evaluate_logic_lambda']);
+    const unifiedTools = (await response.json()).result.tools.map(tool => tool.name);
+    assert.ok(unifiedTools.includes('logic_calc__evaluate_logic_lambda'));
+    assert.ok(unifiedTools.includes('grammar__parse_grammar'));
+    assert.ok(unifiedTools.includes('jsonld__generate_schema_jsonld'));
     response = await mcpCall('api/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/call',
       params: { name: 'logic_calc__evaluate_logic_lambda', arguments: { logic_statement: '1 + 2' } } });
     assert.equal((await response.json()).result.structuredContent.displayValue, '3');
@@ -299,7 +333,7 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     const languages = await response.json();
     assert.equal(languages.count, SUPPORTED_LANGUAGES.length);
     assert.deepEqual(languages.languages.map(({ _links, ...language }) => language), SUPPORTED_LANGUAGES);
-    assert(languages.languages.every(language => language._links.exportLogic.available === (language.exportId === 'jsonld') &&
+    assert(languages.languages.every(language => language._links.exportLogic.available === true &&
       language._links.exportWorkspace.available === true));
     response = await fetch(`${root}/studio/api`, { method: 'HEAD' });
     assert.equal(response.status, 200);
@@ -322,11 +356,22 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     response = await fetch(`${root}/studio/?template_route=studio/notice`, { headers: { Accept: 'text/plain' } });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'text/plain; charset=utf-8');
+    const plainEtag = response.headers.get('etag');
+    assert.ok(plainEtag);
     assert.equal(await response.text(), '<aside role="status"><strong data-template-text="title">Notice</strong><p data-template-text="message"></p></aside>');
+    response = await fetch(`${root}/studio/?template_route=studio/notice`, { headers: { Accept: 'text/plain', 'If-None-Match': plainEtag } });
+    assert.equal(response.status, 304);
     response = await fetch(`${root}/studio/?template_route=studio/notice&title=%3Cimg%3E&message=hello`, { headers: { Accept: 'text/html' } });
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+    const htmlEtag = response.headers.get('etag');
+    assert.ok(htmlEtag);
     assert.match(await response.text(), /&lt;img&gt;/);
+    response = await fetch(`${root}/studio/?template_route=studio/notice&title=%3Cimg%3E&message=hello`, { headers: { Accept: 'text/html', 'If-None-Match': htmlEtag } });
+    assert.equal(response.status, 304);
+    // Strict allowlist rejects path traversal in template_route
+    response = await fetch(`${root}/studio/?template_route=..%2Fetc/notice`, { headers: { Accept: 'text/plain' } });
+    assert.equal(response.status, 404);
     response = await fetch(`${root}/studio/?template_route=compact/notice`, {
       method: 'POST', headers: { Accept: 'text/html', 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: 'From JSON', message: '<b>safe</b>' }),
@@ -539,6 +584,9 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     response = await fetch(`${root}/studio/api/rules`);
     assert((await response.json()).count > 0);
     assert.equal((await fetch(`${root}/studio/api.php`)).status, 404);
+    assert.equal((await fetch(`${root}/studio/index.php/api.php`)).status, 404);
+    assert.equal((await fetch(`${root}/studio/index.php/index.php`)).status, 404);
+    assert.equal((await fetch(`${root}/studio/index.php/php/Router.php`)).status, 404);
     assert.equal((await fetch(`${root}/studio/missing.js`)).status, 404);
     assert.equal((await fetch(`${root}/studio/%252eenv`)).status, 400);
     assert.equal((await fetch(`${root}/other/`)).status, 404);
@@ -634,4 +682,74 @@ test('worker caches only public shell and hashed assets, never API or private re
   privateAsset = false; htmlAsset = true;
   await dispatch(`${scope}assets/missing-abcdefgh.js`, 'cors').result;
   assert(!saved.has(`${scope}assets/missing-abcdefgh.js`));
+});
+
+test('index.php serves built dist SPA when opened directly in source checkout and Apache subpaths', async () => {
+  const work = mkdtempSync(`${project}/tests/.checkout-check-`);
+  const source = `${work}/checkout`, state = `${work}/state`;
+  let rootServer, subpathServer;
+  const pickPort = () => new Promise((resolve, reject) => {
+    const listener = createServer();
+    listener.on('error', reject);
+    listener.listen(0, '127.0.0.1', () => { const p = listener.address().port; listener.close(() => resolve(p)); });
+  });
+  const waitUp = async (url) => {
+    for (let i = 0; ; i++) {
+      try { return await fetch(url); } catch (error) { if (i === 50) throw error; await new Promise(r => setTimeout(r, 20)); }
+    }
+  };
+  try {
+    mkdirSync(`${source}/dist/assets`, { recursive: true });
+    mkdirSync(state, { mode: 0o700 });
+    for (const file of ['index.php', 'api.php', 'slug_controller.php']) copyFileSync(`${project}/${file}`, `${source}/${file}`);
+    cpSync(`${project}/php`, `${source}/php`, { recursive: true });
+    writeFileSync(`${source}/index.html`, '<!doctype html><div id="root"></div><script type="module" src="/src/main.tsx"></script>');
+    writeFileSync(`${source}/dist/index.html`, '<!doctype html><head><title>Dev</title></head><body><div id="root"></div><script type="module" crossorigin src="/assets/index-test.js"></script></body>');
+    writeFileSync(`${source}/dist/assets/index-test.js`, '/* built test bundle */');
+    const apacheSimRouter = `${work}/apache-subpath-router.php`;
+    writeFileSync(apacheSimRouter, `<?php\n$_SERVER['SCRIPT_NAME'] = '/Application/Languages-main/index.php';\nrequire ${JSON.stringify(`${source}/index.php`)};\n`);
+
+    const rootPort = await pickPort();
+    rootServer = spawn('php', ['-S', `127.0.0.1:${rootPort}`, `${source}/index.php`], {
+      cwd: source, stdio: 'ignore', env: { ...process.env, GRAMMAR2JSON_STATE_DIR: state },
+    });
+    const rootBase = `http://127.0.0.1:${rootPort}`;
+    let res = await waitUp(`${rootBase}/index.php`);
+    assert.equal(res.status, 200);
+    let html = await res.text();
+    assert.match(html, /\/dist\/assets\/index-test\.js/);
+    assert.doesNotMatch(html, /\/src\/main\.tsx/);
+    res = await fetch(`${rootBase}/dist/assets/index-test.js`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /javascript/);
+
+    const subPort = await pickPort();
+    subpathServer = spawn('php', ['-S', `127.0.0.1:${subPort}`, apacheSimRouter], {
+      cwd: source, stdio: 'ignore', env: { ...process.env, GRAMMAR2JSON_STATE_DIR: state },
+    });
+    const subRoot = `http://127.0.0.1:${subPort}`;
+    res = await waitUp(`${subRoot}/Application/Languages-main/index.php`);
+    assert.equal(res.status, 200);
+    html = await res.text();
+    assert.match(html, /\/Application\/Languages-main\/dist\/assets\/index-test\.js/);
+    assert.match(html, /data-api-base="\/Application\/Languages-main\/index\.php"/);
+    assert.match(html, /data-asset-base="\/Application\/Languages-main\/dist\/"/);
+
+    res = await fetch(`${subRoot}/Application/Languages-main/index.php/api/logic`);
+    assert.equal(res.status, 200);
+    const logicPayload = await res.json();
+    assert.equal(typeof logicPayload.statement, 'string');
+    assert.match(logicPayload._links.logic.href, /\/Application\/Languages-main\/api\/logic$/);
+
+    res = await fetch(`${subRoot}/Application/Languages-main/index.php?slug=help`);
+    assert.equal(res.status, 200);
+    assert.match(await res.text(), /Guided help/);
+
+    res = await fetch(`${subRoot}/Application/Languages-main/api.php`);
+    assert.equal(res.status, 404);
+  } finally {
+    if (rootServer) { rootServer.kill(); await new Promise(resolve => rootServer.once('exit', resolve)); }
+    if (subpathServer) { subpathServer.kill(); await new Promise(resolve => subpathServer.once('exit', resolve)); }
+    rmSync(work, { recursive: true, force: true });
+  }
 });

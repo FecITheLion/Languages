@@ -39,7 +39,7 @@ function assertSafePath(path: string): void {
   }
 }
 
-function validateModule(pkg: StudioModulePackage): void {
+export function validateModule(pkg: StudioModulePackage): void {
   const { manifest, files } = pkg;
   if (!manifest || typeof manifest !== 'object' ||
     typeof manifest.id !== 'string' || !VALID_ID.test(manifest.id) ||

@@ -47,10 +47,14 @@ export interface DeepLinkFullState extends DeepLinkRouteState {
 
 const VALID_TOP_VIEWS: readonly TopView[] = [
   'workbench',
+  'formal_logic',
+  'schema_predicate',
   'graph',
   'histolog',
   'api',
   'modules',
+  'middleware',
+  'files',
   'openapi',
   'dsl',
   'bundle',

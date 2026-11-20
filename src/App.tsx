@@ -1,9 +1,20 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type SetStateAction } from 'react';
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type SetStateAction,
+} from 'react';
 import {
   AlertTriangle,
   Boxes,
   CheckCircle2,
   Code2,
+  Columns2,
   Download,
   Eraser,
   FileCode2,
@@ -20,14 +31,18 @@ import {
   Search,
   Server,
   Share2,
+  Sliders,
+  Sparkles,
   Sun,
   Terminal,
   Undo2,
+  WifiOff,
   X,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
 import {
   DEFAULT_DSL_SOURCE,
+  DEFAULT_GRAMMAR_SYMBOLS,
   DIALECT_PRESETS,
   OPENAPI_SPEC,
   parseDslFlows,
@@ -54,6 +69,7 @@ import {
   generateRustFromWorkspace,
   generateWatFromWorkspace,
   grammarToSchemaJson,
+  GRAMMAR_SYMBOL_SPECS,
   inferLineMutations,
   inferRuleOrderConfigs,
   mergeGrammarRules,
@@ -61,12 +77,14 @@ import {
   parsePythonToAst,
   parseRustToAst,
   reorderGrammarRules,
+  resolveGrammarSymbols,
   rewriteGrammarDialectTokens,
   schemaJsonToGrammar,
   sortRulesByPrecedence,
   splitGrammarRule,
   unparsePythonAst,
   updateGrammarRule,
+  type ResolvedGrammarSymbols,
 } from './engine/bidirectionalEngine';
 import {
   loadGlobalCallbacks,
@@ -102,6 +120,7 @@ import {
 } from './engine/moduleAutocompleteEngine';
 import { buildPipelineBreadcrumbs } from './engine/pipelineBreadcrumbs';
 import { downloadPhpProjectZip } from './engine/phpZipPackager';
+import { resolveApiUrl } from './engine/runtimePaths';
 import {
   createDriveWorkspace,
   deleteDriveWorkspace,
@@ -113,13 +132,11 @@ import {
   signOutGoogleDrive,
   updateDriveWorkspace,
 } from './services/googleDriveAuth';
-import { ApiStudioWorkbench } from './components/ApiStudioWorkbench';
 import { AutocompleteField } from './components/AutocompleteField';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DocTooltip } from './components/DocTooltip';
 import { ElevatorPitch } from './components/ElevatorPitch';
 import { GuidedHelp } from './components/GuidedHelp';
-import { HistologWorkbench } from './components/HistologWorkbench';
 import { HtmlCodeOutput } from './components/HtmlCodeOutput';
 import { SpecsBundleView } from './components/InspectorViews';
 import type { PipelineMcpUiEffect } from './components/McpServersWorkbench';
@@ -127,9 +144,29 @@ import { PipelineBreadcrumbs } from './components/PipelineBreadcrumbs';
 import { PipelineGrid } from './components/PipelineGrid';
 import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
-import { ModuleWorkbench } from './components/ModuleWorkbench';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
-import { VirtualFilesWorkbench } from './components/VirtualFilesWorkbench';
+
+const ApiStudioWorkbench = lazy(() =>
+  import('./components/ApiStudioWorkbench').then((m) => ({ default: m.ApiStudioWorkbench }))
+);
+const HistologWorkbench = lazy(() =>
+  import('./components/HistologWorkbench').then((m) => ({ default: m.HistologWorkbench }))
+);
+const ModuleWorkbench = lazy(() =>
+  import('./components/ModuleWorkbench').then((m) => ({ default: m.ModuleWorkbench }))
+);
+const MiddlewareSuiteWorkbench = lazy(() =>
+  import('./components/MiddlewareSuiteWorkbench').then((m) => ({ default: m.MiddlewareSuiteWorkbench }))
+);
+const MultilineBooleanCalculator = lazy(() =>
+  import('./components/MultilineBooleanCalculator').then((m) => ({ default: m.MultilineBooleanCalculator }))
+);
+const SchemaPredicateWorkbench = lazy(() =>
+  import('./components/SchemaPredicateWorkbench').then((m) => ({ default: m.SchemaPredicateWorkbench }))
+);
+const VirtualFilesWorkbench = lazy(() =>
+  import('./components/VirtualFilesWorkbench').then((m) => ({ default: m.VirtualFilesWorkbench }))
+);
 import { applyVirtualSubmission, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, VirtualFilesError, virtualEditAllowed, virtualEdits, workbenchVirtualFiles, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
 import {
   getWorkbenchPitch,
@@ -314,11 +351,24 @@ export default function App() {
   const virtualFiles = virtualState.files;
   const setVirtualFiles = useCallback((value: SetStateAction<VirtualFiles>) => dispatchVirtual({ type: 'update', value }), []);
   const [recoveryPending, setRecoveryPending] = useState(savedVirtualFiles.issues.length > 0 || savedWorkbenchFiles.issues.length > 0);
-  const [legacyTree] = useState(() => {
+  const [legacyTree, setLegacyTree] = useState(() => {
     try { return window.localStorage.getItem('g2j.sharedTree.v1'); }
     catch { return null; }
   });
+  const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
+  const [showOfflineBanner, setShowOfflineBanner] = useState(true);
+  useEffect(() => {
+    const onOffline = () => setIsOffline(true);
+    const onOnline = () => setIsOffline(false);
+    window.addEventListener('offline', onOffline);
+    window.addEventListener('online', onOnline);
+    return () => {
+      window.removeEventListener('offline', onOffline);
+      window.removeEventListener('online', onOnline);
+    };
+  }, []);
   const [showVirtualFiles, setShowVirtualFiles] = useState(false);
+  const [virtualFilesSplitWide, setVirtualFilesSplitWide] = useState(false);
   const [submissionRevision, setSubmissionRevision] = useState(0);
   const submitArtifacts = useCallback((owner: string, submissions: VirtualSubmission[]) => {
     void submissionRevision;
@@ -417,6 +467,16 @@ export default function App() {
   const [dialect, setDialect] = useState<DialectConfig>(
     initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config
   );
+  const [lastKnownDialectSymbols, setLastKnownDialectSymbols] = useState<ResolvedGrammarSymbols>(() => {
+    const resolved = resolveGrammarSymbols(
+      initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config
+    );
+    const seed: ResolvedGrammarSymbols = { ...DEFAULT_GRAMMAR_SYMBOLS };
+    for (const spec of GRAMMAR_SYMBOL_SPECS) {
+      if (resolved[spec.key]) seed[spec.key] = resolved[spec.key];
+    }
+    return seed;
+  });
   const [schemaConfig, setSchemaConfig] = useState<SchemaConfig>(
     initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG
   );
@@ -966,7 +1026,7 @@ export default function App() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      void fetch('/api/mcp/context', {
+      void fetch(resolveApiUrl('/api/mcp/context'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(mcpWorkspaceContext),
@@ -1590,7 +1650,7 @@ export default function App() {
   };
 
   const handleSyncWorkspaceToServer = useCallback(async () => {
-    await fetch('/api/workspaces/default', {
+    await fetch(resolveApiUrl('/api/workspaces/default'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1625,7 +1685,7 @@ export default function App() {
 
   const handlePullServerWorkspace = useCallback(async () => {
     try {
-      const resp = await fetch('/api/workspaces/default');
+      const resp = await fetch(resolveApiUrl('/api/workspaces/default'));
       if (!resp.ok) return;
       const data = (await resp.json()) as Record<string, unknown>;
       if (typeof data.grammarText === 'string' && data.grammarText !== grammarText) {
@@ -1683,6 +1743,14 @@ export default function App() {
 
   const handleApplyDialectPreset = (presetId: DialectPresetId) => {
     const p = DIALECT_PRESETS[presetId];
+    const resolved = resolveGrammarSymbols(p.config);
+    setLastKnownDialectSymbols((prev) => {
+      const next = { ...prev };
+      for (const spec of GRAMMAR_SYMBOL_SPECS) {
+        if (resolved[spec.key]) next[spec.key] = resolved[spec.key];
+      }
+      return next;
+    });
     setDialect(p.config);
     setGrammarText(p.sampleGrammar);
     setEvalRule(p.sampleRule);
@@ -1692,13 +1760,29 @@ export default function App() {
   };
 
   // Live-rewrite rule operator, choice delimiter, comment prefix, AND Extended DAG operators into grammarText!
+  // When disabling an operator (""), preserve its last known symbol for restore/rewrite on re-enable.
   const handleDialectChange = (patch: Partial<DialectConfig>) => {
+    const prevResolved = resolveGrammarSymbols(dialect);
+    const savedLastKnown: ResolvedGrammarSymbols = { ...lastKnownDialectSymbols };
+    for (const spec of GRAMMAR_SYMBOL_SPECS) {
+      if (prevResolved[spec.key]) {
+        savedLastKnown[spec.key] = prevResolved[spec.key];
+      }
+    }
     const next: DialectConfig = {
       ...dialect,
       ...patch,
       symbols: patch.symbols ? { ...dialect.symbols, ...patch.symbols } : dialect.symbols,
     };
-    const rewrittenGrammar = rewriteGrammarDialectTokens(grammarText, dialect, next);
+    const nextResolved = resolveGrammarSymbols(next);
+    const nextLastKnown: ResolvedGrammarSymbols = { ...savedLastKnown };
+    for (const spec of GRAMMAR_SYMBOL_SPECS) {
+      if (nextResolved[spec.key]) {
+        nextLastKnown[spec.key] = nextResolved[spec.key];
+      }
+    }
+    const rewrittenGrammar = rewriteGrammarDialectTokens(grammarText, dialect, next, savedLastKnown);
+    setLastKnownDialectSymbols(nextLastKnown);
     setDialect(next);
     if (rewrittenGrammar !== grammarText) {
       setGrammarText(rewrittenGrammar);
@@ -2723,6 +2807,7 @@ export default function App() {
     activePage,
     onSubmitArtifacts: submitArtifacts,
     dialect,
+    lastKnownDialectSymbols,
     schemaConfig,
     mutationPolicy,
     rules,
@@ -2906,6 +2991,11 @@ export default function App() {
     autocompleteSuggestions,
     lintIssues: studioLintIssues,
     onRippleModuleExport: handleRippleModuleExport,
+    onApplyGrammarText: (nextGrammar: string) => {
+      setGrammarText(nextGrammar);
+      recompileFromGrammar(nextGrammar, dialect, schemaConfig);
+      showNotice('Synced compiled EBNF rules into active Grammar & Dialect.');
+    },
     canUndo,
     onUndo: handleUndo,
   };
@@ -2934,7 +3024,17 @@ export default function App() {
     SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage) ?? SUPPORTED_LANGUAGES[0];
 
   const primaryNavItems: Array<{
-    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'modules' | 'files' | 'specs';
+    id:
+      | 'workbench'
+      | 'formal_logic'
+      | 'schema_predicate'
+      | 'graph'
+      | 'histolog'
+      | 'api'
+      | 'modules'
+      | 'middleware'
+      | 'files'
+      | 'specs';
     fullLabel: string;
     compactLabel: string;
     icon: typeof Layers;
@@ -2948,6 +3048,22 @@ export default function App() {
       icon: Layers,
       active: topView === 'workbench',
       onClick: () => setTopView('workbench'),
+    },
+    {
+      id: 'formal_logic',
+      fullLabel: 'Formal Logic & λ',
+      compactLabel: 'Logic λ',
+      icon: Sparkles,
+      active: topView === 'formal_logic',
+      onClick: () => setTopView('formal_logic'),
+    },
+    {
+      id: 'schema_predicate',
+      fullLabel: 'Schema EBNF Studio',
+      compactLabel: 'Schema AST',
+      icon: Columns2,
+      active: topView === 'schema_predicate',
+      onClick: () => setTopView('schema_predicate'),
     },
     {
       id: 'graph',
@@ -2980,6 +3096,14 @@ export default function App() {
       icon: Boxes,
       active: topView === 'modules',
       onClick: () => setTopView('modules'),
+    },
+    {
+      id: 'middleware',
+      fullLabel: 'Middleware Suite',
+      compactLabel: 'Middleware',
+      icon: Sliders,
+      active: topView === 'middleware',
+      onClick: () => setTopView('middleware'),
     },
     {
       id: 'files',
@@ -3061,6 +3185,27 @@ export default function App() {
       </header>
 
       <main className="mx-auto max-w-[1440px] space-y-5 px-3 py-4 pb-20 sm:px-6 sm:py-6 md:pb-8">
+        {isOffline && showOfflineBanner && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
+          >
+            <div className="flex items-center gap-2">
+              <WifiOff className="h-4 w-4 shrink-0" />
+              <span>
+                <strong>Offline mode:</strong> The cached SPA shell, local workbenches, and cached public templates remain available. Server API writes and remote MCP calls require connectivity.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOfflineBanner(false)}
+              className="rounded border border-amber-400 px-2 py-0.5 text-[11px] font-medium hover:bg-amber-100 dark:border-amber-700 dark:hover:bg-amber-900/50"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         {/* WORKSPACE TOOLBAR: GLOBAL SEARCH, 22-LANGUAGE SWITCHER, AUTO-SAVE, UNDO/REDO, CLEAR/RESTORE, DEEP LINKS */}
         {topView === 'workbench' && <GuideBanner guideId="home" variant="hero" />}
 
@@ -3266,6 +3411,28 @@ export default function App() {
                 )}
               </div>
 
+              {/* Persistent Reset Demo / Start Fresh action for beginners & clean runs */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (histologEntries[0]) {
+                    handleRestoreGeneration(histologEntries[0]);
+                    setVerifiedSteps([]);
+                    setActivePage('dialect');
+                    setTopView('workbench');
+                    showNotice('Reset demo workspace to its clean starting state.');
+                  } else {
+                    handleClearEntireEngine();
+                  }
+                }}
+                title="Reset demo workspace to initial starting state"
+                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/70 px-2.5 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span className="hidden lg:inline">Reset Demo / Start Fresh</span>
+                <span className="lg:hidden">Reset Demo</span>
+              </button>
+
               {/* Direct Link & Shareable State Link */}
               <button
                 type="button"
@@ -3415,28 +3582,77 @@ export default function App() {
           </div>)}
         </section>}
 
-        <div>
-          <button
-            type="button"
-            className="min-h-10 rounded border px-3 py-1.5 text-sm font-medium"
-            aria-expanded={showVirtualFiles}
-            aria-controls="shared-virtual-files"
-            onClick={() => setShowVirtualFiles(value => !value)}
-          >
-            {showVirtualFiles ? 'Hide' : 'Show'} generated files ({Object.keys(virtualFiles).length})
-          </button>
-          <div id="shared-virtual-files" className="mt-2" hidden={!showVirtualFiles}>
-            <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 shadow-2xs hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800"
+              aria-expanded={showVirtualFiles}
+              aria-controls="shared-virtual-files"
+              onClick={() => setShowVirtualFiles((value) => !value)}
+            >
+              <Columns2 className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+              {showVirtualFiles ? 'Hide' : 'Show'} generated files ({Object.keys(virtualFiles).length})
+            </button>
+            {showVirtualFiles && topView !== 'files' && (
+              <button
+                type="button"
+                onClick={() => setVirtualFilesSplitWide((v) => !v)}
+                className="hidden rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 xl:inline-flex dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+              >
+                {virtualFilesSplitWide ? 'Layout: 50 / 50' : 'Layout: 60 / 40'}
+              </button>
+            )}
           </div>
+          {showVirtualFiles && topView !== 'files' && (
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              Live side-by-side workspace &amp; generated files view (collapsible)
+            </span>
+          )}
         </div>
 
-        {/* TOP VIEW ROUTER */}
+        {/* TOP VIEW ROUTER + COLLAPSIBLE SIDE-BY-SIDE LIVE GENERATED FILES VIEW */}
+        <div className="grid grid-cols-1 items-start gap-5 xl:grid-cols-12">
+          <div
+            className={`min-w-0 space-y-5 ${
+              showVirtualFiles && topView !== 'files'
+                ? virtualFilesSplitWide
+                  ? 'xl:col-span-6'
+                  : 'xl:col-span-7'
+                : 'xl:col-span-12'
+            }`}
+          >
         {topView !== 'workbench' && (
           <div className="flex justify-end">
             <GuidedHelp key={topView} context={topView === 'files' ? 'virtual_files' : topView} />
           </div>
         )}
-        {topView === 'graph' ? (
+        {topView === 'formal_logic' ? (
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Formal Logic Workbench…</div>}>
+            <MultilineBooleanCalculator
+              onLogicStateChange={handleLogicStateChange}
+              onSubmitArtifacts={submitArtifacts}
+              onDownloadFile={triggerTextDownload}
+              onNotify={showNotice}
+            />
+          </Suspense>
+        ) : topView === 'schema_predicate' ? (
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Schema EBNF Studio…</div>}>
+            <SchemaPredicateWorkbench
+              studioJsonText={jsonText}
+              onSyncEbnfToGrammar={(nextGrammar) => {
+                setGrammarText(nextGrammar);
+                recompileFromGrammar(nextGrammar, dialect, schemaConfig);
+                setTopView('workbench');
+                setActivePage('dialect');
+                showNotice('Synced compiled EBNF rules into active Grammar & Dialect.');
+              }}
+              onSubmitArtifacts={submitArtifacts}
+              onDownloadFile={triggerTextDownload}
+              onNotify={showNotice}
+            />
+          </Suspense>
+        ) : topView === 'graph' ? (
           <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
             <RuleDependencyGraph
               graph={ruleGraph}
@@ -3463,50 +3679,117 @@ export default function App() {
             />
           </section>
         ) : topView === 'histolog' ? (
-          <HistologWorkbench
-            allowExport={canExportHistory}
-            entries={histologEntries}
-            index={histologIndex}
-            schemaName={schemaConfig.schemaName}
-            initialFromGen={lastDiffRef?.from}
-            initialToGen={lastDiffRef?.to}
-            onCaptureCheckpoint={handleCaptureCheckpoint}
-            onRestoreGeneration={handleRestoreGeneration}
-            onRestoreSection={handleRestoreSection}
-            onClearSection={(field) => handleClearSection(field)}
-            onClearEntireEngine={handleClearEntireEngine}
-            onImportHistolog={handleImportHistolog}
-            onDownloadFile={(content, filename, mime) => {
-              if (!canExportHistory) {
-                showNotice('History export is blocked by the mutation policy for virtual edits.');
-                return;
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Histolog…</div>}>
+            <HistologWorkbench
+              allowExport={canExportHistory}
+              entries={histologEntries}
+              index={histologIndex}
+              schemaName={schemaConfig.schemaName}
+              initialFromGen={lastDiffRef?.from}
+              initialToGen={lastDiffRef?.to}
+              onCaptureCheckpoint={handleCaptureCheckpoint}
+              onRestoreGeneration={handleRestoreGeneration}
+              onRestoreSection={handleRestoreSection}
+              onClearSection={(field) => handleClearSection(field)}
+              onClearEntireEngine={handleClearEntireEngine}
+              onImportHistolog={handleImportHistolog}
+              onDownloadFile={(content, filename, mime) => {
+                if (!canExportHistory) {
+                  showNotice('History export is blocked by the mutation policy for virtual edits.');
+                  return;
+                }
+                triggerTextDownload(content, filename, mime);
+              }}
+              onCopyDiffLink={(fromGen, toGen) =>
+                void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
               }
-              triggerTextDownload(content, filename, mime);
-            }}
-            onCopyDiffLink={(fromGen, toGen) =>
-              void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
-            }
-          />
+            />
+          </Suspense>
         ) : topView === 'modules' ? (
-          <ModuleWorkbench />
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Module Workbench…</div>}>
+            <ModuleWorkbench />
+          </Suspense>
+        ) : topView === 'middleware' ? (
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Middleware Suite…</div>}>
+            <MiddlewareSuiteWorkbench
+              onDownloadFile={triggerTextDownload}
+              onNotify={showNotice}
+              onFrontendConfigChange={(fe) => setShowOfflineBanner(fe.enableOfflineBanner)}
+            />
+          </Suspense>
         ) : topView === 'files' ? (
           <div className="space-y-4">
             <GuideBanner guideId="files" />
-            {legacyTree && <div role="status" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
-              A previous shared tree is still stored in this browser. It is not automatically merged into this workspace.
-              <button type="button" className="ml-2 underline" disabled={!mutationPolicy.allowExportMutation || mutationPolicy.lockedRules.length > 0}
-                onClick={() => triggerTextDownload(legacyTree, 'previous-shared-tree.json', 'application/json')}>Download previous tree</button>
+            {legacyTree && <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
+              <span>A previous shared tree (<code>g2j.sharedTree.v1</code>) is stored in this browser.</span>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  className="rounded border border-amber-600 bg-white px-2.5 py-1 text-xs font-medium text-amber-900 hover:bg-amber-100 dark:bg-slate-900 dark:text-amber-200"
+                  onClick={() => {
+                    try {
+                      const parsed = JSON.parse(legacyTree) as Record<string, unknown>;
+                      const submissions: VirtualSubmission[] = [];
+                      const walk = (node: unknown, prefix: string) => {
+                        if (!node || typeof node !== 'object') return;
+                        for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+                          const p = prefix ? `${prefix}/${k}` : k;
+                          if (typeof v === 'string') {
+                            submissions.push({ path: `legacy/${p.replace(/^\/+/, '')}`, content: v, filename: k });
+                          } else if (v && typeof v === 'object' && typeof (v as { content?: unknown }).content === 'string') {
+                            submissions.push({ path: `legacy/${p.replace(/^\/+/, '')}`, content: (v as { content: string }).content, filename: k });
+                          } else if (v && typeof v === 'object') {
+                            walk(v, p);
+                          }
+                        }
+                      };
+                      walk(parsed, '');
+                      if (submissions.length > 0) submitArtifacts('legacy-migration', submissions);
+                      window.localStorage.removeItem('g2j.sharedTree.v1');
+                      setLegacyTree(null);
+                      showNotice(`Migrated ${submissions.length} legacy shared-tree file(s) to the canonical workspace.`);
+                    } catch {
+                      showNotice('Could not parse legacy tree JSON; use Download previous tree to inspect it first.');
+                    }
+                  }}
+                >
+                  Migrate to Canonical Workspace
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-amber-500 px-2.5 py-1 text-xs font-medium underline"
+                  disabled={!mutationPolicy.allowExportMutation || mutationPolicy.lockedRules.length > 0}
+                  onClick={() => triggerTextDownload(legacyTree, 'previous-shared-tree.json', 'application/json')}
+                >
+                  Download previous tree
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-red-400 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 dark:text-red-300"
+                  onClick={() => {
+                    try { window.localStorage.removeItem('g2j.sharedTree.v1'); } catch { /* ignore */ }
+                    setLegacyTree(null);
+                    showNotice('Cleared legacy shared-tree fallback data from browser storage.');
+                  }}
+                >
+                  Clear Legacy Data
+                </button>
+              </div>
             </div>}
-            <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />
+            <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Shared Files…</div>}>
+              <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />
+            </Suspense>
           </div>
         ) : topView === 'api' ? (
-          <ApiStudioWorkbench
-            onSubmitArtifacts={submitArtifacts}
-            onSyncWorkspaceToServer={handleSyncWorkspaceToServer}
-            onPullServerWorkspace={handlePullServerWorkspace}
-            onDownloadFile={triggerTextDownload}
-            onNotify={showNotice}
-          />
+          <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading API Studio…</div>}>
+            <ApiStudioWorkbench
+              onSubmitArtifacts={submitArtifacts}
+              onSyncWorkspaceToServer={handleSyncWorkspaceToServer}
+              onPullServerWorkspace={handlePullServerWorkspace}
+              onDownloadFile={triggerTextDownload}
+              onNotify={showNotice}
+            />
+          </Suspense>
         ) : isSpecsView ? (
           <SpecsBundleView
             onSubmitArtifacts={submitArtifacts}
@@ -3639,9 +3922,9 @@ export default function App() {
                   </button>
                 </div>
 
-                <ElevatorPitch copy={workbenchPitch} compact />
+                <ElevatorPitch copy={workbenchPitch} compact className="mb-5" />
 
-                <div className="flex-1">
+                <div className="flex-1 pt-1">
                   <StepViews {...stepViewProps} />
                 </div>
               </section>
@@ -3927,14 +4210,39 @@ export default function App() {
             </div>
           </>
         )}
+          </div>
+
+          <aside
+            id="shared-virtual-files"
+            hidden={!showVirtualFiles || topView === 'files'}
+            className={`min-w-0 ${
+              virtualFilesSplitWide ? 'xl:col-span-6' : 'xl:col-span-5'
+            } xl:sticky xl:top-20 xl:max-h-[calc(100vh-6rem)] xl:overflow-auto`}
+          >
+            {showVirtualFiles && topView !== 'files' && (
+              <Suspense fallback={<div className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-900">Loading Generated Files…</div>}>
+                <VirtualFilesWorkbench
+                  files={virtualFiles}
+                  setFiles={setVirtualFiles}
+                  policy={mutationPolicy}
+                  onDownload={triggerTextDownload}
+                  compactDrawer
+                  onCollapse={() => setShowVirtualFiles(false)}
+                  splitWidth={virtualFilesSplitWide ? 'wide' : 'compact'}
+                  onToggleSplitWidth={() => setVirtualFilesSplitWide((v) => !v)}
+                />
+              </Suspense>
+            )}
+          </aside>
+        </div>
       </main>
 
-      {/* MOBILE BOTTOM TAB BAR (5 destinations, >=44px touch targets, safe-area inset) */}
+      {/* MOBILE BOTTOM TAB BAR (scrollable destinations, >=44px touch targets, safe-area inset) */}
       <nav
         aria-label="Mobile navigation"
         className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur-xs md:hidden dark:border-slate-800 dark:bg-slate-900/95"
       >
-        <div className="grid h-14 grid-cols-7">
+        <div className="flex h-14 overflow-x-auto px-1">
           {primaryNavItems.map((item) => {
             const Icon = item.icon;
             return (
@@ -3942,7 +4250,7 @@ export default function App() {
                 key={item.id}
                 type="button"
                 onClick={item.onClick}
-                className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
+                className={`flex min-h-[44px] min-w-[68px] shrink-0 flex-col items-center justify-center gap-0.5 px-2 text-[10px] font-medium transition-colors ${
                   item.active
                     ? 'text-blue-600 dark:text-blue-400'
                     : 'text-slate-500 dark:text-slate-400'

@@ -1,0 +1,61 @@
+name: CI — PHP, TypeScript, Build & Contract Parity
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    name: Lint, Build & Full Integration Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup PHP with pdo_sqlite, dom, and mbstring
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: pdo_sqlite, dom, mbstring, json, pcre
+
+      - name: Install optional language runtimes (Lua, Ruby, Python, Rust)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4 ruby-full python3
+          if ! command -v lua >/dev/null 2>&1 && command -v lua5.4 >/dev/null 2>&1; then
+            sudo ln -sf "$(command -v lua5.4)" /usr/local/bin/lua
+          fi
+          rustc --version
+          lua -v
+          ruby -v
+          python3 --version
+
+      - name: PHP syntax check (php -l)
+        run: |
+          for f in *.php php/*.php php/handlers/*.php; do
+            php -l "$f"
+          done
+
+      - name: Install Node dependencies
+        run: npm ci || npm install --no-audit --no-fund
+
+      - name: TypeScript typecheck (npm run lint)
+        run: npm run lint
+
+      - name: Production Vite build (root & subpath)
+        run: |
+          npm run build -- --base=/
+          npm run build -- --base=/studio/
+
+      - name: Run full unit, PHP parity & contract test suite
+        env:
+          CI: 'true'
+        run: npm test

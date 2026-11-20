@@ -7,6 +7,11 @@ function valid_node_slug_segment(string $value): bool {
         && !str_contains($value, '/') && !str_contains($value, '\\') && !str_contains($value, "\0");
 }
 
+function slug_app_base_prefix(): string {
+    $base = function_exists('app_effective_base') ? app_effective_base() : (defined('APP_BASE') ? APP_BASE : '/');
+    return $base === '/' ? '' : rtrim($base, '/');
+}
+
 function redirect_pretty_node(string $target): never {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if (!in_array($method, ['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'], true)) {
@@ -20,7 +25,8 @@ function redirect_pretty_node(string $target): never {
 }
 
 function dispatch_slug_route(mixed $rawSlug): never {
-    if (is_string($rawSlug) && preg_match('~^nodes/([^/]+)/([^/]+)(?:/members/([^/]+))?$~D', $rawSlug, $match)) {
+    $basePrefix = slug_app_base_prefix();
+    if (is_string($rawSlug) && preg_match('~^nodes/([^/]+)/([^/]+)(?:/members/([^/]+))?/?$~D', $rawSlug, $match)) {
         $kind = rawurldecode($match[1]);
         $nodeId = rawurldecode($match[2]);
         $member = isset($match[3]) ? rawurldecode($match[3]) : null;
@@ -31,11 +37,11 @@ function dispatch_slug_route(mixed $rawSlug): never {
             echo render_api_html('studio', 'error', ['title'=>'Invalid node route', 'message'=>'Node and member path segments must be valid single URI components.']);
             exit;
         }
-        $target = '/api/nodes/' . rawurlencode($kind) . '/' . rawurlencode($nodeId);
+        $target = $basePrefix . '/api/nodes/' . rawurlencode($kind) . '/' . rawurlencode($nodeId);
         if ($member !== null) $target .= '/members/' . rawurlencode($member);
         redirect_pretty_node($target);
     }
-    if (is_string($rawSlug) && preg_match('~^members/([^/]+)$~D', $rawSlug, $match)) {
+    if (is_string($rawSlug) && preg_match('~^members/([^/]+)/?$~D', $rawSlug, $match)) {
         $member = rawurldecode($match[1]);
         $node = $_GET['node'] ?? null;
         if (!valid_node_slug_segment($member) || !is_string($node)) {
@@ -53,9 +59,10 @@ function dispatch_slug_route(mixed $rawSlug): never {
             echo render_api_html('studio', 'error', ['title'=>'Invalid member route', 'message'=>'The node parameter must contain a kind and node ID.']);
             exit;
         }
-        redirect_pretty_node('/api/nodes/' . rawurlencode($identity[0]) . '/' . rawurlencode($identity[1]) . '/members/' . rawurlencode($member));
+        redirect_pretty_node($basePrefix . '/api/nodes/' . rawurlencode($identity[0]) . '/' . rawurlencode($identity[1]) . '/members/' . rawurlencode($member));
     }
-    if (!is_string($rawSlug) || !preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $rawSlug)) {
+    $cleanSlug = is_string($rawSlug) ? rtrim($rawSlug, '/') : '';
+    if (!is_valid_slug_identifier($cleanSlug)) {
         http_response_code(400);
         header('Cache-Control: no-store');
         header('Content-Type: text/html; charset=utf-8');
@@ -63,13 +70,9 @@ function dispatch_slug_route(mixed $rawSlug): never {
         exit;
     }
 
-    $routes = [
-        'home'=>['template'=>'studio', 'fragment'=>'document'],
-        'studio'=>['template'=>'studio', 'fragment'=>'document'],
-        'compact'=>['template'=>'compact', 'fragment'=>'document'],
-        'help'=>['template'=>'studio', 'fragment'=>'status', 'title'=>'Guided help', 'message'=>'Choose a workbench and open its guided tour for illustrated steps.'],
-    ];
-    if (!isset($routes[$rawSlug])) {
+    $mw = middleware_active_config();
+    $routes = $mw['slugRoutes'] ?? DEFAULT_SLUG_ROUTES;
+    if (!isset($routes[$cleanSlug]) || ($routes[$cleanSlug]['enabled'] ?? true) === false) {
         http_response_code(404);
         header('Cache-Control: no-store');
         header('Content-Type: text/html; charset=utf-8');
@@ -77,9 +80,9 @@ function dispatch_slug_route(mixed $rawSlug): never {
         exit;
     }
 
-    $route = $routes[$rawSlug];
+    $route = $routes[$cleanSlug];
     try {
-        $template = select_api_template_name($_GET['template'] ?? $route['template']);
+        $template = select_api_template_name($_GET['template'] ?? ($route['template'] ?? 'studio'));
     } catch (InvalidArgumentException) {
         http_response_code(400);
         header('Cache-Control: no-store');
@@ -87,9 +90,10 @@ function dispatch_slug_route(mixed $rawSlug): never {
         echo render_api_html('studio', 'error', ['title'=>'Invalid template', 'message'=>'Choose a configured template name.']);
         exit;
     }
-    if ($route['fragment'] === 'document') {
-        $html = file_get_contents(__DIR__ . '/index.html');
-        if ($html === false) {
+    if (($route['fragment'] ?? 'document') === 'document') {
+        $effectiveBase = function_exists('app_effective_base') ? app_effective_base() : APP_BASE;
+        $html = load_spa_document_html(__DIR__, $effectiveBase);
+        if ($html === null) {
             http_response_code(503);
             header('Cache-Control: no-store');
             header('Content-Type: text/html; charset=utf-8');
@@ -108,7 +112,7 @@ function dispatch_slug_route(mixed $rawSlug): never {
     header('X-Content-Type-Options: nosniff');
     header('Content-Type: text/html; charset=utf-8');
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') {
-        echo render_api_html($template, $route['fragment'], [
+        echo render_api_html($template, (string)$route['fragment'], [
             'title'=>$route['title'] ?? '',
             'message'=>$route['message'] ?? '',
         ]);
@@ -136,6 +140,17 @@ function template_accept_type(): ?string {
     return $plain > 0 && $plain >= $html ? 'text/plain' : 'text/html';
 }
 
+function etag_matches_if_none_match(string $etag): bool {
+    $header = trim($_SERVER['HTTP_IF_NONE_MATCH'] ?? '');
+    if ($header === '') return false;
+    if ($header === '*') return true;
+    foreach (explode(',', $header) as $candidate) {
+        $clean = trim($candidate);
+        if ($clean === $etag || $clean === 'W/' . $etag) return true;
+    }
+    return false;
+}
+
 function dispatch_template_route(mixed $rawRoute): never {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if (!in_array($method, ['GET', 'HEAD', 'POST'], true)) {
@@ -143,18 +158,25 @@ function dispatch_template_route(mixed $rawRoute): never {
         header('Allow: GET, HEAD, POST');
         exit;
     }
-    if (!is_string($rawRoute) || !preg_match('~^([^/]+)/([^/]+)$~D', $rawRoute, $match)) {
+    if (!is_string($rawRoute) || !preg_match('~^([^/]+)/([^/]+)/?$~D', $rawRoute, $match)) {
+        http_response_code(404);
+        exit;
+    }
+    $rawTemplate = rawurldecode($match[1]);
+    $rawFragment = rawurldecode($match[2]);
+    // Strict allowlist validation to prevent path traversal or injection
+    if (!is_valid_template_identifier($rawTemplate) || !is_valid_template_identifier($rawFragment)) {
         http_response_code(404);
         exit;
     }
     try {
-        $template = select_api_template_name(rawurldecode($match[1]));
+        $template = select_api_template_name($rawTemplate);
     } catch (InvalidArgumentException) {
         http_response_code(404);
         exit;
     }
-    $fragment = rawurldecode($match[2]);
-    if (!isset(API_HTML_FRAGMENT_TEMPLATES[$fragment])) {
+    $source = api_fragment_source($rawFragment);
+    if ($source === null) {
         http_response_code(404);
         exit;
     }
@@ -167,12 +189,11 @@ function dispatch_template_route(mixed $rawRoute): never {
         exit;
     }
     if ($mediaType === 'text/plain') {
-        $source = API_HTML_FRAGMENT_TEMPLATES[$fragment];
-        $etag = '"' . hash('sha256', $source) . '"';
+        $etag = template_etag('text/plain', $template, $rawFragment, $source);
         header('Cache-Control: public, max-age=300');
         header('ETag: ' . $etag);
         header('Content-Type: text/plain; charset=utf-8');
-        if (trim($_SERVER['HTTP_IF_NONE_MATCH'] ?? '') === $etag) {
+        if ($method !== 'POST' && etag_matches_if_none_match($etag)) {
             http_response_code(304);
             exit;
         }
@@ -220,9 +241,15 @@ function dispatch_template_route(mixed $rawRoute): never {
         }
         $values[$key] = is_bool($value) ? ($value ? 'true' : 'false') : (string)$value;
     }
-    $html = render_api_html($template, $fragment, $values);
-    header('Cache-Control: private, no-store');
+    $html = render_api_html($template, $rawFragment, $values);
+    $etag = template_etag('text/html', $template, $rawFragment, $html);
+    header('ETag: ' . $etag);
+    header('Cache-Control: ' . ($method === 'POST' ? 'private, no-store' : 'private, no-cache'));
     header('Content-Type: text/html; charset=utf-8');
+    if ($method !== 'POST' && etag_matches_if_none_match($etag)) {
+        http_response_code(304);
+        exit;
+    }
     http_response_code(200);
     if ($method !== 'HEAD') echo $html;
     exit;

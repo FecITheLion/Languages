@@ -1,0 +1,57 @@
+# Harden direct repo / Apache serving against source exposure and directory browsing.
+# For production, deploy cleanly outside the repository via: php install.php /var/www/studio /url-base/
+Options -Indexes
+DirectoryIndex index.php
+
+<IfModule mod_mime.c>
+  AddType application/manifest+json .webmanifest
+  AddType application/wasm .wasm
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "same-origin"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  <FilesMatch "^(index\.html|sw\.js)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
+
+RewriteEngine On
+
+# Optional HTTPS enforcement for live public deployments (uncomment behind TLS / Apache SSL):
+# RewriteCond %{HTTPS} !=on
+# RewriteCond %{HTTP:X-Forwarded-Proto} !https [NC]
+# RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+# Deny hidden files (.env, .git, .htaccess) and internal PHP/TS/test/dependency directories
+RewriteRule (^|/)\. - [F,L]
+RewriteRule ^(?:php|src|tests|test|node_modules)(?:/|$) - [F,NC,L]
+
+# Block raw repository configuration, server source, tests, installer, docs, and databases
+RewriteRule (?:^|/)(?:package(?:-lock)?\.json|tsconfig\.json|metadata\.json|firebase-applet-config\.json|bun\.lock|install\.php|server\.ts|vite\.config\.ts)$ - [F,NC,L]
+RewriteRule \.(?:ts|tsx|mts|mjs|map|md|bak|log|sqlite3?)$ - [F,NC,L]
+
+# Route REST/MCP API and health check to the PHP front controller
+RewriteRule ^(?:api|healthz)(?:/|$) index.php [NC,L]
+
+# Allow front controller index.php
+RewriteRule ^index\.php$ - [L]
+
+# Block any other PHP scripts from direct HTTP execution
+RewriteRule \.(?:php[0-9]*|phtml|phar)$ - [F,NC,L]
+
+# Serve built/static files (dist/* or public/*) when they exist
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Pretty HATEOAS slugs and fragment templates handled by slug_controller.php
+RewriteRule ^nodes/([^/]+)/([^/]+)/members/([^/]+)/?$ index.php?slug=nodes/$1/$2/members/$3 [B,QSA,NC,L]
+RewriteRule ^nodes/([^/]+)/([^/]+)/?$ index.php?slug=nodes/$1/$2 [B,QSA,NC,L]
+RewriteRule ^members/([^/]+)/?$ index.php?slug=members/$1 [B,QSA,NC,L]
+RewriteRule ^template/([^/]+)/([^/]+)/?$ index.php?template_route=$1/$2 [B,QSA,NC,L]
+RewriteRule ^([a-z0-9][a-z0-9-]*)/?$ index.php?slug=$1 [QSA,NC,L]
+
+# SPA fallback
+RewriteRule ^ index.php [L]

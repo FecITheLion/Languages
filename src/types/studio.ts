@@ -46,7 +46,95 @@ export type WorkflowSlug =
 
 export type PipelineStage = 'frontend' | 'formal' | 'ir' | 'codegen' | 'storage';
 
-export type TopView = 'workbench' | 'graph' | 'histolog' | 'api' | 'modules' | 'files' | 'openapi' | 'dsl' | 'bundle';
+export type TopView =
+  | 'workbench'
+  | 'formal_logic'
+  | 'schema_predicate'
+  | 'graph'
+  | 'histolog'
+  | 'api'
+  | 'modules'
+  | 'middleware'
+  | 'files'
+  | 'openapi'
+  | 'dsl'
+  | 'bundle';
+
+export interface SlugRouteConfig {
+  slug: string;
+  template: string;
+  fragment: string;
+  title?: string;
+  message?: string;
+  enabled: boolean;
+  hardcodedDefault?: boolean;
+}
+
+export interface SlugTemplatePatternConfig {
+  id: 'extended_node' | 'extended_member' | 'short_member' | 'template_fragment' | string;
+  label: string;
+  pattern: string;
+  targetTemplate: string;
+  description: string;
+  enabled: boolean;
+  hardcodedDefault?: boolean;
+}
+
+export interface TemplateThemeConfig {
+  name: string;
+  title: string;
+  themeColor: string;
+  hardcodedDefault?: boolean;
+}
+
+export interface TemplateFragmentConfig {
+  name: string;
+  markup: string;
+  hardcodedDefault?: boolean;
+}
+
+export interface AzureSupportConfig {
+  enabled: boolean;
+  foundryProjectEndpoint: string;
+  foundryApiVersion: string;
+  proprietaryModelDeployment: string;
+  openModelDeployment: string;
+  authMode: 'managed_identity' | 'api_key' | 'entra_id';
+  region: string;
+  resourceGroup: string;
+}
+
+export interface AwsSupportConfig {
+  enabled: boolean;
+  region: string;
+  bedrockProprietaryModelId: string;
+  bedrockOpenModelId: string;
+  agentCoreEndpoint: string;
+  s3Bucket: string;
+  authMode: 'iam_role' | 'sigv4';
+}
+
+export interface FrontendMiddlewareConfig {
+  prettyBasePath: string;
+  defaultTemplate: string;
+  defaultTopView: TopView;
+  enableOfflineBanner: boolean;
+  enableProgressiveDisclosure: boolean;
+  lazyLoadGuideMedia: boolean;
+  cacheBustVersion: string;
+  azure: AzureSupportConfig;
+  aws: AwsSupportConfig;
+}
+
+export interface MiddlewareConfigState {
+  version: number;
+  updatedAt: string;
+  templates: Record<string, TemplateThemeConfig>;
+  fragments: Record<string, TemplateFragmentConfig>;
+  slugRoutes: Record<string, SlugRouteConfig>;
+  slugPatterns: Record<string, SlugTemplatePatternConfig>;
+  frontend: FrontendMiddlewareConfig;
+}
 
 export type TransformTarget = 'jsonld' | 'python' | 'rust' | 'wasm';
 
@@ -312,7 +400,7 @@ export interface OpenApiOperation {
     name: string;
     in: string;
     required: boolean;
-    schema: { type: string };
+    schema: { type: string; enum?: string[] };
   }>;
   requestBody?: {
     required?: boolean;

@@ -17,7 +17,18 @@ function ruby(statement: string, args: string[] = [], bindings = labels) {
   return spawnSync('ruby', ['-e', artifact('ruby', statement, bindings), '--', ...args], { encoding: 'utf8' });
 }
 
-test('Ruby evaluates current input in named, positional, JSON and CLI forms', () => {
+function hasRuntime(cmd: string, args: string[] = ['-v']): boolean {
+  const check = spawnSync(cmd, args, { encoding: 'utf8' });
+  return !(check.error && 'code' in check.error && check.error.code === 'ENOENT');
+}
+
+const rubyAvailable = hasRuntime('ruby', ['-v']);
+
+test('Ruby evaluates current input in named, positional, JSON and CLI forms', (t) => {
+  if (!rubyAvailable && !process.env.CI) {
+    t.skip('[optional-runtime] ruby is not installed locally (enabled in CI)');
+    return;
+  }
   const cases: Array<[string[], string]> = [
     [[], '3.0'],
     [['x=5'], '6.0'],
@@ -28,26 +39,34 @@ test('Ruby evaluates current input in named, positional, JSON and CLI forms', ()
   ];
   for (const [args, expected] of cases) {
     const result = ruby('x + 1', args);
-    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.status, 0, result.stderr || String(result.error));
     assert.equal(result.stdout.trim(), `Result: ${expected}`);
   }
 });
 
-test('Ruby evaluates lambda closures, dependent labels, quantifiers and boolean coercion', () => {
+test('Ruby evaluates lambda closures, dependent labels, quantifiers and boolean coercion', (t) => {
+  if (!rubyAvailable && !process.env.CI) {
+    t.skip('[optional-runtime] ruby is not installed locally (enabled in CI)');
+    return;
+  }
   const bindings: LogicLabelBinding[] = [
     { id: 'x', name: 'x', kind: 'number', value: '2' },
     { id: 'y', name: 'y', kind: 'number', value: 'x + 1' },
     { id: 'f', name: 'f', kind: 'lambda', value: 'λz. z + y' },
   ];
   const result = ruby('f(x) = 7 ∧ (∀p. (p ∨ ¬p))', ['--x', '3'], bindings);
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 0, result.stderr || String(result.error));
   assert.match(result.stdout, /Result: true/);
   const invalidOverride = ruby('f(x)', ['f=3'], bindings);
   assert.notEqual(invalidOverride.status, 0);
   assert.match(invalidOverride.stderr, /Lambda label cannot be overridden/);
 });
 
-test('Ruby reports malformed or unsupported inputs and evaluation failures', () => {
+test('Ruby reports malformed or unsupported inputs and evaluation failures', (t) => {
+  if (!rubyAvailable && !process.env.CI) {
+    t.skip('[optional-runtime] ruby is not installed locally (enabled in CI)');
+    return;
+  }
   for (const [statement, args, message] of [
     ['x + 1', ['--x=oops'], /Invalid numeric/],
     ['x + 1', ['x=3 trailing'], /Invalid input/],
@@ -59,8 +78,8 @@ test('Ruby reports malformed or unsupported inputs and evaluation failures', () 
   ] as Array<[string, string[], RegExp]>) {
     const result = ruby(statement, args);
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, message);
-    assert.doesNotMatch(result.stdout, /Result:/);
+    assert.match(result.stderr || '', message);
+    assert.doesNotMatch(result.stdout || '', /Result:/);
   }
 });
 

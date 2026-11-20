@@ -4,20 +4,22 @@ interface ElevatorPitchProps {
   copy: ElevatorPitchCopy;
   compact?: boolean;
   headingLevel?: 'h1' | 'h2' | 'p';
+  className?: string;
 }
 
 export function ElevatorPitch({
   copy,
   compact = false,
   headingLevel = 'h2',
+  className = '',
 }: ElevatorPitchProps) {
   const Heading = headingLevel;
   return (
     <section
       aria-label={`${copy.title} overview`}
-      className={`rounded-xl border border-blue-100 bg-blue-50/70 dark:border-blue-900/50 dark:bg-blue-950/20 ${
-        compact ? 'p-3' : 'p-4 sm:p-5'
-      }`}
+      className={`mb-4 rounded-xl border border-blue-100 bg-blue-50/70 dark:border-blue-900/50 dark:bg-blue-950/20 ${
+        compact ? 'p-3.5' : 'p-4 sm:p-5'
+      }${className ? ` ${className}` : ''}`}
     >
       <Heading
         className={`font-semibold text-slate-900 dark:text-slate-100 ${

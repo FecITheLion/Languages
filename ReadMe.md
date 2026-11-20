@@ -221,28 +221,33 @@ Installation prompts differ by browser and platform. The service worker caches t
 
 ## API and deployment boundaries
 
-The full Node API is served by Express. The PHP API is a native subset for standalone PHP hosting; it is not a proxy to Node. In the current PHP deployment:
+Both the Node/Express server (`server.ts`) and the modular native PHP deployment (`api.php` requiring `php/Storage.php`, `php/TemplateEngine.php`, `php/GrammarEngine.php`, `php/LogicEngine.php`, `php/McpHandler.php`, and `php/Router.php`) provide full API parity:
 
-- Workspace, grammar, history, selected node, logic state/evaluation, Cauchy, and limited MCP logic evaluation/resource routes are implemented.
-- Unicode grammar literals/classes and code-point offsets are evaluated natively.
-- Logic JSON-LD export is implemented. Native logic code generation for the other targets is not yet ported.
-- MCP server discovery, broad tool coverage, client exports, context updates, and cache operations are not yet ported.
-- Unsupported routes return explicit JSON errors. Do not treat an HTTP success or the PWA health route as proof that an unported feature is available.
+- **Modular PHP single-entry deployment:** `api.php` loads cohesive modules from `php/` while `install.php` verifies `pdo_sqlite`, `dom`, `mbstring`, `json`, `pcre`, and `hash`, confirms `GRAMMAR2JSON_STATE_DIR` is outside the webroot, and generates `.htaccess` blocking direct HTTP access to `php/`.
+- **SQLite concurrency & migrations:** `php/Storage.php` enables `PRAGMA journal_mode=WAL`, `PRAGMA busy_timeout=5000`, a `schema_version` table, and a cache-invalidation epoch table bumped on every mutation.
+- **Native PHP logic exports & CLI/hardcoded parity:** `GET /api/logic/export/{language}?mode=cli|hardcoded` works natively on both PHP and Node across all 23 targets.
+- **Unicode grammar evaluation:** `php/GrammarEngine.php` uses multibyte-safe `mb_*` + `/u` PCRE tokenization and matching for Unicode symbols, delimiters, and rules.
+- **Unambiguous Cauchy auto-evaluation:** `POST /api/logic/evaluate` automatically includes Cauchy sequence evaluation whenever the incoming input cannot be confused with Cauchy seeds or recurrence parameters, and explicitly reports `cauchySkippedReason` when positional or colliding inputs are supplied.
+- **Full MCP parity + Microsoft Foundry + OpenAI + Optional Azure/AWS:** All 8 MCP servers (`pipeline`, `grammar`, `rule_props`, `logic_calc`, `schema`, `mutations`, `evaluator`, `codegen`), Microsoft Foundry (`foundry`) Agent & Workflow exports (open & proprietary models), OpenAI full API & tool endpoints (`GET /api/openai/tools`, `POST /api/openai/tools/execute`), and optional default-disabled Azure/AWS support (`ENABLE_AZURE_SUPPORT=false`, `ENABLE_AWS_SUPPORT=false`) work across both Node and PHP.
+- **Middleware Management Suite:** Manage hardcoded-default yet overridable templates, fragments, route slugs, pretty slug patterns (`/nodes/{kind}/{nodeId}/members/{member}`, `/members/{member}?node={kind}/{nodeId}`, `/template/{template}/{fragment}` with ETag 304 for `text/plain` & `text/html`), and front-end/cloud configuration via the **Middleware** view or `/api/middleware/*`.
 
 Both server implementations currently expose broad CORS behavior and do not provide a complete authentication layer. Place public deployments behind an appropriate authentication and request-control boundary. Never commit secrets, publish private state directories, or rely on client-side editor restrictions as authorization.
 
-## Validation and tests
+## Validation, CI & Repository Governance
 
-Run the TypeScript checks and full test suite from the repository root:
+Run syntax checks, type checks, production build, and the full test suite (including PHP-vs-Node contract parity tests):
 
 ```sh
+for f in *.php php/*.php; do php -l "$f"; done
 npm run lint
+npm run build -- --base=/
 npm test
-npm run build
-php -l api.php
 ```
 
-The suite includes PHP/TypeScript parity checks, module ZIP and processing-pipeline tests, PWA installer/API integration, and worker-cache checks. A Lua-specific generated-code test is skipped when Lua is not installed. The production build may report existing Vite native-config and large-chunk warnings; confirm build completion and test the actual deployment base path.
+- **GitHub Actions CI:** `.github/workflows/ci.yml` installs PHP 8.3 (`pdo_sqlite`, `dom`, `mbstring`), Node.js 22, Python 3, **Lua 5.4**, Ruby, and Rust (`rustc`), and runs `php -l`, `npm run lint`, `npm run build`, and `npm test` on every PR targeting `main`.
+- **Branch Protection & Superseded Branch Cleanup (GitHub):**
+  - Enable branch protection on `main` requiring the `Lint, Build & Full Integration Suite` status check before merge (`Settings -> Rules -> Rulesets -> Protect main`).
+  - Once PR #3 (`copilot/logic-guided-studio`) is reviewed and ready, close PR #4 and delete the superseded `fecithelion-php-single-page-pwa` branch (which is 1 commit behind `main` and 0 ahead).
 
 ## Troubleshooting
 

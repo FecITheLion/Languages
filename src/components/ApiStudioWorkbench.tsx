@@ -21,6 +21,7 @@ import {
 import { DocTooltip } from './DocTooltip';
 import { DomEchelonManipulator, type DomEchelonItem } from './DomEchelonManipulator';
 import type { HateoasAction, HateoasLink, NodeMemberDescriptor } from '../engine/hateoasEngine';
+import { resolveApiUrl } from '../engine/runtimePaths';
 
 type HttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | 'HEAD' | 'OPTIONS';
 
@@ -345,7 +346,7 @@ export function ApiStudioWorkbench({
     setSending(true);
     const t0 = performance.now();
     try {
-      const res = await fetch(targetUrl, init);
+      const res = await fetch(resolveApiUrl(targetUrl), init);
       const durationMs = Math.max(1, Math.round(performance.now() - t0));
       const text = await res.text();
       let parsedJson: Record<string, unknown> | null = null;
@@ -626,7 +627,7 @@ export function ApiStudioWorkbench({
           if (call.method !== 'GET' && call.method !== 'HEAD' && resolvedBody.trim()) {
             init.body = resolvedBody;
           }
-          const res = await fetch(resolvedUrl, init);
+          const res = await fetch(resolveApiUrl(resolvedUrl), init);
           totalMs += Math.max(1, Math.round(performance.now() - t0));
           combinedStatus = res.status;
           if (!res.ok) combinedOk = false;

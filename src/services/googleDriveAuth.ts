@@ -47,8 +47,9 @@ export async function signInWithGoogleDrive(): Promise<{ user: User; accessToken
     if (!credential?.accessToken) {
       throw new Error('Google Drive access token was not returned by sign-in.');
     }
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    const token = credential.accessToken;
+    cachedAccessToken = token;
+    return { user: result.user, accessToken: token };
   } finally {
     isSigningIn = false;
   }

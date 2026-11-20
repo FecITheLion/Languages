@@ -43,10 +43,13 @@ export const GUIDED_HELP_CONTEXTS: GuidedHelpContext[] = [
   'rust_ast',
   'wasm_wabt',
   'mcp_servers',
+  'formal_logic',
+  'schema_predicate',
   'graph',
   'histolog',
   'api',
   'modules',
+  'middleware',
   'openapi',
   'dsl',
   'bundle',
@@ -60,6 +63,21 @@ const sharedFilesTour = tour('Shared virtual files', 'Compare generated outputs 
 
 export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
   virtual_files: sharedFilesTour,
+  middleware: tour('Middleware Management Suite', 'Manage hardcoded-default yet overridable templates, slugs, front-end config, OpenAI tools, and optional Azure/AWS integrations.', [
+    step('Choose a middleware branch', 'Switch between Slug Management, Template & Fragment Engine, and Front-End & Cloud configuration.', 'view.middleware.branches', ['Middleware Suite', '3 branches', 'Runtime overrides']),
+    step('Override and test slugs', 'Inspect hardcoded default slugs and pretty URL patterns, add custom slugs, and test live path resolution.', 'view.middleware.slugs', ['Route slugs', 'Pretty patterns', 'Live preview']),
+    step('Configure front-end and cloud', 'Use OpenAI tools across the full API base and opt into optional Azure (Microsoft Foundry) or AWS Bedrock integrations.', 'view.middleware.cloud', ['OpenAI tools', 'Optional Azure/AWS', 'Export manifests']),
+  ]),
+  formal_logic: tour('Formal Logic, Arithmetic & Lambda Workbench', 'Write multiline boolean, arithmetic/1-0 crossover, and curried λ expressions with live range analysis and truth tables.', [
+    step('Drag symbols or choose a preset', 'Expand Formal or Informal taxonomy categories to drag Unicode operators into the buffer or load one of the 4 presets.', 'view.formal_logic.palette', ['Operator palette', 'Drag / click', 'Tooltip syntax']),
+    step('Write Pre-Input & multiline formulas', 'Bind boolean or numeric literals in Valuation Γ and enter callable definitions, λ closures, or multiline blocks.', 'view.formal_logic.buffer', ['Pre-Input Γ', 'Formula buffer', 'Dual highlighting']),
+    step('Inspect trace, pointers & truth table', 'Hover trace rows or orange [line#N] badges to highlight source blocks and inspect the live focused truth table.', 'view.formal_logic.trace', ['Evaluation trace', 'SSA pointers', 'Live truth table']),
+  ]),
+  schema_predicate: tour('JSON Schema EBNF & Predicate Tree Studio', 'Compile JSON Schema constraints against EBNF productions into a Predicate Tree AST and validate live JSON instances.', [
+    step('Edit or load JSON Schema', 'Paste a JSON Schema, select a preset, or load the active Studio Schema.org JSON-LD output.', 'view.schema_predicate.schema', ['JSON Schema', 'Presets', 'EBNF spec']),
+    step('Inspect the Predicate Tree AST', 'Review compiled type, required_fields, length, pattern, enum, and numeric bound predicates per node.', 'view.schema_predicate.tree', ['Predicate AST', 'Node constraints', 'Sync EBNF']),
+    step('Validate JSON instances live', 'Edit the test JSON instance to verify every compiled predicate and view field-level pass/fail diagnostics.', 'view.schema_predicate.validator', ['Test instance', 'Live validation', 'Submit / export']),
+  ]),
   home: tour('Studio home', 'Find your way through the grammar-to-output workflow.', [
     step(
       'Start with an example',
