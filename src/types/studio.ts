@@ -314,7 +314,17 @@ export interface OpenApiOperation {
     required: boolean;
     schema: { type: string };
   }>;
-  responses: Record<string, { description: string }>;
+  requestBody?: {
+    required?: boolean;
+    content: Record<string, { schema: Record<string, unknown> }>;
+  };
+  responses: Record<
+    string,
+    {
+      description: string;
+      content?: Record<string, { schema: Record<string, unknown> }>;
+    }
+  >;
 }
 
 export interface OpenApiSpec {
@@ -444,6 +454,7 @@ export interface WorkspaceSnapshot {
   rustSource: string;
   watSource: string;
   verifiedSteps: WorkflowSlug[];
+  virtualFiles?: import('../engine/virtualFiles').VirtualFiles;
 }
 
 export interface VaultRecord {

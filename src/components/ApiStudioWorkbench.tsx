@@ -66,6 +66,7 @@ interface RoutineStepRunResult {
 }
 
 interface ApiStudioWorkbenchProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   onSyncWorkspaceToServer: () => Promise<void>;
   onPullServerWorkspace?: () => Promise<void>;
   onDownloadFile: (content: string, filename: string, mime: string) => void;
@@ -269,6 +270,7 @@ function resolvePipeTemplate(template: string, ctx: Record<string, unknown>): st
 }
 
 export function ApiStudioWorkbench({
+  onSubmitArtifacts,
   onSyncWorkspaceToServer,
   onPullServerWorkspace,
   onDownloadFile,
@@ -300,6 +302,13 @@ export function ApiStudioWorkbench({
   const [routineRunning, setRoutineRunning] = useState(false);
   const [routineResults, setRoutineResults] = useState<RoutineStepRunResult[]>([]);
   const [routineArtifacts, setRoutineArtifacts] = useState<Record<string, unknown>>({});
+
+  useEffect(() => {
+    onSubmitArtifacts('api', [
+      ...(lastCall ? [{ path: 'api/response.txt', content: lastCall.responseText }] : []),
+      ...(routineResults.length ? [{ path: 'api/routine-results.json', content: JSON.stringify({ results: routineResults, artifacts: routineArtifacts }, null, 2) }] : []),
+    ]);
+  }, [onSubmitArtifacts, lastCall, routineResults, routineArtifacts]);
 
   const selectedRoutineStep =
     routineSteps.find((s) => s.id === selectedRoutineStepId) || routineSteps[0] || null;
@@ -706,7 +715,10 @@ export function ApiStudioWorkbench({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
+          <div
+            data-tour-id="view.api.mode"
+            className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
+          >
             <button
               type="button"
               onClick={() => setStudioMode('postman')}
@@ -797,6 +809,7 @@ export function ApiStudioWorkbench({
             {/* Request Bar */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <form
+                data-tour-id="view.api.request"
                 onSubmit={(e) => {
                   e.preventDefault();
                   void executeRequest();
@@ -984,7 +997,10 @@ export function ApiStudioWorkbench({
             </div>
 
             {/* Live Response & HATEOAS Hypermedia Navigator */}
-            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <div
+              data-tour-id="view.api.response"
+              className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5 dark:border-slate-800">
                 <div className="flex items-center gap-3 text-xs">
                   {(
@@ -1284,7 +1300,10 @@ export function ApiStudioWorkbench({
           {/* Right Pane: Selected Step Editor + Live Sequential Execution Trace */}
           <div className="space-y-4 lg:col-span-5">
             {selectedRoutineStep && (
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <div
+                data-tour-id="view.api.request"
+                className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+              >
                 <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
                   Edit Step: {selectedRoutineStep.label}
                 </div>
@@ -1367,7 +1386,10 @@ export function ApiStudioWorkbench({
             )}
 
             {/* Sequential Artifact Output Log */}
-            <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <div
+              data-tour-id="view.api.response"
+              className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+            >
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-900 dark:text-slate-100">
                   Sequential Artifact Pipeline Output

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type SetStateAction } from 'react';
 import {
   AlertTriangle,
   Boxes,
@@ -115,6 +115,8 @@ import { ApiStudioWorkbench } from './components/ApiStudioWorkbench';
 import { AutocompleteField } from './components/AutocompleteField';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { DocTooltip } from './components/DocTooltip';
+import { ElevatorPitch } from './components/ElevatorPitch';
+import { GuidedHelp } from './components/GuidedHelp';
 import { HistologWorkbench } from './components/HistologWorkbench';
 import { HtmlCodeOutput } from './components/HtmlCodeOutput';
 import { SpecsBundleView } from './components/InspectorViews';
@@ -124,6 +126,13 @@ import { PipelineGrid } from './components/PipelineGrid';
 import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
+import { VirtualFilesWorkbench } from './components/VirtualFilesWorkbench';
+import { mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, submitVirtualFiles, VirtualFilesError, virtualEditAllowed, virtualEdits, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
+import {
+  getWorkbenchPitch,
+  STANDALONE_PITCHES,
+  STUDIO_HOME_PITCH,
+} from './data/workflowPitch';
 import {
   SUPPORTED_LANGUAGES,
   type DialectConfig,
@@ -154,6 +163,41 @@ import {
 const DEMO_VAULT_STORAGE_KEY = 'grammar2json_demo_vault_v2';
 const AUTOSAVE_STORAGE_KEY = 'grammar2json_autosave_v1';
 
+interface VirtualState {
+  files: VirtualFiles;
+  submissionIssues: Record<string, string[]>;
+  rejectedSubmissions: Record<string, VirtualSubmission[]>;
+}
+type VirtualAction =
+  | { type: 'update'; value: SetStateAction<VirtualFiles> }
+  | { type: 'submit'; owner: string; submissions: VirtualSubmission[] }
+  | { type: 'retry'; owner: string };
+function virtualReducer(state: VirtualState, action: VirtualAction): VirtualState {
+  if (action.type === 'update') {
+    const files = typeof action.value === 'function' ? action.value(state.files) : action.value;
+    return files === state.files ? state : { ...state, files };
+  }
+  if (action.type === 'retry') {
+    const submissions = Object.hasOwn(state.rejectedSubmissions, action.owner) ? state.rejectedSubmissions[action.owner] : undefined;
+    return submissions ? virtualReducer(state, { type: 'submit', owner: action.owner, submissions }) : state;
+  }
+  try {
+    const files = submitVirtualFiles(state.files, action.owner, action.submissions);
+    if (!Object.hasOwn(state.submissionIssues, action.owner)) return files === state.files ? state : { ...state, files };
+    const submissionIssues = { ...state.submissionIssues };
+    delete submissionIssues[action.owner];
+    const rejectedSubmissions = { ...state.rejectedSubmissions };
+    delete rejectedSubmissions[action.owner];
+    return { files, submissionIssues, rejectedSubmissions };
+  } catch (error) {
+    if (!(error instanceof VirtualFilesError)) throw error;
+    if (JSON.stringify(state.submissionIssues[action.owner]) === JSON.stringify(error.issues) &&
+      JSON.stringify(state.rejectedSubmissions[action.owner]) === JSON.stringify(action.submissions)) return state;
+    return { ...state, submissionIssues: { ...state.submissionIssues, [action.owner]: error.issues },
+      rejectedSubmissions: { ...state.rejectedSubmissions, [action.owner]: action.submissions } };
+  }
+}
+
 interface AutoSavedState {
   savedAt: string;
   grammarText: string;
@@ -169,6 +213,7 @@ interface AutoSavedState {
   evalPayload: string;
   primaryLanguage: PrimaryLanguage;
   verifiedSteps: WorkflowSlug[];
+  virtualFiles?: VirtualFiles;
 }
 
 function loadAutoSavedState(): AutoSavedState | null {
@@ -184,12 +229,13 @@ function loadAutoSavedState(): AutoSavedState | null {
   }
 }
 
-function saveAutoSavedState(state: AutoSavedState): void {
-  if (typeof window === 'undefined') return;
+function saveAutoSavedState(state: AutoSavedState): boolean {
+  if (typeof window === 'undefined') return false;
   try {
     window.localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(state));
+    return true;
   } catch {
-    // Ignore quota limits
+    return false;
   }
 }
 
@@ -204,11 +250,12 @@ function loadDemoVaultFromStorage(): VaultRecord[] {
   }
 }
 
-function saveDemoVaultToStorage(records: VaultRecord[]): void {
+function saveDemoVaultToStorage(records: VaultRecord[]): boolean {
   try {
     localStorage.setItem(DEMO_VAULT_STORAGE_KEY, JSON.stringify(records));
+    return true;
   } catch {
-    // Ignore storage quota issues in restricted iframes
+    return false;
   }
 }
 
@@ -239,6 +286,26 @@ export default function App() {
     if (initialDeepLink?.grammarText) return null;
     return loadAutoSavedState();
   }, [initialDeepLink]);
+  const savedVirtualFiles = useMemo(() => parseVirtualFiles(initialAutoSave?.virtualFiles), [initialAutoSave]);
+  const [virtualState, dispatchVirtual] = useReducer(virtualReducer, savedVirtualFiles.files, files => ({
+    files: restoreAutoSavedVirtualEdits(files),
+    submissionIssues: {},
+    rejectedSubmissions: {},
+  }));
+  const virtualFiles = virtualState.files;
+  const setVirtualFiles = useCallback((value: SetStateAction<VirtualFiles>) => dispatchVirtual({ type: 'update', value }), []);
+  const [recoveryPending, setRecoveryPending] = useState(savedVirtualFiles.issues.length > 0);
+  const [showVirtualFiles, setShowVirtualFiles] = useState(false);
+  const [submissionRevision, setSubmissionRevision] = useState(0);
+  const submitArtifacts = useCallback((owner: string, submissions: VirtualSubmission[]) => {
+    void submissionRevision;
+    dispatchVirtual({ type: 'submit', owner, submissions });
+  }, [submissionRevision]);
+  const submitModalArtifacts = useCallback((owner: string, submissions: VirtualSubmission[]) => {
+    submitArtifacts(`modal-${owner}`, submissions.map(file => ({ ...file, path: `modal/${file.path}` })));
+  }, [submitArtifacts]);
+  const virtualEditsJson = JSON.stringify(virtualEdits(virtualFiles));
+  const historyVirtualEdits = useMemo(() => readVirtualFiles(JSON.parse(virtualEditsJson)), [virtualEditsJson]);
 
   // Top-level navigation & workflow step state
   const [topView, setTopView] = useState<TopView>(initialDeepLink?.topView ?? 'workbench');
@@ -270,11 +337,17 @@ export default function App() {
   const [clearMenuOpen, setClearMenuOpen] = useState(false);
 
   // Auto-Save state
-  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(!recoveryPending);
   const [lastAutoSavedAt, setLastAutoSavedAt] = useState<string | null>(initialAutoSave?.savedAt ?? null);
 
   // Modal state
   const [modalOpen, setModalOpen] = useState(Boolean(initialDeepLink?.modalOpen));
+  useEffect(() => {
+    if (!modalOpen) {
+      submitArtifacts('modal-logic', []);
+      submitArtifacts('modal-mcp', []);
+    }
+  }, [modalOpen, submitArtifacts]);
   const [modalStructure, setModalStructure] = useState<ModalStructure>(
     initialDeepLink?.modalStructure ?? 'split'
   );
@@ -327,6 +400,13 @@ export default function App() {
   const [mutationPolicy, setMutationPolicy] = useState<MutationPolicy>(
     initialAutoSave?.mutationPolicy ?? DEFAULT_MUTATION_POLICY
   );
+  const canRestoreVirtualEdits = useCallback((saved: VirtualFiles) =>
+    mutationPolicy.lockedRules.length === 0 &&
+    [...Object.values(saved), ...Object.values(virtualEdits(virtualFiles))]
+      .every(file => virtualEditAllowed(file, mutationPolicy)),
+  [mutationPolicy, virtualFiles]);
+  const canExportVirtualState = mutationPolicy.allowExportMutation &&
+    (Object.keys(historyVirtualEdits).length === 0 || canRestoreVirtualEdits(historyVirtualEdits));
 
   const [grammarText, setGrammarText] = useState<string>(
     initialDeepLink?.grammarText ?? initialAutoSave?.grammarText ?? initialPreset.sampleGrammar
@@ -530,6 +610,7 @@ export default function App() {
       logicStatement,
       logicLabels,
       dslSource,
+      virtualFiles: historyVirtualEdits,
     }),
     [
       dialect,
@@ -545,6 +626,7 @@ export default function App() {
       logicStatement,
       logicLabels,
       dslSource,
+      historyVirtualEdits,
     ]
   );
 
@@ -568,6 +650,7 @@ export default function App() {
         logicStatement,
         logicLabels,
         dslSource,
+        virtualFiles: historyVirtualEdits,
       },
       previousSnapshot: null,
     }),
@@ -581,6 +664,9 @@ export default function App() {
   );
   const suppressHistologRef = useRef(false);
   const histologIndex = useMemo(() => buildHistologIndex(histologEntries), [histologEntries]);
+  const canExportHistory = canExportVirtualState && !histologEntries.some(entry =>
+    entry.snapshot.virtualFiles && Object.keys(entry.snapshot.virtualFiles).length > 0 &&
+    !canRestoreVirtualEdits(entry.snapshot.virtualFiles));
 
   // Auto-record new Histolog generations on meaningful workspace changes (debounced 450ms)
   useEffect(() => {
@@ -627,6 +713,7 @@ export default function App() {
     dslSource,
     evalRule,
     evalPayload,
+    historyVirtualEdits,
   ]);
 
   // Debounced Auto-Save to localStorage
@@ -634,7 +721,7 @@ export default function App() {
     if (!autoSaveEnabled) return;
     const timer = window.setTimeout(() => {
       const savedAt = new Date().toISOString();
-      saveAutoSavedState({
+      const saved = saveAutoSavedState({
         savedAt,
         grammarText,
         dialect,
@@ -649,8 +736,10 @@ export default function App() {
         evalPayload,
         primaryLanguage,
         verifiedSteps,
+        virtualFiles: historyVirtualEdits,
       });
-      setLastAutoSavedAt(savedAt);
+      if (saved) setLastAutoSavedAt(savedAt);
+      else showNotice('Browser autosave failed. Save a workspace snapshot to preserve your virtual edits.');
     }, 600);
     return () => window.clearTimeout(timer);
   }, [
@@ -668,6 +757,8 @@ export default function App() {
     evalPayload,
     primaryLanguage,
     verifiedSteps,
+    historyVirtualEdits,
+    showNotice,
   ]);
 
   // Sync compact route parameters to browser URL (replaceState, no hash clobbering unless state requested)
@@ -718,8 +809,15 @@ export default function App() {
   const [driveBusy, setDriveBusy] = useState(false);
   const [driveError, setDriveError] = useState<string | null>(null);
   const [driveFiles, setDriveFiles] = useState<VaultRecord[]>([]);
+  const [driveListingAvailable, setDriveListingAvailable] = useState(false);
   const [demoFiles, setDemoFiles] = useState<VaultRecord[]>(() => loadDemoVaultFromStorage());
   const [vaultNameInput, setVaultNameInput] = useState('order_action_schema.g2j.json');
+  useEffect(() => {
+    submitArtifacts('vault', driveMode === 'drive' && !driveListingAvailable ? [] : [{
+      path: 'vault/listing.json',
+      content: serializeVaultListing(driveMode, driveMode === 'drive' ? driveFiles : demoFiles),
+    }]);
+  }, [submitArtifacts, driveMode, driveListingAvailable, driveFiles, demoFiles]);
 
   // Confirmation dialog state for mutating/destructive operations
   const [confirmState, setConfirmState] = useState<{
@@ -1220,7 +1318,12 @@ export default function App() {
     setLogicStatement(snap.logicStatement);
     setLogicLabels(snap.logicLabels.map((l) => ({ ...l })));
     setDslSource(snap.dslSource);
-  }, []);
+    const restoredEdits = !snap.virtualFiles || canRestoreVirtualEdits(snap.virtualFiles);
+    if (snap.virtualFiles && restoredEdits) {
+      setVirtualFiles(previous => restoreVirtualEdits(previous, snap.virtualFiles!));
+    }
+    return restoredEdits;
+  }, [canRestoreVirtualEdits]);
 
   const canUndo = histologCursor > 0;
   const canRedo = histologCursor < histologEntries.length - 1;
@@ -1232,10 +1335,10 @@ export default function App() {
     const targetEntry = histologEntries[nextCursor];
     if (!targetEntry) return;
     setHistologCursor(nextCursor);
-    applyHistologSnapshot(targetEntry.snapshot);
+    const restoredEdits = applyHistologSnapshot(targetEntry.snapshot);
     setLastDiffRef({ from: targetEntry.generation, to: fromEntry.generation });
     setSyncDirection(`Undo → G${targetEntry.generation} (ref diff G${targetEntry.generation}↔G${fromEntry.generation})`);
-    showNotice(`Undid to G${targetEntry.generation} (${targetEntry.summary}) — click Diff G${targetEntry.generation}↔G${fromEntry.generation} to inspect.`);
+    showNotice(`Undid to G${targetEntry.generation}.${restoredEdits ? '' : ' Virtual edits were preserved because policy blocks restoration.'}`);
   }, [histologCursor, histologEntries, applyHistologSnapshot, showNotice]);
 
   const handleRedo = useCallback(() => {
@@ -1245,10 +1348,10 @@ export default function App() {
     const targetEntry = histologEntries[nextCursor];
     if (!targetEntry) return;
     setHistologCursor(nextCursor);
-    applyHistologSnapshot(targetEntry.snapshot);
+    const restoredEdits = applyHistologSnapshot(targetEntry.snapshot);
     setLastDiffRef({ from: fromEntry.generation, to: targetEntry.generation });
     setSyncDirection(`Redo → G${targetEntry.generation} (ref diff G${fromEntry.generation}↔G${targetEntry.generation})`);
-    showNotice(`Redid to G${targetEntry.generation} (${targetEntry.summary}).`);
+    showNotice(`Redid to G${targetEntry.generation}.${restoredEdits ? '' : ' Virtual edits were preserved because policy blocks restoration.'}`);
   }, [histologCursor, histologEntries, applyHistologSnapshot, showNotice]);
 
   // Global Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z / Ctrl+Y shortcuts
@@ -1296,10 +1399,10 @@ export default function App() {
     const currentGen = histologEntries[histologCursor]?.generation ?? 0;
     const idx = histologEntries.findIndex((e) => e.generation === entry.generation);
     if (idx >= 0) setHistologCursor(idx);
-    applyHistologSnapshot(entry.snapshot);
+    const restoredEdits = applyHistologSnapshot(entry.snapshot);
     setLastDiffRef({ from: entry.generation, to: currentGen });
     setSyncDirection(`Restored Full Engine → G${entry.generation}`);
-    showNotice(`Restored entire engine to G${entry.generation} (${entry.summary}).`);
+    showNotice(`Restored G${entry.generation}.${restoredEdits ? '' : ' Virtual edits were preserved because policy blocks restoration.'}`);
   };
 
   const handleRestoreSection = (entry: HistologEntry, field: HistologFieldKey) => {
@@ -1328,6 +1431,12 @@ export default function App() {
     } else if (field === 'evaluator') {
       setEvalRule(s.evalRule);
       setEvalPayload(s.evalPayload);
+    } else if (field === 'virtualFiles') {
+      if (!s.virtualFiles || !canRestoreVirtualEdits(s.virtualFiles)) {
+        showNotice('Virtual edit restoration is unavailable or blocked by mutation policy.');
+        return;
+      }
+      setVirtualFiles(previous => restoreVirtualEdits(previous, s.virtualFiles!));
     }
     showNotice(`Restored section "${HISTOLOG_FIELD_LABELS[field]}" from G${entry.generation}.`);
   };
@@ -1363,6 +1472,12 @@ export default function App() {
     } else if (section === 'callbacks') {
       setGlobalCallbacks([]);
       saveGlobalCallbacks([]);
+    } else if (section === 'virtualFiles') {
+      if (!canRestoreVirtualEdits({})) {
+        showNotice('Clearing virtual edits is blocked by mutation policy.');
+        return;
+      }
+      setVirtualFiles(previous => restoreVirtualEdits(previous, {}));
     }
     setClearMenuOpen(false);
     showNotice(`Cleared section: ${section}.`);
@@ -1393,6 +1508,11 @@ export default function App() {
   ): { ok: true; message: string } | { ok: false; error: string } => {
     const res = importHistologCustom(rawText, mode, histologEntries);
     if (!res.ok) return { ok: false, error: res.error };
+    if (res.entries.some(entry => entry.snapshot.virtualFiles &&
+      Object.keys(entry.snapshot.virtualFiles).length > 0 &&
+      (!mutationPolicy.allowImportMutation || !canRestoreVirtualEdits(entry.snapshot.virtualFiles)))) {
+      return { ok: false, error: 'History contains virtual edits blocked by the current mutation policy.' };
+    }
     setHistologEntries(res.entries);
     setHistologCursor(Math.max(0, res.entries.length - 1));
     const msg = `Imported ${res.importedCount} generation${res.importedCount === 1 ? '' : 's'} (${res.detectedFormat}, mode: ${mode}).`;
@@ -1804,6 +1924,7 @@ export default function App() {
       rustSource,
       watSource,
       verifiedSteps,
+      virtualFiles,
     }),
     [
       vaultNameInput,
@@ -1821,6 +1942,7 @@ export default function App() {
       rustSource,
       watSource,
       verifiedSteps,
+      virtualFiles,
     ]
   );
 
@@ -1828,6 +1950,16 @@ export default function App() {
     (snap: WorkspaceSnapshot) => {
       if (!mutationPolicy.allowImportMutation) {
         showNotice('Import mutation is disabled by the current x-mutation-policy declaration.');
+        return;
+      }
+      const parsedFiles = parseVirtualFiles(snap.virtualFiles);
+      if (parsedFiles.issues.length) {
+        showNotice(`Workspace import rejected: ${parsedFiles.issues[0].slice(0, 200)}`);
+        return;
+      }
+      const importedFiles = parsedFiles.files;
+      if (Object.values(importedFiles).some(file => file.edit !== null && !virtualEditAllowed(file, mutationPolicy))) {
+        showNotice('Workspace import contains virtual edits blocked by the current mutation policy.');
         return;
       }
       if (snap.dialect) setDialect(snap.dialect);
@@ -1847,9 +1979,13 @@ export default function App() {
       if (typeof snap.watSource === 'string') setWatSource(snap.watSource);
       if (snap.primaryLanguage) setPrimaryLanguage(snap.primaryLanguage);
       if (Array.isArray(snap.verifiedSteps)) setVerifiedSteps(snap.verifiedSteps);
+      if (snap.virtualFiles) {
+        setVirtualFiles(previous => mergeVirtualFiles(previous, importedFiles));
+        setSubmissionRevision(value => value + 1);
+      }
       showNotice(`Loaded workspace "${snap.name || 'snapshot'}".`);
     },
-    [mutationPolicy.allowImportMutation, showNotice]
+    [mutationPolicy, showNotice]
   );
 
   // File I/O Helpers
@@ -1886,7 +2022,14 @@ export default function App() {
       wasmResult,
     });
     const filename = `${schemaConfig.schemaName || 'grammar'}.package.jsonld`;
-    triggerTextDownload(JSON.stringify(pkg, null, 2), filename, 'application/ld+json');
+    const content = JSON.stringify(pkg, null, 2);
+    submitArtifacts('payload', [{
+      path: 'payload/last-package.jsonld',
+      content,
+      filename,
+      targets: [...new Set<TransformTarget>(['jsonld', ...selectedTargets.filter(target => mutationPolicy.allowedTargets.includes(target))])],
+    }]);
+    triggerTextDownload(content, filename, 'application/ld+json');
   };
 
   const handleImportJsonLdPackageFile = async (file: File) => {
@@ -2070,6 +2213,10 @@ export default function App() {
   };
 
   const handleDownloadProjectZip = async () => {
+    if (!canExportVirtualState) {
+      showNotice('Export is blocked by the mutation policy for virtual edits.');
+      return;
+    }
     const snap = buildSnapshot();
     const { fileCount, byteSize } = await downloadPhpProjectZip(OPENAPI_SPEC, dslSource, snap);
     showNotice(`Packaged ${fileCount} PHP/HTML/OpenAPI/DSL files (${(byteSize / 1024).toFixed(1)} KB .zip).`);
@@ -2084,6 +2231,7 @@ export default function App() {
       setDriveUser(user);
       const files = await listDriveWorkspaces(accessToken);
       setDriveFiles(files);
+      setDriveListingAvailable(true);
       showNotice(`Signed in to Google Drive as ${user.email || user.displayName}.`);
     } catch (err) {
       setDriveError(err instanceof Error ? err.message : 'Google sign-in failed.');
@@ -2096,6 +2244,7 @@ export default function App() {
     await signOutGoogleDrive();
     setDriveUser(null);
     setDriveFiles([]);
+    setDriveListingAvailable(false);
     showNotice('Signed out of Google Drive.');
   };
 
@@ -2115,6 +2264,7 @@ export default function App() {
     try {
       const files = await listDriveWorkspaces(token);
       setDriveFiles(files);
+      setDriveListingAvailable(true);
       showNotice(`Synced ${files.length} workspace file(s) from Google Drive.`);
     } catch (err) {
       setDriveError(err instanceof Error ? err.message : 'Drive refresh failed.');
@@ -2139,12 +2289,19 @@ export default function App() {
         snapshot: snap,
       };
       const next = [record, ...demoFiles];
+      if (!saveDemoVaultToStorage(next)) {
+        setDriveError('Demo Vault save failed; browser storage may be full or unavailable.');
+        return;
+      }
       setDemoFiles(next);
-      saveDemoVaultToStorage(next);
       showNotice(`Saved "${normalized}" to Demo Vault.`);
       return;
     }
 
+    if (!canExportVirtualState) {
+      setDriveError('Drive save is blocked by the mutation policy for virtual edits.');
+      return;
+    }
     const token = getCachedDriveToken();
     if (!token) {
       setDriveError('Sign in with Google before saving to Google Drive.');
@@ -2202,10 +2359,19 @@ export default function App() {
               ? { ...f, updatedAt: snap.savedAt, sizeBytes: JSON.stringify(snap).length, snapshot: snap }
               : f
           );
+          if (!saveDemoVaultToStorage(next)) {
+            setDriveError('Demo Vault save failed; browser storage may be full or unavailable.');
+            setConfirmState((s) => ({ ...s, open: false }));
+            return;
+          }
           setDemoFiles(next);
-          saveDemoVaultToStorage(next);
           setConfirmState((s) => ({ ...s, open: false }));
           showNotice(`Overwrote "${record.name}" in Demo Vault.`);
+          return;
+        }
+        if (!canExportVirtualState) {
+          setDriveError('Drive save is blocked by the mutation policy for virtual edits.');
+          setConfirmState((s) => ({ ...s, open: false }));
           return;
         }
         const token = getCachedDriveToken();
@@ -2244,8 +2410,12 @@ export default function App() {
       onConfirm: async () => {
         if (record.source === 'demo') {
           const next = demoFiles.filter((f) => f.id !== record.id);
+          if (!saveDemoVaultToStorage(next)) {
+            setDriveError('Demo Vault update failed; browser storage may be unavailable.');
+            setConfirmState((s) => ({ ...s, open: false }));
+            return;
+          }
           setDemoFiles(next);
-          saveDemoVaultToStorage(next);
           setConfirmState((s) => ({ ...s, open: false }));
           showNotice(`Deleted "${record.name}" from Demo Vault.`);
           return;
@@ -2375,6 +2545,37 @@ export default function App() {
     };
   }, [rules, dialect.preset, globalCallbacks.length, primaryLanguage, schemaConfig.schemaName]);
 
+  useEffect(() => {
+    submitArtifacts('workspace', [
+      { path: 'grammar/grammar.txt', content: grammarText },
+      { path: 'grammar/rules.json', content: JSON.stringify(rules, null, 2) },
+      { path: 'grammar/dependencies.json', content: JSON.stringify(ruleGraph, null, 2) },
+      { path: 'grammar/rule-properties.json', content: JSON.stringify(ruleConfigs, null, 2) },
+      { path: 'dialect/config.json', content: JSON.stringify(dialect, null, 2) },
+      { path: 'logic/statement.txt', content: logicStatement },
+      { path: 'logic/labels.json', content: JSON.stringify(logicLabels, null, 2) },
+      { path: 'schema/schema.jsonld', content: jsonText, target: 'jsonld' },
+      { path: 'schema/mutations.json', content: JSON.stringify(mutations, null, 2) },
+      { path: 'evaluator/result.json', content: JSON.stringify(evalResult, null, 2) },
+      { path: 'python/source.py', content: pythonSource, target: 'python' },
+      { path: 'python/ast.txt', content: pythonAstDump, target: 'python' },
+      { path: 'rust/source.rs', content: rustSource, target: 'rust' },
+      { path: 'rust/ast.txt', content: rustAstDump, target: 'rust' },
+      { path: 'wasm/module.wat', content: watSource, target: 'wasm' },
+      { path: 'wasm/compilation.json', content: JSON.stringify(wasmResult, null, 2), target: 'wasm' },
+      { path: 'compiled/current.txt', content: compiledLanguageExport.content, filename: compiledLanguageExport.filename,
+        ...(['json', 'python', 'rust', 'wasm'].includes(primaryLanguage)
+          ? { target: primaryLanguage === 'json' ? 'jsonld' as const : primaryLanguage as 'python' | 'rust' | 'wasm' }
+          : {}) },
+      { path: 'specs/openapi.json', content: JSON.stringify(dynamicOpenApiSpec, null, 2) },
+      { path: 'specs/flows.dsl', content: dslSource },
+    ]);
+  }, [submitArtifacts, grammarText, rules, ruleGraph, ruleConfigs, dialect, logicStatement, logicLabels, jsonText, mutations, evalResult, pythonSource, pythonAstDump, rustSource, rustAstDump, watSource, wasmResult, compiledLanguageExport, primaryLanguage, dynamicOpenApiSpec, dslSource]);
+
+  useEffect(() => {
+    submitArtifacts('history', [{ path: 'history/generations.json', content: JSON.stringify(histologEntries.map(({ generation, parentGeneration, timestamp, source, summary, changedFields }) => ({ generation, parentGeneration, timestamp, source, summary, changedFields })), null, 2) }]);
+  }, [submitArtifacts, histologEntries]);
+
   const stepByOffset = (delta: number) => {
     if (flows.length === 0) return;
     const nextIdx = (currentStepIndex + delta + flows.length) % flows.length;
@@ -2439,6 +2640,7 @@ export default function App() {
   // Shared props for StepViews (both inline & modal)
   const stepViewProps = {
     activePage,
+    onSubmitArtifacts: submitArtifacts,
     dialect,
     schemaConfig,
     mutationPolicy,
@@ -2480,6 +2682,10 @@ export default function App() {
     onEvalRuleChange: setEvalRule,
     onEvalPayloadChange: setEvalPayload,
     onExportWorkspace: () => {
+      if (!canExportVirtualState) {
+        showNotice('Export is blocked by the mutation policy for virtual edits.');
+        return;
+      }
       const snap = buildSnapshot();
       triggerTextDownload(JSON.stringify(snap, null, 2), snap.name, 'application/json');
     },
@@ -2626,6 +2832,22 @@ export default function App() {
   const isSpecsView = topView === 'openapi' || topView === 'dsl' || topView === 'bundle';
   const activeSpecsTab: 'openapi' | 'dsl' | 'bundle' =
     topView === 'dsl' ? 'dsl' : topView === 'bundle' ? 'bundle' : specsSubTab;
+  const nextFlow = flows.find((flow) => flow.id === currentFlow.next);
+  const workbenchPitch = getWorkbenchPitch(
+    activePage,
+    currentFlow.label,
+    nextFlow?.label ?? currentFlow.next
+  );
+  const standalonePitch =
+    topView === 'graph'
+      ? STANDALONE_PITCHES.graph
+      : topView === 'histolog'
+        ? STANDALONE_PITCHES.histolog
+        : topView === 'api'
+          ? STANDALONE_PITCHES.api
+          : isSpecsView
+            ? STANDALONE_PITCHES.specs
+            : null;
 
   const selectedLangMeta =
     SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage) ?? SUPPORTED_LANGUAGES[0];
@@ -2683,7 +2905,20 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       {/* STRICT 3-ZONE TOP BAR CONTRACT (compact on mobile <= 56px, full labels on desktop) */}
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-xs dark:border-slate-800 dark:bg-slate-900/95">
+      <header
+        data-tour-id={
+          topView === 'workbench'
+            ? 'home.views'
+            : topView === 'graph'
+              ? 'view.graph.navigation'
+              : topView === 'histolog'
+                ? 'view.histolog.navigation'
+                : topView === 'openapi'
+                  ? 'view.openapi.navigation'
+                  : undefined
+        }
+        className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-xs dark:border-slate-800 dark:bg-slate-900/95"
+      >
         <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 py-2.5 sm:px-6 md:py-3.5">
           {/* Zone 1: Single-line Brand Wordmark */}
           <button
@@ -2977,6 +3212,7 @@ export default function App() {
               <span aria-hidden="true">·</span>
               <button
                 type="button"
+                disabled={recoveryPending}
                 onClick={() => setAutoSaveEnabled((v) => !v)}
                 title="Toggle automatic localStorage workspace persistence"
                 className={`inline-flex items-center gap-1 font-medium ${
@@ -3052,7 +3288,41 @@ export default function App() {
           onExportJsonLd={triggerTextDownload}
         />
 
+        {topView === 'workbench' ? (
+          <ElevatorPitch copy={STUDIO_HOME_PITCH} compact headingLevel="p" />
+        ) : standalonePitch ? (
+          <ElevatorPitch copy={standalonePitch} compact headingLevel="p" />
+        ) : null}
+
+        {recoveryPending && <section role="alert" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
+          <p>Autosave is paused because saved virtual files contain invalid entries. Valid edits were restored; rejected data remains in browser storage.</p>
+          <p>{savedVirtualFiles.issues.map(issue => issue.slice(0, 200)).join(' · ')}</p>
+          <button type="button" className="mr-3 underline" disabled={!mutationPolicy.allowExportMutation || mutationPolicy.lockedRules.length > 0}
+            onClick={() => triggerTextDownload(JSON.stringify(initialAutoSave?.virtualFiles, null, 2), 'virtual-files-recovery.json', 'application/json')}>Download saved virtual data</button>
+          <button type="button" className="underline" disabled={mutationPolicy.lockedRules.length > 0}
+            onClick={() => { setRecoveryPending(false); setAutoSaveEnabled(true); }}>Discard rejected entries and resume autosave</button>
+        </section>}
+        {Object.keys(virtualState.submissionIssues).length > 0 && <section role="alert" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
+          <p>Some workbench outputs were rejected; their previous files and edits were not changed.</p>
+          {Object.entries(virtualState.submissionIssues).map(([owner, issues]) => <div key={owner}>
+            <span>{owner}: {issues.map(issue => issue.slice(0, 200)).join(' · ')}</span>{' '}
+            <button type="button" className="underline" onClick={() => dispatchVirtual({ type: 'retry', owner })}>Retry submission</button>
+          </div>)}
+        </section>}
+
+        <div>
+          <button type="button" className="rounded border px-3 py-1 text-sm font-medium" aria-expanded={showVirtualFiles} onClick={() => setShowVirtualFiles(value => !value)}>
+            {showVirtualFiles ? 'Hide' : 'Open'} shared virtual files ({Object.keys(virtualFiles).length})
+          </button>
+          {showVirtualFiles && <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />}
+        </div>
+
         {/* TOP VIEW ROUTER */}
+        {topView !== 'workbench' && (
+          <div className="flex justify-end">
+            <GuidedHelp key={topView} context={topView} />
+          </div>
+        )}
         {topView === 'graph' ? (
           <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
             <RuleDependencyGraph
@@ -3081,6 +3351,7 @@ export default function App() {
           </section>
         ) : topView === 'histolog' ? (
           <HistologWorkbench
+            allowExport={canExportHistory}
             entries={histologEntries}
             index={histologIndex}
             schemaName={schemaConfig.schemaName}
@@ -3092,13 +3363,20 @@ export default function App() {
             onClearSection={(field) => handleClearSection(field)}
             onClearEntireEngine={handleClearEntireEngine}
             onImportHistolog={handleImportHistolog}
-            onDownloadFile={triggerTextDownload}
+            onDownloadFile={(content, filename, mime) => {
+              if (!canExportHistory) {
+                showNotice('History export is blocked by the mutation policy for virtual edits.');
+                return;
+              }
+              triggerTextDownload(content, filename, mime);
+            }}
             onCopyDiffLink={(fromGen, toGen) =>
               void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
             }
           />
         ) : topView === 'api' ? (
           <ApiStudioWorkbench
+            onSubmitArtifacts={submitArtifacts}
             onSyncWorkspaceToServer={handleSyncWorkspaceToServer}
             onPullServerWorkspace={handlePullServerWorkspace}
             onDownloadFile={triggerTextDownload}
@@ -3106,6 +3384,7 @@ export default function App() {
           />
         ) : isSpecsView ? (
           <SpecsBundleView
+            onSubmitArtifacts={submitArtifacts}
             activeSubTab={activeSpecsTab}
             onSubTabChange={(sub) => {
               setSpecsSubTab(sub);
@@ -3161,6 +3440,11 @@ export default function App() {
               onSplitFlow={handleSplitFlow}
               onOpenMcpServer={handleOpenMcpServer}
             />
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <GuidedHelp context="home" />
+              <GuidedHelp key={activePage} context={activePage} />
+            </div>
 
             {/* Mobile/Tablet Pane Switcher between Active Workbench & Live State Mirror */}
             <div className="flex items-center justify-between gap-2 xl:hidden">
@@ -3223,6 +3507,8 @@ export default function App() {
                     Complete &amp; Verify Step {currentFlow.step}
                   </button>
                 </div>
+
+                <ElevatorPitch copy={workbenchPitch} compact />
 
                 <div className="flex-1">
                   <StepViews {...stepViewProps} />
@@ -3553,7 +3839,7 @@ export default function App() {
         onCopyModalLink={() => void handleCopyDeepLink({ includeFullState: false, forceModalOpen: true })}
         onClose={() => setModalOpen(false)}
       >
-        <StepViews {...stepViewProps} layoutStructure={modalStructure} />
+        <StepViews {...stepViewProps} onSubmitArtifacts={submitModalArtifacts} layoutStructure={modalStructure} />
       </UniversalWorkbenchModal>
 
       {/* CONFIRMATION DIALOG FOR MUTATING / DESTRUCTIVE DRIVE OPERATIONS */}

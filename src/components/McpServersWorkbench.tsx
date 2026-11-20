@@ -39,6 +39,7 @@ export interface PipelineMcpUiEffect {
 }
 
 interface McpServersWorkbenchProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   gridClass: string;
   primarySpan: string;
   secondarySpan: string;
@@ -50,6 +51,7 @@ interface McpServersWorkbenchProps {
 }
 
 export function McpServersWorkbench({
+  onSubmitArtifacts,
   gridClass,
   primarySpan,
   secondarySpan,
@@ -289,6 +291,14 @@ export function McpServersWorkbench({
     [selectedServerId, scriptLang]
   );
 
+  useEffect(() => {
+    onSubmitArtifacts('mcp', [
+      { path: 'mcp/client-config.txt', content: mcpClientExport.content },
+      { path: 'mcp/server-script.txt', content: standaloneScript.content },
+      ...(rpcOutput ? [{ path: 'mcp/response.json', content: JSON.stringify(rpcOutput, null, 2) }] : []),
+    ]);
+  }, [onSubmitArtifacts, mcpClientExport, standaloneScript, rpcOutput]);
+
   const copyText = async (key: string, text: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -358,7 +368,10 @@ export function McpServersWorkbench({
         </div>
 
         {/* High-Density Server Table */}
-        <div className="max-h-[380px] overflow-auto rounded-lg border border-slate-200 dark:border-slate-800">
+        <div
+          data-tour-id="workbench.mcp_servers.context"
+          className="max-h-[380px] overflow-auto rounded-lg border border-slate-200 dark:border-slate-800"
+        >
           <table className="w-full text-left text-xs">
             <thead className="sticky top-0 border-b border-slate-200 bg-slate-50 text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
               <tr>
@@ -431,6 +444,7 @@ export function McpServersWorkbench({
             <button
               type="button"
               onClick={() => setInspectorTab('invoke')}
+              data-tour-id="workbench.mcp_servers.tools workbench.mcp_servers.invoke"
               className={`rounded-md px-2.5 py-1 text-[11px] font-medium ${
                 inspectorTab === 'invoke'
                   ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
@@ -480,6 +494,7 @@ export function McpServersWorkbench({
                 </label>
                 <select
                   id="mcpToolSelect"
+                  data-tour-id="workbench.mcp_servers.tools"
                   value={selectedTool?.name || ''}
                   onChange={(e) => handleSelectTool(e.target.value)}
                   className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
@@ -604,7 +619,10 @@ export function McpServersWorkbench({
               </div>
             )}
 
-            <pre className="max-h-56 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-200 dark:border-slate-800">
+            <pre
+              data-tour-id="workbench.mcp_servers.invoke"
+              className="max-h-56 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-200 dark:border-slate-800"
+            >
               {rpcOutput
                 ? JSON.stringify(rpcOutput, null, 2)
                 : `// Click "tools/call (Build & Cache)" twice to verify lazy build-on-call (MISS) followed by instant cached replay (HIT).\n// Endpoint: POST ${origin}${selectedServer.endpoint}`}

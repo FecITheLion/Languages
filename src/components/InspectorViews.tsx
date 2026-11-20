@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Download, FileCode, Maximize2, RotateCcw } from 'lucide-react';
 import { buildPhpProjectFiles } from '../engine/phpZipPackager';
 import type { StudioLintIssue } from '../engine/htmlOutputFormatter';
@@ -10,6 +10,7 @@ import { DocTooltip } from './DocTooltip';
 import type { OpenApiSpec, ParsedDsl, WorkflowSlug, WorkspaceSnapshot } from '../types/studio';
 
 interface OpenApiInspectorProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   spec: OpenApiSpec;
   onJumpToPage: (page: WorkflowSlug) => void;
   onOpenEditModal?: (page: WorkflowSlug) => void;
@@ -18,6 +19,7 @@ interface OpenApiInspectorProps {
 }
 
 export function OpenApiInspector({
+  onSubmitArtifacts,
   spec,
   onJumpToPage,
   onOpenEditModal,
@@ -64,6 +66,9 @@ export function OpenApiInspector({
       'x-merged-routes': Object.keys(mergedRoutes).length > 0 ? mergedRoutes : undefined,
     };
   }, [spec, allRoutes, mergedRoutes, splitRoutes]);
+  useEffect(() => {
+    onSubmitArtifacts('openapi-inspector', [{ path: 'specs/inspected-openapi.json', content: JSON.stringify(effectiveSpec, null, 2) }]);
+  }, [onSubmitArtifacts, effectiveSpec]);
 
   const domItems: EchelonDomItem[] = useMemo(
     () =>
@@ -123,7 +128,12 @@ export function OpenApiInspector({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-1.5">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">{spec.info.title}</h2>
+            <h2
+              data-tour-id="view.openapi.document"
+              className="text-base font-semibold text-slate-900 dark:text-slate-100"
+            >
+              {spec.info.title}
+            </h2>
             <DocTooltip docKey="domDragSplitMerge" />
           </div>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
@@ -168,6 +178,7 @@ export function OpenApiInspector({
         </div>
       </div>
 
+      <div data-tour-id="view.openapi.operations">
       {viewMode === 'table' ? (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <table className="w-full text-left text-sm">
@@ -258,6 +269,7 @@ export function OpenApiInspector({
           maxHeightClass="max-h-[560px]"
         />
       )}
+      </div>
     </div>
   );
 }
@@ -308,7 +320,7 @@ export function DslInspector({
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-      <div className="space-y-3 lg:col-span-7">
+      <div data-tour-id="view.dsl.edit" className="space-y-3 lg:col-span-7">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">dsl/flows.dsl Editor</h2>
@@ -370,7 +382,8 @@ export function DslInspector({
         )}
       </div>
 
-      <div className="space-y-4 lg:col-span-5">
+      <div data-tour-id="view.dsl.navigation" className="space-y-4 lg:col-span-5">
+        <div data-tour-id="view.dsl.flows">
         <DomEchelonManipulator
           title="DSL Flow Nodes — Drag to Order, Merge & Split"
           subtitle="Dragging a flow reveals temporary drop targets for reordering, merging, and biject/splitting"
@@ -386,6 +399,7 @@ export function DslInspector({
             }
           }}
         />
+        </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-3 flex items-center justify-between text-xs">
@@ -407,6 +421,7 @@ export function DslInspector({
 }
 
 interface BundleInspectorProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   openapi: OpenApiSpec;
   dslSource: string;
   snapshot: WorkspaceSnapshot;
@@ -416,6 +431,7 @@ interface BundleInspectorProps {
 }
 
 export function BundleInspector({
+  onSubmitArtifacts,
   openapi,
   dslSource,
   snapshot,
@@ -445,6 +461,17 @@ export function BundleInspector({
     const rest = expanded.filter((f) => !fileOrder.includes(f.path));
     return [...ordered, ...rest];
   }, [baseFiles, fileOrder, mergedFiles, splitFiles]);
+
+  useEffect(() => {
+    const snapshotPath = 'grammar2json-studio/workspace.g2j.json';
+    const excluded = new Set([snapshotPath]);
+    for (const [path, parts] of Object.entries(splitFiles)) {
+      if (path === snapshotPath || mergedFiles[path]) parts.forEach(part => excluded.add(part.path));
+    }
+    onSubmitArtifacts('bundle', files
+      .filter(file => !excluded.has(file.path) && !mergedFiles[file.path])
+      .map(file => ({ path: `bundle/${file.path}`, content: file.content })));
+  }, [onSubmitArtifacts, files, splitFiles, mergedFiles]);
 
   const [selectedPath, setSelectedPath] = useState(files[0]?.path || '');
   const activeFile = files.find((f) => f.path === selectedPath) || files[0];
@@ -489,7 +516,10 @@ export function BundleInspector({
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
             PHP / HTML / OpenAPI / DSL Project Package
           </h2>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+          <p
+            data-tour-id="view.bundle.verify"
+            className="mt-0.5 text-xs text-slate-500 dark:text-slate-400"
+          >
             Live bundle of {files.length} generated files updated from every grammar, logic, callback, and DSL mutation.
           </p>
         </div>
@@ -521,6 +551,7 @@ export function BundleInspector({
           <button
             type="button"
             onClick={onDownloadZip}
+            data-tour-id="view.bundle.export"
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
           >
             <Download className="h-3.5 w-3.5" />
@@ -529,6 +560,7 @@ export function BundleInspector({
         </div>
       </div>
 
+      <div data-tour-id="view.bundle.contents">
       {bundleMode === 'dom' ? (
         <DomEchelonManipulator
           title="Export Bundle Artifact DOM Interface"
@@ -592,11 +624,13 @@ export function BundleInspector({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
 
 interface SpecsBundleViewProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   activeSubTab: 'openapi' | 'dsl' | 'bundle';
   onSubTabChange: (tab: 'openapi' | 'dsl' | 'bundle') => void;
   openapi: OpenApiSpec;
@@ -618,6 +652,7 @@ interface SpecsBundleViewProps {
 }
 
 export function SpecsBundleView({
+  onSubmitArtifacts,
   activeSubTab,
   onSubTabChange,
   openapi,
@@ -675,6 +710,7 @@ export function SpecsBundleView({
 
       {activeSubTab === 'openapi' && (
         <OpenApiInspector
+          onSubmitArtifacts={onSubmitArtifacts}
           spec={openapi}
           onJumpToPage={onJumpToPage}
           onOpenEditModal={onOpenEditModal}
@@ -699,6 +735,7 @@ export function SpecsBundleView({
       )}
       {activeSubTab === 'bundle' && (
         <BundleInspector
+          onSubmitArtifacts={onSubmitArtifacts}
           openapi={openapi}
           dslSource={dslSource}
           snapshot={snapshot}

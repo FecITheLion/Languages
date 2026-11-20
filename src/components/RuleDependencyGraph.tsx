@@ -420,8 +420,14 @@ export function RuleDependencyGraph({
 
   if (graph.nodes.length === 0) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-        No grammar rules parsed yet. Add rules in the Live Mirror or load a dialect preset to render the dependency graph.
+      <div
+        data-tour-id={!compact ? 'view.graph.canvas' : undefined}
+        className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400"
+      >
+        No grammar rules parsed yet.{' '}
+        <span data-tour-id={!compact ? 'view.graph.selection' : undefined}>
+          Add rules in the Live Mirror or load a dialect preset to render the dependency graph.
+        </span>
       </div>
     );
   }
@@ -429,7 +435,10 @@ export function RuleDependencyGraph({
   return (
     <div className="space-y-3.5">
       {/* Header summary strip (unboxed typographic metadata) */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div
+        data-tour-id={!compact ? 'view.graph.canvas' : undefined}
+        className="flex flex-wrap items-center justify-between gap-3"
+      >
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
           <GitBranch className="h-4 w-4 text-blue-600 dark:text-blue-400" />
           <span className="font-semibold text-slate-900 dark:text-slate-100">Rule Dependency Graph</span>
@@ -705,6 +714,7 @@ export function RuleDependencyGraph({
               return (
                 <g
                   key={node.id}
+                  data-tour-id={!compact && nodeIdx === 0 ? 'view.graph.selection' : undefined}
                   transform={`translate(${pos.x}, ${pos.y})`}
                   onPointerDown={(e) => handleNodePointerDown(e, node)}
                   className={canDragNodes && !node.isMissing ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}

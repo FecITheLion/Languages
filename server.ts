@@ -10,10 +10,12 @@ import {
 import {
   evaluateCauchySequence,
   evaluateLogicStatement,
+  getLogicExportUnsupportedReason,
   type CauchySequenceConfig,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './src/engine/logicLambdaEngine.ts';
+import { normalizeLogicEvaluationInput } from './src/engine/logicInputNormalizer.ts';
 import {
   generateMcpClientConfig,
   generateMcpExportForClient,
@@ -66,6 +68,8 @@ function sendHal(
 
 async function startServer() {
   const app = express();
+  app.use('/api/logic/evaluate', express.text({ type: 'text/plain', limit: '5mb' }));
+  app.use('/api/logic/evaluate', express.json({ strict: false, limit: '5mb' }));
   app.use(express.json({ limit: '5mb' }));
 
   app.get('/healthz', (_req, res) => {
@@ -661,8 +665,19 @@ async function startServer() {
 
   app.post('/api/logic/evaluate', (req, res) => {
     const origin = getOrigin(req);
-    const stmt = typeof req.body?.statement === 'string' ? req.body.statement : restStore.workspace.logicStatement;
-    const labels = Array.isArray(req.body?.labels) ? (req.body.labels as LogicLabelBinding[]) : restStore.workspace.logicLabels;
+    const normalized = normalizeLogicEvaluationInput(req.body, {
+      statement: restStore.workspace.logicStatement,
+      labels: restStore.workspace.logicLabels,
+    });
+    if (!normalized.ok) {
+      sendHal(res, 400, {
+        ok: false,
+        error: normalized.error,
+        _links: { self: { href: `${origin}/api/logic/evaluate`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
+      });
+      return;
+    }
+    const { statement: stmt, labels } = normalized.input;
     const evalRes = evaluateLogicStatement(stmt, labels);
     sendHal(res, 200, {
       statement: stmt,
@@ -918,17 +933,37 @@ async function startServer() {
   app.get('/api/logic/export/:language', (req, res) => {
     const origin = getOrigin(req);
     const lang = req.params.language as LogicExportTarget;
-    const exported = restStore.exportLogic(lang);
-    sendHal(res, 200, {
-      language: lang,
-      filename: exported.filename,
-      mime: exported.mime,
-      content: exported.content,
-      _links: {
-        self: { href: `${origin}/api/logic/export/${encodeURIComponent(lang)}`, method: 'GET' },
-        logic: { href: `${origin}/api/logic`, method: 'GET' },
-      },
-    });
+    const self = { href: `${origin}/api/logic/export/${encodeURIComponent(lang)}`, method: 'GET' };
+    const links = { self, logic: { href: `${origin}/api/logic`, method: 'GET' } };
+    const unsupportedReason = getLogicExportUnsupportedReason(lang, restStore.workspace.cauchyConfig);
+    if (unsupportedReason) {
+      sendHal(res, 422, {
+        ok: false,
+        code: 'unsupported_cauchy_export',
+        language: lang,
+        error: unsupportedReason,
+        _links: links,
+      });
+      return;
+    }
+    try {
+      const exported = restStore.exportLogic(lang);
+      sendHal(res, 200, {
+        language: lang,
+        filename: exported.filename,
+        mime: exported.mime,
+        content: exported.content,
+        _links: links,
+      });
+    } catch (error) {
+      sendHal(res, 500, {
+        ok: false,
+        code: 'logic_export_failed',
+        language: lang,
+        error: error instanceof Error ? error.message : 'Logic export failed.',
+        _links: links,
+      });
+    }
   });
 
   app.post('/api/evaluate', (req, res) => {

@@ -37,6 +37,7 @@ import {
   evaluateCauchySequence,
   evaluateLogicStatement,
   exportLogicStatement,
+  getLogicExportUnsupportedReason,
   extractLambdaParamsAndBody,
   formatLogicAst,
   formatNamedCallbackSignature,
@@ -59,6 +60,7 @@ import { AutocompleteField } from './AutocompleteField';
 import type { DialectConfig, GrammarRule, MutationPolicy, PrimaryLanguage } from '../types/studio';
 
 interface LogicLambdaWorkbenchProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   gridClass: string;
   primarySpan: string;
   secondarySpan: string;
@@ -351,6 +353,7 @@ function mapPrimaryToLogicTarget(lang?: PrimaryLanguage): LogicExportTarget {
 }
 
 export function LogicLambdaWorkbench({
+  onSubmitArtifacts,
   gridClass,
   primarySpan,
   secondarySpan,
@@ -416,6 +419,7 @@ export function LogicLambdaWorkbench({
   });
   const [stmtHistoryCursor, setStmtHistoryCursor] = useState<number>(0);
   const [showStmtHistory, setShowStmtHistory] = useState(false);
+  const [suggestionValues, setSuggestionValues] = useState<Record<string, string>>({});
   const suppressStmtHistoryRef = useRef(false);
 
   const stmtInputRef = useRef<HTMLInputElement | null>(null);
@@ -482,16 +486,48 @@ export function LogicLambdaWorkbench({
     [statement, effectiveLabels]
   );
 
-  const exported = useMemo(
-    () =>
-      exportLogicStatement(exportTarget, statement, effectiveLabels, evalRes, cauchyConfig, {
-        grammarText,
-        rules,
-        dialect,
-        sampleInput,
-      }),
+  const exportState = useMemo((): {
+    exported: ReturnType<typeof exportLogicStatement>;
+    error: string | null;
+  } => {
+    const unavailable = getLogicExportUnsupportedReason(exportTarget, cauchyConfig);
+    if (unavailable) {
+      return {
+        exported: { content: '', filename: '', mime: 'text/plain' },
+        error: unavailable,
+      };
+    }
+    try {
+      return {
+        exported: exportLogicStatement(exportTarget, statement, effectiveLabels, evalRes, cauchyConfig, {
+          grammarText,
+          rules,
+          dialect,
+          sampleInput,
+        }),
+        error: null,
+      };
+    } catch (error) {
+      return {
+        exported: { content: '', filename: '', mime: 'text/plain' },
+        error: error instanceof Error ? error.message : 'Logic export is unavailable.',
+      };
+    }
+  },
     [exportTarget, statement, effectiveLabels, evalRes, cauchyConfig, grammarText, rules, dialect, sampleInput]
   );
+  const { exported, error: exportError } = exportState;
+
+  useEffect(() => {
+    onSubmitArtifacts('logic', exportError ? [] : [{
+      path: 'logic/current-export.txt',
+      content: isEditingCode ? codeDraft : exported.content,
+      filename: exported.filename,
+      ...(['python', 'rust', 'jsonld', 'wat', 'wasm'].includes(exportTarget)
+        ? { target: exportTarget === 'wat' ? 'wasm' as const : exportTarget as 'python' | 'rust' | 'jsonld' | 'wasm' }
+        : {}),
+    }]);
+  }, [onSubmitArtifacts, exportError, exported.content, exported.filename, codeDraft, isEditingCode, exportTarget]);
 
   useEffect(() => {
     if (!isEditingCode) {
@@ -703,6 +739,10 @@ export function LogicLambdaWorkbench({
   };
 
   const handleExportDownload = () => {
+    if (exportError) {
+      onNotify(exportError);
+      return;
+    }
     if (!mutationPolicy.allowExportMutation) {
       onNotify('Export mutation is disabled by x-mutation-policy.');
       return;
@@ -780,6 +820,10 @@ export function LogicLambdaWorkbench({
   };
 
   const handleCopy = async () => {
+    if (exportError) {
+      onNotify(exportError);
+      return;
+    }
     try {
       await navigator.clipboard.writeText(codeDraft || exported.content);
       setCopied(true);
@@ -883,6 +927,7 @@ export function LogicLambdaWorkbench({
               </div>
               <button
                 type="button"
+                data-tour-id="workbench.logic_calc.sync"
                 onClick={() => onSyncLogicToGrammar(statement, labels)}
                 className="text-[11px] font-medium text-blue-600 hover:underline dark:text-blue-400"
               >
@@ -894,6 +939,7 @@ export function LogicLambdaWorkbench({
           <input
             ref={stmtInputRef}
             id="logicStatementInput"
+            data-tour-id="workbench.logic_calc.expression"
             type="text"
             value={statement}
             onChange={(e) => {
@@ -999,7 +1045,7 @@ export function LogicLambdaWorkbench({
         </div>
 
         {/* Square Calculator Keypad ordered by Grid, Stage Lanes, or Rail */}
-        <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/60">
+        <div data-tour-id="workbench.logic_calc.calculators" className="space-y-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/60">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
               Calculator Keypad · {KEYPAD_CATEGORIES.length} Categories
@@ -1232,6 +1278,33 @@ export function LogicLambdaWorkbench({
                     </p>
                   </div>
                   <div className="flex flex-wrap items-center gap-1">
+                    <input
+                      type="text"
+                      aria-label={`Definition for ${sug.name}`}
+                      placeholder={sug.inferredKind === 'lambda' ? 'λx. x' : 'Enter a value'}
+                      value={suggestionValues[sug.id] ?? ''}
+                      disabled={!sug.permitted}
+                      onChange={(event) =>
+                        setSuggestionValues((prev) => ({ ...prev, [sug.id]: event.target.value }))
+                      }
+                      className="w-36 rounded border border-slate-200 bg-white px-2 py-1 font-mono text-[11px] text-slate-800 disabled:opacity-45 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                    />
+                    <button
+                      type="button"
+                      disabled={!sug.permitted || !suggestionValues[sug.id]?.trim()}
+                      onClick={() => {
+                        const value = suggestionValues[sug.id].trim();
+                        handleApplySuggestion(sug, { label: value, value, kind: sug.inferredKind });
+                        setSuggestionValues((prev) => {
+                          const next = { ...prev };
+                          delete next[sug.id];
+                          return next;
+                        });
+                      }}
+                      className="rounded border border-blue-300 px-2 py-1 text-[11px] font-medium text-blue-700 disabled:opacity-45 dark:border-blue-700 dark:text-blue-300"
+                    >
+                      Define
+                    </button>
                     {sug.options.map((opt) => (
                       <button
                         key={`${sug.id}-${opt.value}`}
@@ -1908,7 +1981,8 @@ export function LogicLambdaWorkbench({
               <button
                 type="button"
                 onClick={handleExportDownload}
-                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700"
+                disabled={Boolean(exportError)}
+                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Download className="h-3.5 w-3.5" />
                 Export {exported.filename}
@@ -1916,6 +1990,7 @@ export function LogicLambdaWorkbench({
               <button
                 type="button"
                 onClick={handleParseDraft}
+                disabled={Boolean(exportError)}
                 className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 <ArrowDownToLine className="h-3.5 w-3.5" />
@@ -1932,7 +2007,8 @@ export function LogicLambdaWorkbench({
               <button
                 type="button"
                 onClick={() => void handleCopy()}
-                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                disabled={Boolean(exportError)}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
               >
                 {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : <Copy className="h-3.5 w-3.5" />}
                 {copied ? 'Copied' : 'Copy'}
@@ -1948,6 +2024,15 @@ export function LogicLambdaWorkbench({
                 </button>
               )}
             </div>
+
+            {exportError && (
+              <div
+                role="alert"
+                className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200"
+              >
+                Export unavailable: {exportError}
+              </div>
+            )}
 
             {wasmRunResult && (
               <div className="rounded-md border border-emerald-200 bg-emerald-50/70 px-2.5 py-1.5 font-mono text-xs text-emerald-800 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300">
@@ -1967,7 +2052,7 @@ export function LogicLambdaWorkbench({
               </div>
             )}
 
-            {outputViewMode === 'html' ? (
+            {exportError ? null : outputViewMode === 'html' ? (
               <HtmlCodeOutput
                 title={exported.filename}
                 code={codeDraft}
