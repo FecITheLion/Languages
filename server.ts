@@ -10,12 +10,13 @@ import {
 import {
   evaluateCauchySequence,
   evaluateLogicStatement,
+  getLogicBindingDiagnostics,
   getLogicExportUnsupportedReason,
   type CauchySequenceConfig,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './src/engine/logicLambdaEngine.ts';
-import { normalizeLogicEvaluationInput } from './src/engine/logicInputNormalizer.ts';
+import { logicInputDiagnostic, normalizeLogicEvaluationInput } from './src/engine/logicInputNormalizer.ts';
 import {
   generateMcpClientConfig,
   generateMcpExportForClient,
@@ -673,6 +674,7 @@ async function startServer() {
       sendHal(res, 400, {
         ok: false,
         error: normalized.error,
+        diagnostics: [logicInputDiagnostic(normalized.error)],
         _links: { self: { href: `${origin}/api/logic/evaluate`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
       });
       return;
@@ -686,6 +688,7 @@ async function startServer() {
       valueType: evalRes.valueType,
       trace: evalRes.trace,
       error: evalRes.error,
+      diagnostics: getLogicBindingDiagnostics(evalRes, labels),
       _links: { self: { href: `${origin}/api/logic/evaluate`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
     });
   });

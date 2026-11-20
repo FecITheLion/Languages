@@ -38,6 +38,7 @@ import {
 import {
   analyzeLabelSuggestions,
   evaluateLogicStatement,
+  getLogicBindingDiagnostics,
   exportLogicStatement,
   formatLogicAst,
   LOGIC_CALCULATOR_PRESETS,
@@ -46,7 +47,7 @@ import {
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './logicLambdaEngine.ts';
-import { normalizeLogicEvaluationInput } from './logicInputNormalizer.ts';
+import { logicInputDiagnostic, normalizeLogicEvaluationInput } from './logicInputNormalizer.ts';
 import {
   buildPipelineBreadcrumbs,
   PAGE_TO_MCP_SERVER,
@@ -1862,7 +1863,7 @@ export class McpLazyServerRegistry {
           statement: ctx.logicStatement,
           labels: ctx.logicLabels,
         });
-        if (!normalized.ok) return { ok: false, error: normalized.error };
+        if (!normalized.ok) return { ok: false, error: normalized.error, diagnostics: [logicInputDiagnostic(normalized.error)] };
         const normalizedStatement = normalized.input.statement;
         const normalizedLabels = normalized.input.labels;
         const evalRes = evaluateLogicStatement(normalizedStatement, normalizedLabels);
@@ -1883,6 +1884,7 @@ export class McpLazyServerRegistry {
           suggestions,
           namedCallbacks: namedCallbacks.callbacks,
           error: evalRes.error,
+          diagnostics: getLogicBindingDiagnostics(evalRes, normalizedLabels),
         };
       }
       if (toolName === 'suggest_and_translate_callbacks') {

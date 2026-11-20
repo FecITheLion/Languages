@@ -6,6 +6,12 @@ export interface VirtualSubmission {
   targets?: Array<'jsonld' | 'python' | 'rust' | 'wasm'>;
   filename?: string;
 }
+/** A producer replaces its current generated outputs atomically; edits remain separate. */
+export interface VirtualSubmissionBatch {
+  version: 1;
+  owner: string;
+  files: VirtualSubmission[];
+}
 export interface VirtualFile extends VirtualSubmission {
   owner: string;
   source: string | null;
@@ -34,6 +40,34 @@ export function virtualEditAllowed(file: Pick<VirtualFile, 'target' | 'editTarge
 export function validVirtualPath(path: string): boolean {
   return path.length > 0 && path.length <= 240 && !path.startsWith('/') && !path.includes('\\') &&
     path.split('/').every(part => !!part && !['.', '..', '__proto__', 'constructor', 'prototype'].includes(part) && !/[\x00-\x1f]/.test(part));
+}
+
+function isVirtualSubmission(raw: unknown): raw is VirtualSubmission {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const item = raw as Record<string, unknown>;
+  const targets = ['jsonld', 'python', 'rust', 'wasm'];
+  return !Object.keys(item).some(key => !['path', 'content', 'target', 'targets', 'filename'].includes(key)) &&
+    typeof item.path === 'string' && typeof item.content === 'string' &&
+    (item.target === undefined || (typeof item.target === 'string' && targets.includes(item.target))) &&
+    (item.targets === undefined || (Array.isArray(item.targets) && item.targets.every(target => typeof target === 'string' && targets.includes(target)))) &&
+    (item.filename === undefined || (typeof item.filename === 'string' && validVirtualPath(item.filename) && !item.filename.includes('/')));
+}
+
+export function applyVirtualSubmission(files: VirtualFiles, payload: unknown): VirtualFiles {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new VirtualFilesError(['Invalid artifact submission.']);
+  const batch = payload as Record<string, unknown>;
+  if (batch.version !== 1 || typeof batch.owner !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(batch.owner) ||
+      ['constructor', 'prototype', '__proto__'].includes(batch.owner) ||
+      !Array.isArray(batch.files) || Object.keys(batch).some(key => !['version', 'owner', 'files'].includes(key))) {
+    throw new VirtualFilesError(['Invalid artifact submission version, owner, or files.']);
+  }
+  const submissions: VirtualSubmission[] = [];
+  for (const [index, raw] of batch.files.entries()) {
+    if (!isVirtualSubmission(raw)) throw new VirtualFilesError([`Invalid artifact at index ${index}.`]);
+    submissions.push(raw);
+  }
+  return submitVirtualFiles(files, batch.owner, submissions);
 }
 
 export function submitVirtualFiles(files: VirtualFiles, owner: string, submissions: VirtualSubmission[]): VirtualFiles {

@@ -31,9 +31,23 @@ test('MCP reports missing bindings as an error', async () => {
     jsonrpc: '2.0',
     id: 2,
     method: 'tools/call',
-    params: { name: 'evaluate_logic_lambda', arguments: { logic_statement: 'x > 100' } },
+    params: { name: 'evaluate_logic_lambda', arguments: { logic_statement: 'offset(x, hours) > 100' } },
   });
-  const result = response.result as { isError: boolean; structuredContent: { error: string } };
+  const result = response.result as { isError: boolean; structuredContent: { error: string; diagnostics: Array<{ code: string; label: string }> } };
   assert.equal(result.isError, true);
-  assert.match(result.structuredContent.error, /Unbound label "x"/);
+  assert.match(result.structuredContent.error, /Unbound label/);
+  assert.deepEqual(result.structuredContent.diagnostics.map(({ label }) => label), ['offset', 'x', 'hours']);
+});
+
+test('MCP returns structured ambiguous input diagnostics', async () => {
+  const registry = new McpLazyServerRegistry({ logicLabels: [] });
+  const response = await registry.handleJsonRpc('logic_calc', {
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'evaluate_logic_lambda', arguments: { statement: 'x', logic_statement: 'hours' } },
+  });
+  const result = response.result as { isError: boolean; structuredContent: { diagnostics: Array<{ code: string }> } };
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.diagnostics[0].code, 'ambiguous_input');
 });

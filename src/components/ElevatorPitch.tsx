@@ -26,7 +26,16 @@ export function ElevatorPitch({
       >
         {copy.title}
       </Heading>
-      <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
+      {compact ? (
+        <>
+          <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-300">{copy.purpose}</p>
+          <details className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+            <summary className="cursor-pointer font-medium text-blue-700 dark:text-blue-300">Why use this and what comes next</summary>
+            <p className="mt-1">{copy.value}</p>
+            <p className="mt-1">{copy.nextStep}</p>
+          </details>
+        </>
+      ) : <dl className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
         <div>
           <dt className="font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
             Purpose
@@ -45,7 +54,7 @@ export function ElevatorPitch({
           </dt>
           <dd className="mt-0.5 leading-relaxed text-slate-600 dark:text-slate-300">{copy.nextStep}</dd>
         </div>
-      </dl>
+      </dl>}
     </section>
   );
 }

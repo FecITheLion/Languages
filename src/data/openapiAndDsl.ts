@@ -46,7 +46,7 @@ const LOGIC_LABELS_INPUT_SCHEMA = {
     },
   ],
   description:
-    'Label text, positional values, complete binding objects, or a name-to-value object. Use {kind:"lambda",value:"λx. ..."} for new callbacks. Empty arrays retain configured labels.',
+    'Label text, positional values, complete binding objects, or a name-to-value object. Excess positional values use _1, _2, etc. by position; collisions are errors. Use {kind:"lambda",value:"λx. ..."} for new callbacks. Empty arrays retain configured labels.',
 };
 
 export const OPENAPI_SPEC: OpenApiSpec = {
@@ -236,7 +236,7 @@ export const OPENAPI_SPEC: OpenApiSpec = {
                     type: 'array',
                     items: { type: ['string', 'number', 'boolean'] },
                     description:
-                      'Positional literals; values map in order to configured non-lambda labels. Empty arrays use defaults.',
+                      'Positional literals map in order to configured non-lambda labels; excess values use _1, _2, etc. by position. Fallback name collisions are errors. Empty arrays use defaults.',
                   },
                   {
                     type: 'object',
@@ -252,7 +252,7 @@ export const OPENAPI_SPEC: OpenApiSpec = {
                       values: {
                         type: 'array',
                         items: { type: ['string', 'number', 'boolean'] },
-                        description: 'Positional literal values for configured non-lambda labels.',
+                        description: 'Positional literal values for configured non-lambda labels, then _# fallback names by position.',
                       },
                     },
                     additionalProperties: false,
@@ -297,6 +297,11 @@ export const OPENAPI_SPEC: OpenApiSpec = {
                       },
                     },
                     error: { type: ['string', 'null'] },
+                    diagnostics: {
+                      type: 'array',
+                      description: 'Unbound identifiers referenced by the statement or an evaluated label; no values are inferred.',
+                      items: { type: 'object', required: ['code', 'label'], properties: { code: { const: 'unbound_label' }, label: { type: 'string' } } },
+                    },
                     _links: { type: 'object' },
                   },
                 },
@@ -313,6 +318,10 @@ export const OPENAPI_SPEC: OpenApiSpec = {
                   properties: {
                     ok: { const: false },
                     error: { type: 'string' },
+                    diagnostics: {
+                      type: 'array',
+                      items: { type: 'object', required: ['code', 'message'], properties: { code: { enum: ['ambiguous_input', 'invalid_input'] }, message: { type: 'string' } } },
+                    },
                     _links: { type: 'object' },
                   },
                 },
@@ -385,6 +394,7 @@ export const DEFAULT_DSL_SOURCE = `# Grammar2JSON Studio — Industry Compiler T
 # strings are numeric/boolean literals); positional literal arrays; or
 # {"logic_statement":"...", "logic_labels":"..."}.
 # logic_labels accepts name=value text, positional text/arrays, or a JSON object
+# (excess positional values use their _# position; collisions are errors).
 # string/object. New number/boolean names infer kind; callbacks require an
 # explicit {"kind":"lambda","value":"λx. ..."} value. Legacy label bindings
 # remain supported. Invalid/ambiguous inputs return HTTP 400.

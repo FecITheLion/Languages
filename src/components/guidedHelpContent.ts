@@ -52,27 +52,27 @@ export const GUIDED_HELP_CONTEXTS: GuidedHelpContext[] = [
 ];
 
 export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
-  virtual_files: tour('Shared virtual files', 'Inspect workbench outputs and edit separate virtual copies.', [
-    step('Select an output', 'Open a folder and select an output. Some outputs appear only after visiting their workbench; a JSON-LD package appears after export.', 'view.virtual_files.tree', ['Workbench output', 'Virtual tree', 'Select file']),
-    step('Compare and edit', 'Compare the latest source with the virtual copy. After autosave restore, the saved edit base is shown until the producing workbench submits again. Edits do not change canonical inputs or workbench exports.', 'view.virtual_files.editor', ['Source output', 'Virtual copy', 'Separate edit']),
-    step('Resolve and save', 'Resolve source changes explicitly. Browser autosave stores only edits and their bases, which may be sensitive; explicit workspace snapshots can include all current outputs. Policy can restrict edits and downloads.', 'view.virtual_files.actions', ['Source changes', 'Resolve conflict', 'Save / download']),
+  virtual_files: tour('Shared virtual files', 'Compare generated outputs with your separate editable copies.', [
+    step('Choose a generated file', 'Pick a file from the list. Some files appear after you visit the workbench that creates them; a JSON-LD package appears after export.', 'view.virtual_files.tree', ['Generated output', 'File list', 'Choose file']),
+    step('Edit a separate copy', 'The left pane is the generated source and the right pane is your editable copy. Changes here do not change grammar or other source inputs.', 'view.virtual_files.editor', ['Generated source', 'Your copy', 'Separate edit']),
+    step('Resolve a changed source', 'If a newer source arrives, compare both panes. Choose Keep my edit to keep your copy, or Use latest source to replace it. Browser autosave stores edits and their source versions, which may be sensitive; workspace snapshots may contain all outputs.', 'view.virtual_files.actions', ['Compare versions', 'Keep edit / use source', 'Download copy']),
   ]),
   home: tour('Studio home', 'Find your way through the grammar-to-output workflow.', [
     step(
-      'Choose a workbench',
-      'Start with the grammar dialect, then follow the pipeline cards to configure rules, schema, evaluation, exports, and storage. Selecting a card opens that workbench.',
+      'Start with an example',
+      'If this is your first visit, open Grammar & DAG and load the sample grammar. Selecting a pipeline card opens the matching workbench.',
       'home.pipeline',
       ['Pipeline cards', 'Pick a workbench', 'Workbench']
     ),
     step(
       'Follow the pipeline',
-      'Use the stage filters and layout controls to focus on frontend, formal logic, schema, code generation, or storage. The step rail and breadcrumbs show where you are.',
+      'The cards are grouped into stages. Use the filters if you want to focus on one kind of task; the step rail and breadcrumbs show where you are.',
       'home.navigation',
       ['Stage filter', 'Pipeline steps', 'Breadcrumbs']
     ),
     step(
       'Check and explore',
-      'Verified steps are a progress aid, not a correctness guarantee. Open the rule graph or another Studio view when you want to inspect relationships or generated artifacts.',
+      'Use Complete & Verify Step to check your current work and continue. The rule graph and other views are optional ways to explore what the studio creates.',
       'home.views',
       ['Workbench progress', 'Inspect outputs', 'Other views']
     ),
@@ -357,16 +357,16 @@ export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
       ['Diff finding', 'Open workbench', 'Active workspace']
     ),
   ]),
-  api: tour('API Studio', 'Explore API requests and compose sequential routines.', [
+  api: tour('API Studio', 'Try an API request or build a routine that runs requests in order.', [
     step(
-      'Choose a request or routine',
-      'Switch between the request console and sequential routine builder. The available endpoints and actions depend on the local Studio server.',
+      'Choose what to try',
+      'Choose Send a request to explore one operation, or Build a routine to arrange several requests. Available actions depend on the local Studio server.',
       'view.api.mode',
       ['Console / routine', 'Choose operation', 'Request or routine']
     ),
     step(
       'Review before sending',
-      'In API Console, inspect the method, URL, and request body before Send. In the routine builder, review the selected step and then use Run Routine Sequentially; mutating calls can change server workspace state.',
+      'Before sending, review the request details. In a routine, steps run from top to bottom; select a step to edit it or use Move up and Move down. Some requests can change workspace data.',
       'view.api.request',
       ['Method + URL + body', 'Send request', 'Response']
     ),
@@ -377,16 +377,16 @@ export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
       ['Request response', 'Review status / data', 'Optional workspace sync']
     ),
   ]),
-  openapi: tour('OpenAPI specification', 'Review the generated API contract.', [
+  openapi: tour('API description', 'Review and organize the available API endpoints.', [
     step(
-      'Inspect the specification',
-      'Review the OpenAPI document generated for the current Studio API. It describes the exposed contract; it does not itself send requests.',
+      'Inspect the API description',
+      'Review the available endpoints and their details. This description helps explain the API; viewing it does not send a request.',
       'view.openapi.document',
       ['Studio API', 'OpenAPI document', 'Endpoints / schemas']
     ),
     step(
-      'Find an operation',
-      'Locate the endpoint, method, parameters, and response schemas relevant to your intended call.',
+      'Find an endpoint',
+      'Use the endpoint list to find what you need. Reorder and combine are optional organization tools, and do not send requests.',
       'view.openapi.operations',
       ['Endpoint', 'Method + inputs', 'Response contract']
     ),

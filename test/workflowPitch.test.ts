@@ -41,5 +41,12 @@ test('every workbench and standalone view has concise purpose and value copy', (
 test('workbench next-step copy follows the active DSL workflow order', () => {
   const pitch = getWorkbenchPitch('dialect', '1. Grammar & DAG', '2. Rule Properties');
   assert.equal(pitch.title, '1. Grammar & DAG');
-  assert.equal(pitch.nextStep, 'Next: verify this step, then continue to 2. Rule Properties.');
+  assert.match(pitch.nextStep, /Complete & Verify Step/);
+  assert.match(pitch.nextStep, /continue to 2\. Rule Properties/);
+});
+
+test('studio home pitch gives a beginner an actionable first step', () => {
+  assert.match(STUDIO_HOME_PITCH.nextStep, /Grammar & DAG/);
+  assert.match(STUDIO_HOME_PITCH.nextStep, /load the example/i);
+  assert.match(STUDIO_HOME_PITCH.nextStep, /Guided help/);
 });

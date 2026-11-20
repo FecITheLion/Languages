@@ -10,10 +10,10 @@ export interface ElevatorPitch {
 export type StandalonePitchKey = 'graph' | 'histolog' | 'api' | 'specs';
 
 export const STUDIO_HOME_PITCH: ElevatorPitch = {
-  title: 'From grammar to working software',
-  purpose: 'Model a language or data format, then carry it through one connected toolchain.',
-  value: 'Keep grammar, JSON-LD, code targets, and runnable tools in sync from one workspace.',
-  nextStep: 'Choose a workbench below. Start with Grammar & DAG to define the rules you want to transform.',
+  title: 'Start with a small example',
+  purpose: 'Describe a format with grammar rules, then see how the studio checks and transforms it.',
+  value: 'Work one step at a time; each workbench builds on the same shared workspace.',
+  nextStep: 'Open Grammar & DAG, load the example, and follow the next step. Guided help offers a short tour.',
 };
 
 export const WORKBENCH_PITCHES: Record<WorkflowSlug, Pick<ElevatorPitch, 'purpose' | 'value'>> = {
@@ -102,6 +102,6 @@ export function getWorkbenchPitch(
   return {
     title,
     ...WORKBENCH_PITCHES[page],
-    nextStep: `Next: verify this step, then continue to ${nextLabel}.`,
+    nextStep: `When ready, choose “Complete & Verify Step” to check this step and continue to ${nextLabel}.`,
   };
 }

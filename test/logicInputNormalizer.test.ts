@@ -97,6 +97,21 @@ test('accepts literal arrays and maps them to configured non-lambda labels', () 
   }
 });
 
+test('excess positional values use their _# positions and reject collisions', () => {
+  const empty = normalize([4, 5], { statement: '_1 + _2', labels: [] });
+  assert.deepEqual(empty.ok && empty.input.labels.map(({ name, value }) => [name, value]), [['_1', '4'], ['_2', '5']]);
+  const extra = normalize([7, 8, true, 9]);
+  assert.equal(extra.ok && extra.input.labels.at(-1)?.name, '_4');
+  const conflict = normalize([7, 8], {
+    statement: '_2', labels: [
+      { id: 'a', name: 'left', kind: 'number', value: '1' },
+      { id: 'b', name: '_2', kind: 'lambda', value: 'λx. x' },
+    ],
+  });
+  assert.equal(conflict.ok, false);
+  if (!conflict.ok) assert.match(conflict.error, /fallback '_2' conflicts/);
+});
+
 test('accepts combined JSON strings and creates typed bindings including lambda callbacks', () => {
   const payload = JSON.stringify({
       logic_statement: 'offset(x, hours) > 100',

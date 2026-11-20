@@ -127,7 +127,7 @@ import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
 import { VirtualFilesWorkbench } from './components/VirtualFilesWorkbench';
-import { mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, submitVirtualFiles, VirtualFilesError, virtualEditAllowed, virtualEdits, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
+import { applyVirtualSubmission, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, VirtualFilesError, virtualEditAllowed, virtualEdits, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
 import {
   getWorkbenchPitch,
   STANDALONE_PITCHES,
@@ -182,7 +182,7 @@ function virtualReducer(state: VirtualState, action: VirtualAction): VirtualStat
     return submissions ? virtualReducer(state, { type: 'submit', owner: action.owner, submissions }) : state;
   }
   try {
-    const files = submitVirtualFiles(state.files, action.owner, action.submissions);
+    const files = applyVirtualSubmission(state.files, { version: 1, owner: action.owner, files: action.submissions });
     if (!Object.hasOwn(state.submissionIssues, action.owner)) return files === state.files ? state : { ...state, files };
     const submissionIssues = { ...state.submissionIssues };
     delete submissionIssues[action.owner];
@@ -271,6 +271,17 @@ const INITIAL_SCHEMA_CONFIG: SchemaConfig = {
 export default function App() {
   // Theme state (synced to documentElement.classList)
   const [darkMode, setDarkMode] = useState(false);
+  const [online, setOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine);
+
+  useEffect(() => {
+    const updateConnection = () => setOnline(navigator.onLine);
+    window.addEventListener('online', updateConnection);
+    window.addEventListener('offline', updateConnection);
+    return () => {
+      window.removeEventListener('online', updateConnection);
+      window.removeEventListener('offline', updateConnection);
+    };
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', darkMode);
@@ -3280,6 +3291,12 @@ export default function App() {
           </div>
         </section>
 
+        {!online && (
+          <div role="status" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+            You appear to be offline. API requests, cloud storage, and server-dependent exports need a connection; some previously unvisited tools may also be unavailable.
+          </div>
+        )}
+
         {/* WELL-DEFINED WAI-ARIA + SCHEMA.ORG BREADCRUMB NAVIGATION */}
         <PipelineBreadcrumbs
           breadcrumbs={breadcrumbs}
@@ -3311,10 +3328,18 @@ export default function App() {
         </section>}
 
         <div>
-          <button type="button" className="rounded border px-3 py-1 text-sm font-medium" aria-expanded={showVirtualFiles} onClick={() => setShowVirtualFiles(value => !value)}>
-            {showVirtualFiles ? 'Hide' : 'Open'} shared virtual files ({Object.keys(virtualFiles).length})
+          <button
+            type="button"
+            className="min-h-10 rounded border px-3 py-1.5 text-sm font-medium"
+            aria-expanded={showVirtualFiles}
+            aria-controls="shared-virtual-files"
+            onClick={() => setShowVirtualFiles(value => !value)}
+          >
+            {showVirtualFiles ? 'Hide' : 'Show'} generated files ({Object.keys(virtualFiles).length})
           </button>
-          {showVirtualFiles && <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />}
+          <div id="shared-virtual-files" className="mt-2" hidden={!showVirtualFiles}>
+            <VirtualFilesWorkbench files={virtualFiles} setFiles={setVirtualFiles} policy={mutationPolicy} onDownload={triggerTextDownload} />
+          </div>
         </div>
 
         {/* TOP VIEW ROUTER */}

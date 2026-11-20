@@ -17,7 +17,6 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { DomEchelonManipulator, type EchelonDomItem } from './DomEchelonManipulator';
-import { DocTooltip } from './DocTooltip';
 import type { RuleDependencyGraphData, RuleGraphNode, RuleMergeStrategy } from '../types/studio';
 
 interface RuleDependencyGraphProps {
@@ -955,7 +954,7 @@ export function RuleDependencyGraph({
                         className="inline-flex items-center justify-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
                       >
                         <Scissors className="h-3.5 w-3.5" />
-                        Biject / Split
+                        Split rule
                       </button>
                     )}
                     {onEditRuleInModal && (
@@ -1049,16 +1048,15 @@ export function RuleDependencyGraph({
           </div>
         )}
       </div>
-      {/* Higher-Echelon DOM Drag-and-Drop Order, Merge & Biject/Split Interface */}
+      {/* Grammar rule ordering and structure controls */}
       {!compact && onReorderRules && (
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-            <span>Rule Graph DOM Interface — Order, Merge &amp; Biject/Split</span>
-            <DocTooltip docKey="domDragSplitMerge" />
+            <span>Rule order and structure</span>
           </div>
           <DomEchelonManipulator
-            title="Active Grammar Graph Nodes"
-            subtitle="Drag any rule to reveal temporary drop targets for Reorder, Merge, and every possible Split boundary"
+            title="Arrange grammar rules"
+            subtitle="Use Move up and Move down to change a rule's place in the grammar."
             items={graph.nodes
               .filter((n) => !n.isMissing)
               .map<EchelonDomItem>((n) => {

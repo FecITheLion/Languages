@@ -3,6 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#2563eb" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <title>Grammar2JSON Studio — OpenAPI &amp; DSL Bidirectional Workbench</title>
     <meta name="description" content="OpenAPI and DSL-controlled multi-page bidirectional studio for Grammar, Schema.org JSON, Python AST, and WASM/WABT with Google Drive sync and project ZIP packaging." />
     <meta property="og:title" content="Grammar2JSON Studio — OpenAPI &amp; DSL Bidirectional Workbench" />
@@ -15,6 +17,16 @@
   </head>
   <body class="bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100 antialiased selection:bg-blue-600/20 selection:text-blue-900 dark:selection:text-blue-100">
     <div id="root"></div>
+    <script type="module">
+      if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+          navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`, {
+            scope: import.meta.env.BASE_URL,
+            updateViaCache: 'none',
+          }).catch((error) => console.warn('Service worker registration failed:', error));
+        });
+      }
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

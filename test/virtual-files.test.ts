@@ -1,9 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildVirtualTree, editVirtualFile, hasVirtualConflict, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, resolveVirtualFile, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, submitVirtualFiles, validVirtualPath, virtualEditAllowed, virtualEdits } from '../src/engine/virtualFiles.ts';
+import { applyVirtualSubmission, buildVirtualTree, editVirtualFile, hasVirtualConflict, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, resolveVirtualFile, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, submitVirtualFiles, validVirtualPath, virtualEditAllowed, virtualEdits } from '../src/engine/virtualFiles.ts';
 import type { HistologSnapshotState } from '../src/engine/histologEngine.ts';
 
 const submit = (content: string) => submitVirtualFiles({}, 'engine', [{ path: 'engine/output.txt', content }]);
+
+test('versioned submissions reject malformed batches without changing existing files', () => {
+  const original = submit('original');
+  const accepted = applyVirtualSubmission(original, { version: 1, owner: 'engine', files: [{ path: 'engine/output.txt', content: 'updated' }] });
+  assert.equal(accepted['engine/output.txt'].source, 'updated');
+  for (const payload of [
+    { version: 2, owner: 'engine', files: [] },
+    { version: 1, owner: 'engine', files: [{ path: 'engine/output.txt', content: 3 }] },
+    { version: 1, owner: 'engine', files: [{ path: 'engine/output.txt', content: 'bad', target: 'unknown' }] },
+    { version: 1, owner: 'engine', files: [{ path: 'engine/output.txt', content: 'bad', filename: '../bad' }] },
+    { version: 1, owner: '__proto__', files: [] },
+  ]) assert.throws(() => applyVirtualSubmission(original, payload), /Invalid artifact/);
+  assert.equal(original['engine/output.txt'].source, 'original');
+});
 
 test('regeneration preserves edits and latches conflicts until explicit resolution', () => {
   let files = editVirtualFile(submit('one'), 'engine/output.txt', 'mine');

@@ -15,6 +15,10 @@ export type LogicInputNormalizationResult =
   | { ok: true; input: NormalizedLogicEvaluationInput }
   | { ok: false; error: string };
 
+export function logicInputDiagnostic(error: string): { code: 'ambiguous_input' | 'invalid_input'; message: string } {
+  return { code: /^(Ambiguous|Do not mix)/.test(error) ? 'ambiguous_input' : 'invalid_input', message: error };
+}
+
 type Literal = string | number | boolean;
 type LabelInput = Literal | { kind: LogicLabelBinding['kind']; value: Literal };
 
@@ -180,12 +184,6 @@ function positionalLabels(
   defaults: LogicLabelBinding[]
 ): { ok: true; labels: LogicLabelBinding[] } | { ok: false; error: string } {
   const positional = defaults.filter((label) => label.kind !== 'lambda');
-  if (rawValues.length > positional.length) {
-    return {
-      ok: false,
-      error: `Received ${rawValues.length} positional values for ${positional.length} configured non-lambda labels.`,
-    };
-  }
   const entries: Array<[string, unknown]> = [];
   for (let index = 0; index < rawValues.length; index += 1) {
     const target = positional[index];
@@ -193,7 +191,11 @@ function positionalLabels(
     if (!isLiteral(value)) {
       return { ok: false, error: `Positional value ${index + 1} must be a string, number, or boolean literal.` };
     }
-    entries.push([target.name, value]);
+    const name = target?.name ?? `_${index + 1}`;
+    if (!target && defaults.some((label) => label.name === name)) {
+      return { ok: false, error: `Positional fallback '${name}' conflicts with a configured label.` };
+    }
+    entries.push([name, value]);
   }
   return mergeNamedLabels(entries, defaults);
 }

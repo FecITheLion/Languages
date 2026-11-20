@@ -202,6 +202,17 @@ export interface LogicEvaluationResult {
   error?: string;
 }
 
+export function getLogicBindingDiagnostics(
+  result: LogicEvaluationResult,
+  labels: LogicLabelBinding[]
+): Array<{ code: 'unbound_label'; label: string }> {
+  const missing = result.error?.match(/^Unbound label "([A-Za-z_][A-Za-z0-9_]*)"/)?.[1];
+  if (!missing) return [];
+  const configured = new Set(labels.map((label) => label.name.trim()));
+  return [...new Set([...result.freeVariables.filter((name) => !configured.has(name)), missing])]
+    .map((label) => ({ code: 'unbound_label' as const, label }));
+}
+
 export interface LabelSuggestionOption {
   label: string;
   value: string;
