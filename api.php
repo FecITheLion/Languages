@@ -1,10 +1,11 @@
 <?php
 declare(strict_types=1);
-if (!defined('PHP_API_ENTRY')) { http_response_code(404); exit; }
+if (!defined('PHP_API_ENTRY') && !defined('PHP_RENDER_ENTRY')) { http_response_code(404); exit; }
 
 final class InputError extends Exception {}
 final class UnsupportedLogic extends Exception {}
 final class EvaluationError extends Exception {}
+final class LogicStorageError extends Exception {}
 
 const DEFAULT_STATEMENT = '(apply_discount(double)(price) ≥ 80) ∧ ¬(tax > 15)';
 const DEFAULT_LABELS = [
@@ -13,6 +14,100 @@ const DEFAULT_LABELS = [
     ['id'=>'lbl_3','name'=>'double','value'=>'λx. x * 2','kind'=>'lambda'],
     ['id'=>'lbl_4','name'=>'apply_discount','value'=>'λcb. λv. cb(v) - 10','kind'=>'lambda'],
 ];
+const DEFAULT_CAUCHY = [
+    'enabled'=>true, 'paramStyle'=>'directional', 'customParamNames'=>'left, right',
+    'seedValues'=>'0, 1', 'recurrenceExpr'=>'(left + right) / 2',
+    'maxIterations'=>24, 'epsilon'=>0.0001,
+];
+const DEFAULT_CALLBACKS = [
+    ['id'=>'gcb_tax_fn','name'=>'tax_fn','params'=>['x'],'body'=>'x * 1.08','lambdaExpr'=>'λx. x * 1.08',
+        'description'=>'Applies 8% tax multiplier to a numeric amount.','savedAt'=>'2026-01-01T00:00:00.000Z','source'=>'manual'],
+    ['id'=>'gcb_apply_discount','name'=>'apply_discount','params'=>['amount','pct'],'body'=>'amount * (1 - pct / 100)',
+        'lambdaExpr'=>'λamount. λpct. amount * (1 - pct / 100)','description'=>'Applies a percentage discount to an amount.',
+        'savedAt'=>'2026-01-01T00:00:00.000Z','source'=>'manual'],
+    ['id'=>'gcb_within_limit','name'=>'within_limit','params'=>['val','max_val'],'body'=>'val ≤ max_val',
+        'lambdaExpr'=>'λval. λmax_val. val ≤ max_val','description'=>'Checks whether a value stays at or below a threshold.',
+        'savedAt'=>'2026-01-01T00:00:00.000Z','source'=>'manual'],
+];
+const API_LANGUAGES = [
+    ['json','jsonld','JSON-LD (Schema.org)','JSON-LD','.jsonld'],
+    ['python','python','Python','Python','.py'],
+    ['rust','rust','Rust','Rust','.rs'],
+    ['wasm','wat','WASM / WABT','WASM','.wat'],
+    ['typescript','typescript','TypeScript','TypeScript','.ts'],
+    ['javascript','javascript','JavaScript (ESM)','JavaScript','.mjs'],
+    ['go','go','Go','Go','.go'],
+    ['java','java','Java','Java','.java'],
+    ['cpp','cpp','C++ (C++20)','C++','.hpp'],
+    ['csharp','csharp','C# (.NET)','C#','.cs'],
+    ['php','php','PHP 8','PHP','.php'],
+    ['sql','sql','SQL (DDL / Rules)','SQL','.sql'],
+    ['swift','swift','Swift 6','Swift','.swift'],
+    ['kotlin','kotlin','Kotlin','Kotlin','.kt'],
+    ['ruby','ruby','Ruby 3','Ruby','.rb'],
+    ['scala','scala','Scala 3','Scala','.scala'],
+    ['haskell','haskell','Haskell','Haskell','.hs'],
+    ['elixir','elixir','Elixir','Elixir','.ex'],
+    ['lua','lua','Lua 5.4','Lua','.lua'],
+    ['zig','zig','Zig','Zig','.zig'],
+    ['dart','dart','Dart 3','Dart','.dart'],
+    ['ocaml','ocaml','OCaml','OCaml','.ml'],
+];
+const API_HTML_TEMPLATE_CONFIGS = [
+    'studio' => ['title'=>'Grammar2JSON Studio', 'themeColor'=>'#2563eb'],
+    'compact' => ['title'=>'Grammar Studio', 'themeColor'=>'#0f766e'],
+];
+const API_HTML_TEMPLATE_NAMES = ['studio', 'compact'];
+const API_HTML_FRAGMENT_TEMPLATES = [
+    'error' => '<main><h1 data-template-text="title">Request error</h1><p data-template-text="message"></p></main>',
+    'notice' => '<aside role="status"><strong data-template-text="title">Notice</strong><p data-template-text="message"></p></aside>',
+    'status' => '<main><h1 data-template-text="title">Status</h1><p data-template-text="message"></p></main>',
+];
+
+function select_api_template_name(mixed $requested = null): string {
+    $name = is_string($requested) && $requested !== '' ? $requested : (defined('APP_TEMPLATE_NAME') ? APP_TEMPLATE_NAME : 'studio');
+    if (!array_key_exists($name, API_HTML_TEMPLATE_CONFIGS)) throw new InvalidArgumentException('Unknown HTML template name.');
+    return $name;
+}
+
+function render_api_html(string $templateName, string $fragment, array $values = [], ?string $document = null): string {
+    $config = API_HTML_TEMPLATE_CONFIGS[select_api_template_name($templateName)];
+    $source = $document ?? (API_HTML_FRAGMENT_TEMPLATES[$fragment] ?? null);
+    if (!is_string($source) || strlen($source) > 2097152) throw new InvalidArgumentException('Unknown or oversized HTML template fragment.');
+    $cacheKey = 'grammar2json-html-v1:' . hash('sha256', json_encode([$templateName, $fragment, $config, $values, hash('sha256', $source)], JSON_INVALID_UTF8_SUBSTITUTE));
+    if (function_exists('apcu_fetch')) {
+        $cached = apcu_fetch($cacheKey, $found);
+        if ($found && is_string($cached)) return $cached;
+    }
+    static $memoryCache = [];
+    if (array_key_exists($cacheKey, $memoryCache)) return $memoryCache[$cacheKey];
+    $previous = libxml_use_internal_errors(true);
+    $dom = new DOMDocument('1.0', 'UTF-8');
+    $loaded = $dom->loadHTML('<?xml encoding="UTF-8">' . $source, LIBXML_NONET | LIBXML_COMPACT);
+    libxml_clear_errors();
+    libxml_use_internal_errors($previous);
+    if (!$loaded) throw new RuntimeException('Could not parse HTML template.');
+    $xpath = new DOMXPath($dom);
+    if ($document !== null) {
+        $title = $xpath->query('//title')->item(0);
+        if ($title) $title->textContent = $config['title'];
+        $theme = $xpath->query('//meta[@name="theme-color"]')->item(0);
+        if ($theme instanceof DOMElement) $theme->setAttribute('content', $config['themeColor']);
+        $html = $xpath->query('/html')->item(0);
+        if ($html instanceof DOMElement) $html->setAttribute('data-template', $templateName);
+    }
+    foreach ($xpath->query('//*[@data-template-text]') as $node) {
+        if (!$node instanceof DOMElement) continue;
+        $key = $node->getAttribute('data-template-text');
+        if (array_key_exists($key, $values)) $node->textContent = (string)$values[$key];
+    }
+    $result = $dom->saveHTML();
+    if (!is_string($result)) throw new RuntimeException('Could not serialize HTML template.');
+    $result = preg_replace('/^<\?xml encoding="UTF-8">/', '', $result) ?? $result;
+    $memoryCache[$cacheKey] = $result;
+    if (function_exists('apcu_store')) apcu_store($cacheKey, $result, 300);
+    return $result;
+}
 
 final class LogicParser {
     private array $tokens = [];
@@ -248,9 +343,10 @@ function normalize_labels(mixed $value, array $labels, int $depth = 0): array {
     }
     throw new InputError('Logic labels must be text, a literal array, a label object, or a label-binding array.');
 }
-function normalized_input(mixed $raw, int $depth = 0): array {
+function normalized_input(mixed $raw, int $depth = 0, ?array $defaults = null): array {
     if ($depth > 10) throw new UnsupportedLogic('Input nesting limit exceeded.');
-    $statement = DEFAULT_STATEMENT; $labels = DEFAULT_LABELS;
+    $defaults ??= ['statement'=>DEFAULT_STATEMENT, 'labels'=>DEFAULT_LABELS];
+    $statement = $defaults['statement']; $labels = $defaults['labels'];
     if ($raw === null || $raw === '' || $raw === []) return [$statement, $labels];
     if (is_string($raw)) {
         if (strlen($raw) > 16384) throw new UnsupportedLogic('Logic input is too long.');
@@ -259,7 +355,7 @@ function normalized_input(mixed $raw, int $depth = 0): array {
         if (in_array($text[0], ['{','[','"'], true)) {
             $decoded = json_decode($text);
             if (json_last_error() !== JSON_ERROR_NONE) throw new InputError('Input looks like combined JSON but is malformed.');
-            if ($decoded instanceof stdClass || is_array($decoded) || (is_string($decoded) && preg_match('/^[\[{]/', trim($decoded)))) return normalized_input($decoded, $depth+1);
+            if ($decoded instanceof stdClass || is_array($decoded) || (is_string($decoded) && preg_match('/^[\[{]/', trim($decoded)))) return normalized_input($decoded, $depth+1, $defaults);
         }
         $tokens = label_tokens($text); $known = count($tokens) > 0;
         foreach ($tokens as $token) {
@@ -282,7 +378,7 @@ function normalized_input(mixed $raw, int $depth = 0): array {
     if ($has('values') && count($fields) > 1) throw new InputError('Ambiguous input: "values" cannot be combined with statement or label fields.');
     if ($has('statement') && $has('logic_statement') && $fields['statement'] !== $fields['logic_statement']) throw new InputError('Ambiguous statement input: "statement" and "logic_statement" differ.');
     if ($has('labels') && $has('logic_labels')) throw new InputError('Ambiguous label input: use either "labels" or "logic_labels", not both.');
-    if ($has('input')) return normalized_input($fields['input'], $depth+1);
+    if ($has('input')) return normalized_input($fields['input'], $depth+1, $defaults);
     $stmt = $fields['logic_statement'] ?? $fields['statement'] ?? null;
     if ($stmt !== null) {
         if (!is_string($stmt)) throw new InputError('The logic statement must be text.');
@@ -474,14 +570,10 @@ function cauchy_names(string $style, int $arity, string $custom = ''): array {
 function cauchy_error(array $names, array $aliases, string $error): array {
     return ['ok'=>false,'converged'=>false,'cauchyIndexN'=>null,'limitEstimate'=>null,'finalDelta'=>null,'tailDiameter'=>null,'resolvedParamNames'=>$names,'availableAliases'=>$aliases,'steps'=>[],'error'=>$error];
 }
-function evaluate_cauchy(mixed $raw): array {
+function evaluate_cauchy(mixed $raw, array $defaultLabels = DEFAULT_LABELS, array $defaultConfig = DEFAULT_CAUCHY): array {
     $GLOBALS['cauchyEvaluation'] = true;
     if ($raw !== null && !($raw instanceof stdClass)) throw new UnsupportedLogic('Cauchy config must be a JSON object.');
-    $config = array_merge([
-        'enabled'=>true, 'paramStyle'=>'directional', 'customParamNames'=>'left, right',
-        'seedValues'=>'0, 1', 'recurrenceExpr'=>'(left + right) / 2',
-        'maxIterations'=>24, 'epsilon'=>0.0001,
-    ], $raw === null ? [] : get_object_vars($raw));
+    $config = array_merge($defaultConfig, ['enabled'=>true], $raw === null ? [] : get_object_vars($raw));
     foreach (['paramStyle','customParamNames','seedValues','recurrenceExpr'] as $name) {
         if (!is_string($config[$name]) || strlen($config[$name]) > 16384) throw new UnsupportedLogic('Unsupported Cauchy config field '.$name.'.');
     }
@@ -494,7 +586,7 @@ function evaluate_cauchy(mixed $raw): array {
     foreach ($seeds as $i=>$seed) {
         if (is_numeric($seed) && is_finite((float)$seed)) $terms[] = (float)$seed;
         else {
-            $value = null; $evaluation = evaluate_statement($seed, DEFAULT_LABELS, $value);
+            $value = null; $evaluation = evaluate_statement($seed, $defaultLabels, $value);
             if (!$evaluation['ok'] || $value['kind'] !== 'number' || !is_finite((float)$value['value'])) {
                 return ['config'=>$config, ...cauchy_error(cauchy_names($config['paramStyle'], count($seeds), $config['customParamNames']), [], 'Seed #'.($i+1).' ("'.$seed.'") did not evaluate to a finite number.')];
             }
@@ -518,7 +610,7 @@ function evaluate_cauchy(mixed $raw): array {
         foreach ($directional as $i=>$name) $bindings[$name] = $window[$i];
         foreach ($positional as $i=>$name) $bindings[$name] = $window[$i];
         foreach ($names as $i=>$name) $bindings[$name] = $window[$i];
-        $labels = array_values(array_filter(DEFAULT_LABELS, fn($label) => !array_key_exists(trim($label['name']), $bindings)));
+        $labels = array_values(array_filter($defaultLabels, fn($label) => !array_key_exists(trim($label['name']), $bindings)));
         foreach ($bindings as $name=>$value) $labels[] = ['id'=>'cauchy', 'name'=>$name, 'kind'=>'number', 'value'=>js_number((float)$value)];
         $value = null; $evaluation = evaluate_statement($recurrence, $labels, $value);
         if (!$evaluation['ok']) return ['config'=>$config, ...cauchy_error($names, $aliases, 'Step n='.count($terms).': '.($evaluation['error'] ?? 'Recurrence evaluation failed.'))];
@@ -552,12 +644,303 @@ function api_json(int $status, array $body, bool $hal = false): never {
     header('X-Content-Type-Options: nosniff');
     header('Content-Type: '.($hal ? 'application/hal+json' : 'application/json').'; charset=utf-8');
     if ($hal && isset($body['_links'])) {
-        $links = $body['_links'];
-        header('Link: <'.$links['self']['href'].'>; rel="self", <'.$links['logic']['href'].'>; rel="logic"');
+        $links = [];
+        foreach ($body['_links'] as $rel=>$link) if (isset($link['href']) && is_string($link['href'])) {
+            $links[] = '<'.$link['href'].'>; rel="'.$rel.'"';
+        }
+        if ($links) header('Link: '.implode(', ', $links));
     }
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo json_encode($body, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
+
+function logic_store(): ?PDO {
+    $directory = getenv('GRAMMAR2JSON_STATE_DIR');
+    if ($directory === false || $directory === '') return null;
+    $resolved = realpath($directory);
+    if ($resolved === false || $directory !== $resolved || !is_dir($resolved) || is_link($directory)
+        || $resolved === __DIR__ || str_starts_with($resolved, __DIR__.DIRECTORY_SEPARATOR)
+        || !is_writable($resolved) || (fileperms($resolved) & 0077) !== 0
+        || !extension_loaded('pdo_sqlite')) {
+        throw new LogicStorageError('State directory must be a writable, private canonical directory outside the web root, with pdo_sqlite enabled.');
+    }
+    $file = $resolved . '/logic.sqlite3';
+    if (is_link($file) || (file_exists($file) && (!is_file($file) || (fileperms($file) & 0077) !== 0))) {
+        throw new LogicStorageError('Logic state database must be a private regular file, not a symlink.');
+    }
+    $previous = umask(0077);
+    try {
+        $db = new PDO('sqlite:'.$file, null, null, [PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION, PDO::ATTR_TIMEOUT=>5]);
+        $db->exec('CREATE TABLE IF NOT EXISTS logic_state (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)');
+        return $db;
+    } catch (PDOException $error) {
+        error_log('Logic state database error: '.$error->getMessage());
+        throw new LogicStorageError('Unable to access logic state database.');
+    } finally {
+        umask($previous);
+    }
+}
+
+function logic_state(?PDO $db): array {
+    $defaults = ['statement'=>DEFAULT_STATEMENT, 'labels'=>DEFAULT_LABELS, 'cauchyConfig'=>DEFAULT_CAUCHY, 'callbacks'=>DEFAULT_CALLBACKS];
+    if ($db === null) return $defaults;
+    try {
+        $data = $db->query('SELECT data FROM logic_state WHERE id = 1')->fetchColumn();
+        if ($data === false) return $defaults;
+        $state = json_decode($data, true, 32, JSON_THROW_ON_ERROR);
+        if (!is_array($state) || !is_string($state['statement'] ?? null)
+            || !is_array($state['labels'] ?? null) || !is_array($state['cauchyConfig'] ?? null)) {
+            throw new LogicStorageError('Stored logic state is invalid.');
+        }
+        if (array_key_exists('callbacks', $state) && !is_array($state['callbacks'])) throw new LogicStorageError('Stored callback state is invalid.');
+        return $state + ['callbacks'=>DEFAULT_CALLBACKS];
+    } catch (PDOException|JsonException $error) {
+        error_log('Logic state read error: '.$error->getMessage());
+        throw new LogicStorageError('Unable to read logic state.');
+    }
+}
+
+function callback_binding(string $name, string $expression, string $description, ?string $id = null): array {
+    if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/D', $name)) throw new InputError('Callback name must be an identifier.');
+    $expression = trim($expression);
+    $ast = parse_logic($expression);
+    if ($ast['type'] !== 'lambda') throw new InputError('Callback expression must be a lambda abstraction.');
+    $params = [];
+    while ($ast['type'] === 'lambda') {
+        $params[] = $ast['name'];
+        $ast = $ast['body'];
+    }
+    if (!preg_match('/^(?:(?:λ|\\\\)\s*[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)+/u', $expression, $match)) {
+        throw new InputError('Callback must begin with a lambda abstraction.');
+    }
+    $body = trim(substr($expression, strlen($match[0])));
+    $callback = ['id'=>$id ?? 'gcb_'.bin2hex(random_bytes(12)), 'name'=>$name, 'params'=>$params,
+        'body'=>$body, 'lambdaExpr'=>$expression, 'savedAt'=>gmdate('Y-m-d\TH:i:s').'.000Z', 'source'=>'manual'];
+    if (trim($description) !== '') $callback['description'] = trim($description);
+    return $callback;
+}
+
+function serve_callbacks(string $route, string $method): never {
+    $links = logic_links('/'.$route);
+    $id = null;
+    if (preg_match('~^api/callbacks/([^/]+)$~', $route, $match)) $id = rawurldecode($match[1]);
+    try {
+        $db = logic_store();
+        if (in_array($method, ['GET','HEAD'], true)) {
+            $callbacks = logic_state($db)['callbacks'];
+            if ($id === null) {
+                api_json(200, ['count'=>count($callbacks), '_embedded'=>['callbacks'=>$callbacks], '_links'=>$links], true);
+            }
+            foreach ($callbacks as $callback) if ($callback['id'] === $id || $callback['name'] === $id) {
+                api_json(200, [...$callback, '_links'=>$links], true);
+            }
+            api_json(404, ['error'=>"Callback '$id' not found.", '_links'=>$links], true);
+        }
+        if (($id === null && $method === 'POST') || ($id !== null && $method === 'PUT')) {
+            $input = logic_request_object();
+            $saved = logic_mutate($db, function (array $state) use ($id, $input): array {
+                $existing = null;
+                foreach ($state['callbacks'] as $callback) if ($callback['id'] === $id || $callback['name'] === $id) { $existing = $callback; break; }
+                $name = $input->name ?? $existing['name'] ?? $id;
+                $expression = $input->lambdaExpr ?? $existing['lambdaExpr'] ?? ($id === null ? null : 'λx. x');
+                $description = $input->description ?? $existing['description'] ?? '';
+                if (!is_string($name) || !is_string($expression) || !is_string($description) || trim($name) === '' || trim($expression) === '') {
+                    throw new InputError('Both "name" and "lambdaExpr" must be text.');
+                }
+                $name = trim($name);
+                $index = null;
+                foreach ($state['callbacks'] as $i=>$callback) if ($callback['name'] === $name) { $index = $i; break; }
+                if ($index === null && count($state['callbacks']) >= 64) throw new InputError('At most 64 callbacks are supported.');
+                $saved = callback_binding($name, $expression, $description, $index === null ? null : $state['callbacks'][$index]['id']);
+                if ($index === null) $state['callbacks'][] = $saved; else $state['callbacks'][$index] = $saved;
+                return [$state, $saved];
+            });
+            $self = logic_links('/api/callbacks/'.rawurlencode($saved['id']));
+            if ($method === 'POST') header('Location: '.$self['self']['href']);
+            api_json($method === 'POST' ? 201 : 200, ['ok'=>true, 'callback'=>$saved, '_links'=>$self], true);
+        }
+        if ($id !== null && $method === 'DELETE') {
+            $result = logic_mutate($db, function (array $state) use ($id): array {
+                $before = count($state['callbacks']);
+                $state['callbacks'] = array_values(array_filter($state['callbacks'], fn($callback) => $callback['id'] !== $id && $callback['name'] !== $id));
+                if ($before === count($state['callbacks'])) throw new InputError("Callback '$id' not found.", 404);
+                return [$state, ['ok'=>true, 'deleted'=>$id]];
+            });
+            api_json(200, [...$result, '_links'=>$links], true);
+        }
+        header('Allow: '.($id === null ? 'GET, HEAD, POST, OPTIONS' : 'GET, HEAD, PUT, DELETE, OPTIONS'));
+        api_json(405, ['error'=>'Method not allowed.', '_links'=>$links], true);
+    } catch (InputError $error) {
+        api_json($error->getCode() === 404 ? 404 : 400, ['error'=>$error->getMessage(), '_links'=>$links], true);
+    } catch (UnsupportedLogic $error) {
+        api_json(400, ['error'=>'Invalid or unsupported callback expression: '.$error->getMessage(), '_links'=>$links], true);
+    } catch (LogicStorageError $error) {
+        api_json(503, ['error'=>$error->getMessage(), '_links'=>$links], true);
+    }
+}
+
+function logic_mutate(?PDO $db, callable $update): array {
+    if ($db === null) throw new LogicStorageError('Configure GRAMMAR2JSON_STATE_DIR to enable persistent logic updates.');
+    $transaction = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $transaction = true;
+        [$state, $result] = $update(logic_state($db));
+        $encoded = json_encode($state, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $query = $db->prepare('INSERT INTO logic_state (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data');
+        $query->execute([$encoded]);
+        $db->exec('COMMIT');
+        $transaction = false;
+        return $result;
+    } catch (PDOException|JsonException $error) {
+        error_log('Logic state write error: '.$error->getMessage());
+        throw new LogicStorageError('Unable to save logic state.');
+    } finally {
+        if ($transaction) $db->exec('ROLLBACK');
+    }
+}
+
+function logic_request_object(): stdClass {
+    if (strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'] ?? '')[0])) !== 'application/json') throw new InputError('Use application/json.');
+    $body = file_get_contents('php://input', false, null, 0, 262145);
+    if ($body === false || strlen($body) > 262144) throw new InputError('Logic state request exceeds 256 KiB.');
+    try { $input = json_decode($body, false, 32, JSON_THROW_ON_ERROR); }
+    catch (JsonException) { throw new InputError('Malformed JSON request body.'); }
+    if (!$input instanceof stdClass) throw new InputError('Request body must be an object.');
+    return $input;
+}
+
+function logic_links(string $route, string $method = 'GET'): array {
+    $links = api_links($route);
+    $links['self']['method'] = $method;
+    return $links;
+}
+
+function serve_api_discovery(string $route): never {
+    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    if (!in_array($method, ['GET','HEAD'], true)) {
+        header('Allow: GET, HEAD, OPTIONS');
+        api_json(405, ['error'=>'Method not allowed.']);
+    }
+    $prefix = substr(api_links('/api')['self']['href'], 0, -4);
+    if ($route === 'api') {
+        $links = [
+            'self'=>['href'=>$prefix.'/api','method'=>'GET'],
+            'logic'=>['href'=>$prefix.'/api/logic','method'=>'GET'],
+            'logicLabels'=>['href'=>$prefix.'/api/logic/labels','method'=>'GET'],
+            'evaluate'=>['href'=>$prefix.'/api/logic/evaluate','method'=>'POST'],
+            'cauchy'=>['href'=>$prefix.'/api/logic/cauchy','method'=>'POST'],
+            'callbacks'=>['href'=>$prefix.'/api/callbacks','method'=>'GET'],
+            'languages'=>['href'=>$prefix.'/api/languages','method'=>'GET'],
+            'templates'=>['href'=>$prefix.'/api/templates','method'=>'GET'],
+        ];
+        api_json(200, ['service'=>'Grammar2JSON Studio PHP API', 'mediaType'=>'application/hal+json',
+            'partial'=>true, 'summary'=>['supportedLanguageCount'=>count(API_LANGUAGES)], '_links'=>$links], true);
+    }
+    $languages = [];
+    foreach (API_LANGUAGES as [$id,$exportId,$label,$shortLabel,$extension]) {
+        $languages[] = [
+            'id'=>$id, 'exportId'=>$exportId, 'label'=>$label, 'shortLabel'=>$shortLabel, 'extension'=>$extension,
+            '_links'=>[
+                'exportWorkspace'=>['href'=>$prefix.'/api/export/'.rawurlencode($exportId),'method'=>'GET','available'=>false],
+                'exportLogic'=>['href'=>$prefix.'/api/logic/export/'.rawurlencode($exportId),'method'=>'GET','available'=>false],
+            ],
+        ];
+    }
+    api_json(200, ['count'=>count($languages), 'languages'=>$languages, '_links'=>[
+        'self'=>['href'=>$prefix.'/api/languages','method'=>'GET'], 'root'=>['href'=>$prefix.'/api','method'=>'GET'],
+    ]], true);
+}
+
+function serve_logic_state(string $route, string $method): never {
+    $links = logic_links('/'.$route);
+    try {
+        $db = logic_store();
+        if ($route === 'api/logic' && in_array($method, ['GET','HEAD'], true)) {
+            $state = logic_state($db);
+            $evaluation = evaluate_statement($state['statement'], $state['labels']);
+            $sequence = evaluate_cauchy((object)$state['cauchyConfig'], $state['labels']);
+            $fields = ['ok','converged','cauchyIndexN','limitEstimate','resolvedParamNames'];
+            api_json(200, ['statement'=>$state['statement'], 'labels'=>$state['labels'],
+                'evaluation'=>array_intersect_key($evaluation, array_flip(['ok','displayValue','valueType','error'])),
+                'cauchyConfig'=>$state['cauchyConfig'],
+                'cauchyEvaluation'=>array_intersect_key($sequence, array_flip($fields)), '_links'=>$links], true);
+        }
+        if ($route === 'api/logic' && in_array($method, ['PUT','PATCH'], true)) {
+            $input = logic_request_object();
+            $result = logic_mutate($db, function (array $state) use ($input): array {
+                if (isset($input->statement)) {
+                    if (!is_string($input->statement) || trim($input->statement) === '') throw new InputError('Statement must be non-empty text.');
+                    parse_logic($input->statement);
+                    $state['statement'] = $input->statement;
+                }
+                if (isset($input->labels)) {
+                    if (!is_array($input->labels)) throw new InputError('Labels must be an array of complete bindings.');
+                    foreach ($input->labels as $label) {
+                        if (!$label instanceof stdClass || !isset($label->id, $label->name, $label->kind, $label->value)
+                            || !is_string($label->id) || !is_string($label->name) || !is_string($label->kind) || !is_string($label->value)) {
+                            throw new InputError('Labels must be an array of complete bindings.');
+                        }
+                    }
+                    $state['labels'] = $input->labels === [] ? [] : normalize_labels($input->labels, []);
+                }
+                if (isset($input->cauchyConfig)) {
+                    if (!$input->cauchyConfig instanceof stdClass) throw new InputError('Cauchy config must be an object.');
+                    $config = array_merge($state['cauchyConfig'], get_object_vars($input->cauchyConfig));
+                    evaluate_cauchy((object)$config, $state['labels']);
+                    $state['cauchyConfig'] = $config;
+                }
+                $evaluation = evaluate_statement($state['statement'], $state['labels']);
+                return [$state, ['ok'=>true, 'statement'=>$state['statement'], 'labels'=>$state['labels'], 'displayValue'=>$evaluation['displayValue']]];
+            });
+            api_json(200, [...$result, '_links'=>$links], true);
+        }
+        if ($route === 'api/logic/labels' && in_array($method, ['GET','HEAD'], true)) {
+            $labels = logic_state($db)['labels'];
+            api_json(200, ['count'=>count($labels), 'labels'=>$labels, '_links'=>$links], true);
+        }
+        if ($route === 'api/logic/labels' && $method === 'POST') {
+            $input = logic_request_object();
+            if (!is_string($input->name ?? null) || trim($input->name) === '') throw new InputError('"name" is required.');
+            $name = trim($input->name);
+            $kind = $input->kind ?? 'number';
+            $value = $input->value ?? '0';
+            $binding = normalize_binding($name, (object)['kind'=>$kind, 'value'=>$value], null);
+            $binding['id'] = 'lbl_'.bin2hex(random_bytes(12));
+            $label = logic_mutate($db, function (array $state) use ($binding): array {
+                $state['labels'] = array_values(array_filter($state['labels'], fn($item) => $item['name'] !== $binding['name']));
+                if (count($state['labels']) >= 64) throw new InputError('At most 64 labels are supported.');
+                $state['labels'][] = $binding;
+                return [$state, $binding];
+            });
+            api_json(201, ['ok'=>true, 'label'=>$label, '_links'=>$links], true);
+        }
+        if (preg_match('~^api/logic/labels/([^/]+)$~', $route, $match) && in_array($method, ['GET','HEAD','DELETE'], true)) {
+            $id = rawurldecode($match[1]);
+            if ($method !== 'DELETE') {
+                foreach (logic_state($db)['labels'] as $label) if ($label['id'] === $id || $label['name'] === $id)
+                    api_json(200, ['label'=>$label, '_links'=>$links], true);
+                api_json(404, ['error'=>"Label '$id' not found.", '_links'=>$links], true);
+            }
+            $result = logic_mutate($db, function (array $state) use ($id): array {
+                $before = count($state['labels']);
+                $state['labels'] = array_values(array_filter($state['labels'], fn($item) => $item['id'] !== $id && $item['name'] !== $id));
+                if (count($state['labels']) === $before) throw new InputError("Label '$id' not found.", 404);
+                return [$state, ['ok'=>true, 'deleted'=>$id]];
+            });
+            api_json(200, [...$result, '_links'=>$links], true);
+        }
+        header('Allow: '.($route === 'api/logic' ? 'GET, HEAD, PUT, PATCH, OPTIONS' : ($route === 'api/logic/labels' ? 'GET, HEAD, POST, OPTIONS' : 'GET, HEAD, DELETE, OPTIONS')));
+        api_json(405, ['error'=>'Method not allowed.', '_links'=>$links], true);
+    } catch (InputError $error) {
+        api_json($error->getCode() === 404 ? 404 : 400, ['error'=>$error->getMessage(), '_links'=>$links], true);
+    } catch (UnsupportedLogic $error) {
+        api_json(503, ['error'=>'PHP logic evaluator cannot handle this input: '.$error->getMessage(), '_links'=>$links], true);
+    } catch (LogicStorageError $error) {
+        api_json(503, ['error'=>$error->getMessage(), '_links'=>$links], true);
+    }
+}
+
 function serve_api(string $route): never {
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     if (strtolower(rtrim($route, '/')) === 'healthz' && in_array($method, ['GET','HEAD'], true)) api_json(200, ['ok'=>true,'service'=>'grammar2json-studio']);
@@ -568,7 +951,52 @@ function serve_api(string $route): never {
         header('Access-Control-Expose-Headers: Link, Location, Allow');
         if ($method === 'OPTIONS') { header('Allow: GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS'); http_response_code(204); header('Cache-Control: no-store'); exit; }
     }
-    $route = strtolower(rtrim($route, '/'));
+    $route = rtrim($route, '/');
+    if (in_array($route, ['api','api/languages'], true)) serve_api_discovery($route);
+    if ($route === 'api/templates' && $method === 'GET') {
+        try {
+            api_json(200, [
+                'template'=>select_api_template_name($_GET['template'] ?? null),
+                'templates'=>API_HTML_TEMPLATE_NAMES,
+                'fragments'=>array_keys(API_HTML_FRAGMENT_TEMPLATES),
+            ]);
+        } catch (InvalidArgumentException $error) {
+            api_json(400, ['error'=>$error->getMessage()]);
+        }
+    }
+    if ($route === 'api/templates/render' && $method === 'POST') {
+        if (strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'] ?? '')[0])) !== 'application/json') api_json(415, ['error'=>'Use application/json.']);
+        $body = file_get_contents('php://input', false, null, 0, 262145);
+        if ($body === false || strlen($body) > 262144) api_json(413, ['error'=>'Template request exceeds 256 KiB.']);
+        try {
+            $input = json_decode($body, false, 16, JSON_THROW_ON_ERROR);
+            if (!$input instanceof stdClass || !is_string($input->fragment ?? null)) throw new InputError('Template request requires a fragment name.');
+            $template = select_api_template_name($input->template ?? null);
+            $values = [];
+            if (isset($input->values)) {
+                if (!$input->values instanceof stdClass) throw new InputError('Template values must be an object.');
+                foreach (get_object_vars($input->values) as $key=>$value) {
+                    if (!is_string($value) && !is_numeric($value) && !is_bool($value)) throw new InputError('Template values must be scalar text.');
+                    $values[$key] = is_bool($value) ? ($value ? 'true' : 'false') : (string)$value;
+                }
+            }
+            $html = render_api_html($template, $input->fragment, $values);
+            http_response_code(200);
+            header('Cache-Control: no-store');
+            header('X-Content-Type-Options: nosniff');
+            header('Content-Type: text/html; charset=utf-8');
+            if ($method !== 'HEAD') echo $html;
+            exit;
+        } catch (JsonException $error) {
+            api_json(400, ['error'=>'Malformed template JSON.']);
+        } catch (InputError|InvalidArgumentException $error) {
+            api_json(400, ['error'=>$error->getMessage()]);
+        } catch (RuntimeException $error) {
+            api_json(404, ['error'=>$error->getMessage()]);
+        }
+    }
+    if ($route === 'api/callbacks' || preg_match('~^api/callbacks/[^/]+$~', $route)) serve_callbacks($route, $method);
+    if (in_array($route, ['api/logic','api/logic/labels'], true) || preg_match('~^api/logic/labels/[^/]+$~', $route)) serve_logic_state($route, $method);
     if (!in_array($route, ['api/logic/evaluate','api/logic/cauchy'], true) || $method !== 'POST') api_json(503, ['error'=>'This endpoint is not implemented by the PHP deployment. Configure a separate Node API proxy.']);
     $links = api_links('/'.$route);
     $contentType = strtolower(trim(explode(';', $_SERVER['CONTENT_TYPE'] ?? '')[0]));
@@ -582,8 +1010,9 @@ function serve_api(string $route): never {
             if (trim($body) === '') $raw = null;
             else { $raw = json_decode($body, false, 32, JSON_THROW_ON_ERROR); }
         } else $raw = $body;
-        if ($route === 'api/logic/cauchy') api_json(200, [...evaluate_cauchy($raw), '_links'=>$links], true);
-        [$statement, $labels] = normalized_input($raw);
+        $state = logic_state(logic_store());
+        if ($route === 'api/logic/cauchy') api_json(200, [...evaluate_cauchy($raw, $state['labels'], $state['cauchyConfig']), '_links'=>$links], true);
+        [$statement, $labels] = normalized_input($raw, 0, $state);
         $result = evaluate_statement($statement, $labels);
         api_json(200, ['statement'=>$statement, ...$result, '_links'=>$links], true);
     } catch (JsonException $error) {
@@ -594,5 +1023,7 @@ function serve_api(string $route): never {
         api_json(400, ['ok'=>false,'error'=>$message,'diagnostics'=>[['code'=>$code,'message'=>$message]],'_links'=>$links], true);
     } catch (UnsupportedLogic $error) {
         api_json(503, ['ok'=>false,'error'=>'PHP logic evaluator cannot handle this input: '.$error->getMessage(),'_links'=>$links], true);
+    } catch (LogicStorageError $error) {
+        api_json(503, ['ok'=>false,'error'=>$error->getMessage(),'_links'=>$links], true);
     }
 }

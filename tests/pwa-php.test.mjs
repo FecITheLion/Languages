@@ -6,18 +6,20 @@ import { createServer } from 'node:net';
 import vm from 'node:vm';
 import { LOGIC_CALCULATOR_PRESETS, DEFAULT_CAUCHY_CONFIG, evaluateLogicStatement, evaluateCauchySequence, getLogicBindingDiagnostics } from '../src/engine/logicLambdaEngine.ts';
 import { normalizeLogicEvaluationInput, logicInputDiagnostic } from '../src/engine/logicInputNormalizer.ts';
+import { SUPPORTED_LANGUAGES } from '../src/types/studio.ts';
 
 const project = process.cwd();
 const php = (...args) => spawnSync('php', args, { encoding: 'utf8' });
 
 test('installer validates build, base and empty target; PHP routes SPA and rejects API', async () => {
   const work = mkdtempSync(`${project}/tests/.pwa-check-`);
-  const source = `${work}/source`, target = `${work}/target`;
+  const source = `${work}/source`, target = `${work}/target`, state = `${work}/state`;
   let server;
   try {
     mkdirSync(`${source}/dist/assets`, { recursive: true });
     mkdirSync(target);
-    for (const file of ['index.php', 'install.php', 'api.php']) copyFileSync(`${project}/${file}`, `${source}/${file}`);
+    mkdirSync(state, { mode: 0o700 });
+    for (const file of ['index.php', 'install.php', 'api.php', 'slug_controller.php']) copyFileSync(`${project}/${file}`, `${source}/${file}`);
     cpSync(`${project}/public`, `${source}/dist`, { recursive: true });
     writeFileSync(`${source}/dist/index.html`, '<!doctype html><script type="module" src="/studio/assets/app-abcdefgh.js"></script>');
     writeFileSync(`${source}/dist/assets/app-abcdefgh.js`, '/* fixture */');
@@ -25,6 +27,11 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.notEqual(php(`${source}/install.php`, target, '/../').status, 0);
     assert.equal(php(`${source}/install.php`, target, '/studio/').status, 0);
     assert.equal(php(`${source}/install.php`, target, '/studio/').status, 0);
+    assert.match(readFileSync(`${target}/.htaccess`, 'utf8'), /RewriteRule \^\(\[a-z0-9\]\[a-z0-9-\]\*\)\/\?\$ index\.php\?slug=\$1/);
+    const rewriteRules = readFileSync(`${target}/.htaccess`, 'utf8');
+    assert.match(rewriteRules, /RewriteRule \^nodes\/\(\[\^\/\]\+\)\/\(\[\^\/\]\+\)\/members\/\(\[\^\/\]\+\)\/\?\$ index\.php\?slug=nodes/);
+    assert.match(rewriteRules, /RewriteRule \^members\/\(\[\^\/\]\+\)\/\?\$ index\.php\?slug=members/);
+    assert.match(rewriteRules, /RewriteRule \^template\/\(\[\^\/\]\+\)\/\(\[\^\/\]\+\)\/\?\$ index\.php\?template_route=/);
     writeFileSync(`${target}/assets/app-abcdefgh.js`, 'modified installation');
     assert.notEqual(php(`${source}/install.php`, target, '/studio/').status, 0);
     assert.equal(readFileSync(`${target}/assets/app-abcdefgh.js`, 'utf8'), 'modified installation');
@@ -34,7 +41,9 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
       listener.on('error', reject);
       listener.listen(0, '127.0.0.1', () => { const p = listener.address().port; listener.close(() => resolve(p)); });
     });
-    server = spawn('php', ['-S', `127.0.0.1:${port}`, `${target}/index.php`], { cwd: target, stdio: 'ignore' });
+    server = spawn('php', ['-S', `127.0.0.1:${port}`, `${target}/index.php`], {
+      cwd: target, stdio: 'ignore', env: { ...process.env, GRAMMAR2JSON_STATE_DIR: state },
+    });
     const root = `http://127.0.0.1:${port}`;
     for (let i = 0; ; i++) {
       try { await fetch(`${root}/studio/`); break; } catch (error) { if (i === 50) throw error; await new Promise(r => setTimeout(r, 20)); }
@@ -42,6 +51,21 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     let response = await fetch(`${root}/studio/deep/link`);
     assert.equal(response.status, 200);
     assert.match(await response.text(), /app-abcdefgh/);
+    response = await fetch(`${root}/studio/?slug=help`);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Guided help/);
+    response = await fetch(`${root}/studio/?slug=unknown`);
+    assert.equal(response.status, 404);
+    response = await fetch(`${root}/studio/?slug=nodes/rule/quantity/members/expression`, { redirect: 'manual' });
+    assert.equal(response.status, 307);
+    assert.equal(response.headers.get('location'), '/api/nodes/rule/quantity/members/expression');
+    response = await fetch(`${root}/studio/?slug=members/expression&node=rule%2Fquantity`, { redirect: 'manual' });
+    assert.equal(response.status, 307);
+    assert.equal(response.headers.get('location'), '/api/nodes/rule/quantity/members/expression');
+    response = await fetch(`${root}/studio/?slug=members/expression`, { redirect: 'manual' });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/?template=unknown`);
+    assert.equal(response.status, 400);
     response = await fetch(`${root}/studio/assets/app-abcdefgh.js`);
     assert.match(response.headers.get('content-type'), /javascript/);
     response = await fetch(`${root}/studio/api/rules`, { method: 'POST' });
@@ -52,6 +76,50 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     response = await fetch(`${root}/studio/healthz`);
     assert.deepEqual(await response.json(), { ok: true, service: 'grammar2json-studio' });
     assert.equal(response.headers.get('cache-control'), 'no-store');
+    response = await fetch(`${root}/studio/api`);
+    const discovery = await response.json();
+    assert.equal(discovery.partial, true);
+    assert.equal(discovery._links.languages.href, `${root}/studio/api/languages`);
+    response = await fetch(`${root}/studio/api/languages`);
+    const languages = await response.json();
+    assert.equal(languages.count, SUPPORTED_LANGUAGES.length);
+    assert.deepEqual(languages.languages.map(({ _links, ...language }) => language), SUPPORTED_LANGUAGES);
+    assert(languages.languages.every(language => language._links.exportLogic.available === false && language._links.exportWorkspace.available === false));
+    response = await fetch(`${root}/studio/api`, { method: 'HEAD' });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '');
+    response = await fetch(`${root}/studio/api/templates`);
+    assert.deepEqual((await response.json()).templates, ['studio', 'compact']);
+    response = await fetch(`${root}/studio/api/templates/render`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template: 'compact', fragment: 'notice', values: { title: '<script>', message: '<img src=x>' } }),
+    });
+    const renderedNotice = await response.text();
+    assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.match(renderedNotice, /&lt;script&gt;/);
+    assert.match(renderedNotice, /&lt;img src=x&gt;/);
+    response = await fetch(`${root}/studio/api/templates/render`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ template: 'missing', fragment: 'notice', values: {} }),
+    });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/?template_route=studio/notice`, { headers: { Accept: 'text/plain' } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'text/plain; charset=utf-8');
+    assert.equal(await response.text(), '<aside role="status"><strong data-template-text="title">Notice</strong><p data-template-text="message"></p></aside>');
+    response = await fetch(`${root}/studio/?template_route=studio/notice&title=%3Cimg%3E&message=hello`, { headers: { Accept: 'text/html' } });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('content-type'), 'text/html; charset=utf-8');
+    assert.match(await response.text(), /&lt;img&gt;/);
+    response = await fetch(`${root}/studio/?template_route=compact/notice`, {
+      method: 'POST', headers: { Accept: 'text/html', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'From JSON', message: '<b>safe</b>' }),
+    });
+    const dynamicTemplate = await response.text();
+    assert.match(dynamicTemplate, /From JSON/);
+    assert.match(dynamicTemplate, /&lt;b&gt;safe&lt;\/b&gt;/);
+    response = await fetch(`${root}/studio/?template_route=studio/notice`, { headers: { Accept: 'application/json' } });
+    assert.equal(response.status, 406);
     response = await fetch(`${root}/studio/api/logic/evaluate`, { method: 'OPTIONS' });
     assert.equal(response.status, 204);
     assert.equal(response.headers.get('access-control-allow-origin'), '*');
@@ -119,10 +187,84 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.equal(response.status, 503);
     response = await fetch(`${root}/studio/api/logic/evaluate`, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '(-1) ^ 0.5' });
     assert.equal(response.status, 503);
+    response = await fetch(`${root}/studio/api/logic`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statement: 'price + extra', cauchyConfig: { seedValues: 'price', recurrenceExpr: 'right', maxIterations: 1 } }) });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/logic/labels`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'extra', kind: 'number', value: '7' }) });
+    assert.equal(response.status, 201);
+    const newLabel = (await response.json()).label;
+    response = await fetch(`${root}/studio/api/logic/labels/${newLabel.id}`);
+    assert.equal((await response.json()).label.name, 'extra');
+    response = await fetch(`${root}/studio/api/callbacks`);
+    assert.equal((await response.json()).count, 3);
+    response = await fetch(`${root}/studio/api/callbacks`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'combine', lambdaExpr: 'λx. λy. x + y', description: 'Combine values' }) });
+    assert.equal(response.status, 201);
+    const callback = (await response.json()).callback;
+    assert.deepEqual(callback.params, ['x', 'y']);
+    assert.equal(callback.body, 'x + y');
+    response = await fetch(`${root}/studio/api/callbacks/${callback.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lambdaExpr: 'λx. x * 3' }) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).callback.id, callback.id);
+    response = await fetch(`${root}/studio/api/callbacks`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'bad', lambdaExpr: '42' }) });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/api/logic/evaluate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'null' });
+    assert.equal((await response.json()).displayValue, '52');
+    response = await fetch(`${root}/studio/api/logic/cauchy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal((await response.json()).steps[0].value, 45);
+    response = await fetch(`${root}/studio/api/logic`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"labels":[1]}' });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/api/logic`);
+    const persisted = await response.json();
+    assert.equal(persisted.statement, 'price + extra');
+    assert(persisted.labels.some(label => label.id === newLabel.id));
+    server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
+    server = spawn('php', ['-S', `127.0.0.1:${port}`, `${target}/index.php`], {
+      cwd: target, stdio: 'ignore', env: { ...process.env, GRAMMAR2JSON_STATE_DIR: state },
+    });
+    for (let i = 0; ; i++) {
+      try { response = await fetch(`${root}/studio/api/logic`); break; }
+      catch (error) { if (i === 50) throw error; await new Promise(r => setTimeout(r, 20)); }
+    }
+    assert.equal((await response.json()).statement, 'price + extra');
+    response = await fetch(`${root}/studio/api/callbacks/${callback.id}`);
+    assert.equal((await response.json()).lambdaExpr, 'λx. x * 3');
+    response = await fetch(`${root}/studio/api/callbacks/${callback.id}`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/callbacks/${callback.id}`, { method: 'GET' });
+    assert.equal(response.status, 404);
+    response = await fetch(`${root}/studio/api/logic/labels/${newLabel.id}`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/logic/labels/${newLabel.id}`, { method: 'DELETE' });
+    assert.equal(response.status, 404);
+    response = await fetch(`${root}/studio/api/logic/evaluate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'null' });
+    assert.equal((await response.json()).diagnostics[0].label, 'extra');
+    response = await fetch(`${root}/studio/api/logic`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ statement: '1', labels: [{ id: 'a', name: 'a', kind: 'number', value: '1' }, { id: 'a', name: 'b', kind: 'number', value: '2' }] }) });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/api/logic`);
+    assert.equal((await response.json()).statement, 'price + extra');
     assert.equal((await fetch(`${root}/studio/api.php`)).status, 404);
     assert.equal((await fetch(`${root}/studio/missing.js`)).status, 404);
     assert.equal((await fetch(`${root}/studio/%252eenv`)).status, 400);
     assert.equal((await fetch(`${root}/other/`)).status, 404);
+    server.kill();
+    await new Promise(resolve => server.once('exit', resolve));
+    server = spawn('php', ['-S', `127.0.0.1:${port}`, `${target}/index.php`], {
+      cwd: target, stdio: 'ignore', env: { ...process.env, GRAMMAR2JSON_STATE_DIR: '' },
+    });
+    for (let i = 0; ; i++) {
+      try { response = await fetch(`${root}/studio/api/logic`); break; }
+      catch (error) { if (i === 50) throw error; await new Promise(r => setTimeout(r, 20)); }
+    }
+    assert.equal((await response.json()).statement, defaults.statement);
+    response = await fetch(`${root}/studio/api/logic`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"statement":"1"}' });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /GRAMMAR2JSON_STATE_DIR/);
   } finally {
     if (server) { server.kill(); await new Promise(resolve => server.once('exit', resolve)); }
     rmSync(work, { recursive: true, force: true });

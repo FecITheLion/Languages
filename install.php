@@ -10,7 +10,7 @@ function abort_install(string $message): void {
     exit(1);
 }
 if (PHP_VERSION_ID < 80100) abort_install('PHP 8.1 or later is required.');
-foreach (['json', 'pcre', 'hash'] as $extension) {
+foreach (['json', 'pcre', 'hash', 'dom'] as $extension) {
     if (!extension_loaded($extension)) abort_install('Required PHP extension is missing: ' . $extension);
 }
 if ($argc !== 3) abort_install('Usage: php install.php /absolute/existing/empty/directory /url-base/');
@@ -40,6 +40,8 @@ $entry = file_get_contents(__DIR__ . '/index.php');
 if ($entry === false || is_link(__DIR__ . '/index.php') || substr_count($entry, "const APP_BASE = '/';") !== 1) abort_install('Invalid PHP entry point.');
 $api = file_get_contents(__DIR__ . '/api.php');
 if ($api === false || is_link(__DIR__ . '/api.php')) abort_install('PHP API implementation is missing or is a symlink.');
+$slugController = file_get_contents(__DIR__ . '/slug_controller.php');
+if ($slugController === false || is_link(__DIR__ . '/slug_controller.php')) abort_install('PHP slug controller is missing or is a symlink.');
 $entry = str_replace("const APP_BASE = '/';", 'const APP_BASE = ' . var_export($base, true) . ';', $entry);
 $htaccess = <<<'APACHE'
 Options -Indexes
@@ -53,6 +55,11 @@ RewriteRule \.(?:php[0-9]*|phtml|phar)$ - [F,NC,L]
 RewriteCond %{REQUEST_FILENAME} -f [OR]
 RewriteCond %{REQUEST_FILENAME} -d
 RewriteRule ^ - [L]
+RewriteRule ^nodes/([^/]+)/([^/]+)/members/([^/]+)/?$ index.php?slug=nodes/$1/$2/members/$3 [B,QSA,NC,L]
+RewriteRule ^nodes/([^/]+)/([^/]+)/?$ index.php?slug=nodes/$1/$2 [B,QSA,NC,L]
+RewriteRule ^members/([^/]+)/?$ index.php?slug=members/$1 [B,QSA,NC,L]
+RewriteRule ^template/([^/]+)/([^/]+)/?$ index.php?template_route=$1/$2 [B,QSA,NC,L]
+RewriteRule ^([a-z0-9][a-z0-9-]*)/?$ index.php?slug=$1 [QSA,NC,L]
 RewriteRule ^ index.php [L]
 <FilesMatch "^(index\.html|sw\.js)$">
   Header set Cache-Control "no-cache"
@@ -70,7 +77,7 @@ if (count(scandir($target)) !== 2) {
             break;
         }
     }
-    foreach (['index.php' => $entry, 'api.php' => $api, '.htaccess' => $htaccess] as $name => $contents) {
+    foreach (['index.php' => $entry, 'api.php' => $api, 'slug_controller.php' => $slugController, '.htaccess' => $htaccess] as $name => $contents) {
         $destination = $target . '/' . $name;
         if (is_link($destination) || !is_file($destination) || !is_readable($destination) || hash_file('sha256', $destination) !== hash('sha256', $contents)) $matches = false;
     }
@@ -96,5 +103,6 @@ foreach ($files as [$source, $relative, $directory]) {
 }
 write_new($target . '/index.php', $entry);
 write_new($target . '/api.php', $api);
+write_new($target . '/slug_controller.php', $slugController);
 write_new($target . '/.htaccess', $htaccess);
 fwrite(STDOUT, "Installed SPA and partial PHP API at $target for $base. Most Express endpoints are NOT included.\n");

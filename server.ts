@@ -41,6 +41,11 @@ const isProd =
   process.env.NODE_ENV === 'production' ||
   (process.env.NODE_ENV !== 'development' && fs.existsSync(path.join(distDir, 'index.html')));
 const PORT = Number(process.env.PORT) || 3000;
+const PRETTY_BASE_PATH = process.env.PRETTY_BASE_PATH || '/';
+if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(PRETTY_BASE_PATH)) {
+  throw new Error('PRETTY_BASE_PATH must be a slash-terminated path of letters, digits, hyphens, and underscores.');
+}
+const prettyPrefix = (origin: string) => `${origin}${PRETTY_BASE_PATH === '/' ? '' : PRETTY_BASE_PATH.slice(0, -1)}`;
 
 function getOrigin(req: express.Request): string {
   const host = req.get('host');
@@ -117,14 +122,15 @@ async function startServer() {
 
   app.get('/api', (req, res) => {
     const origin = getOrigin(req);
-    sendHal(res, 200, restStore.buildRootDocument(origin));
+    sendHal(res, 200, restStore.buildRootDocument(origin, PRETTY_BASE_PATH));
   });
 
   // List all addressable nodes across the engine (each with mutable & non-mutable members)
   app.get('/api/nodes', (req, res) => {
     const origin = getOrigin(req);
     const kindFilter = typeof req.query.kind === 'string' ? req.query.kind : '';
-    const allNodes = restStore.listAddressableNodes(origin);
+    const allNodes = restStore.listAddressableNodes(origin, PRETTY_BASE_PATH);
+    const prettyBase = prettyPrefix(origin);
     const filtered = kindFilter ? allNodes.filter((n) => n.kind === kindFilter) : allNodes;
     sendHal(res, 200, {
       count: filtered.length,
@@ -146,6 +152,9 @@ async function startServer() {
         root: { href: `${origin}/api`, method: 'GET', title: 'API Root' },
         nodeTemplate: { href: `${origin}/api/nodes/{kind}/{nodeId}`, method: 'GET', templated: true },
         memberTemplate: { href: `${origin}/api/nodes/{kind}/{nodeId}/members/{member}`, method: 'GET', templated: true },
+        prettyNodeTemplate: { href: `${prettyBase}/nodes/{kind}/{nodeId}`, method: 'GET', templated: true },
+        prettyMemberTemplate: { href: `${prettyBase}/nodes/{kind}/{nodeId}/members/{member}`, method: 'GET', templated: true },
+        shortMemberTemplate: { href: `${prettyBase}/members/{member}?node={kind}/{nodeId}`, method: 'GET', templated: true },
       },
     });
   });
@@ -153,7 +162,7 @@ async function startServer() {
   // Inspect a single node with full mutable & immutable member map
   app.get('/api/nodes/:kind/:nodeId', (req, res) => {
     const origin = getOrigin(req);
-    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin);
+    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin, PRETTY_BASE_PATH);
     if (!node) {
       sendHal(res, 404, {
         error: `Node '${req.params.kind}/${req.params.nodeId}' not found.`,
@@ -167,7 +176,7 @@ async function startServer() {
   // List all members (mutable and non-mutable) on a specific node
   app.get('/api/nodes/:kind/:nodeId/members', (req, res) => {
     const origin = getOrigin(req);
-    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin);
+    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin, PRETTY_BASE_PATH);
     if (!node) {
       sendHal(res, 404, {
         error: `Node '${req.params.kind}/${req.params.nodeId}' not found.`,
@@ -192,7 +201,7 @@ async function startServer() {
   // Read any mutable or non-mutable member at a node
   app.get('/api/nodes/:kind/:nodeId/members/:member', (req, res) => {
     const origin = getOrigin(req);
-    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin);
+    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin, PRETTY_BASE_PATH);
     if (!node) {
       sendHal(res, 404, {
         error: `Node '${req.params.kind}/${req.params.nodeId}' not found.`,
@@ -301,7 +310,7 @@ async function startServer() {
       });
       return;
     }
-    const node = restStore.getAddressableNode('rule', rule.name, origin);
+    const node = restStore.getAddressableNode('rule', rule.name, origin, PRETTY_BASE_PATH);
     const selfHref = `${origin}/api/rules/${encodeURIComponent(rule.name)}`;
     sendHal(res, 200, {
       ...rule,

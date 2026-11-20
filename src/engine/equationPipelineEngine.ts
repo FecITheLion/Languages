@@ -3,6 +3,7 @@ import {
   extractLambdaParamsAndBody,
   parseLogicExpression,
   translateLambdaCallsToNamedCallbacks,
+  type LogicAstNode,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './logicLambdaEngine.ts';
@@ -1423,7 +1424,7 @@ pub fn main() {
   return { content: rustContent, filename: `${slug}_superset.rs`, mime: 'text/plain' };
 }
 
-function astToJsExprInline(node: ReturnType<typeof parseLogicExpression> extends { ok: true; ast: infer A } ? A : never): string {
+function astToJsExprInline(node: LogicAstNode): string {
   switch (node.type) {
     case 'NumberLit':
       return String(node.value);

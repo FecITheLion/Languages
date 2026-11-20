@@ -3321,7 +3321,7 @@ export default function App() {
         </section>}
         {Object.keys(virtualState.submissionIssues).length > 0 && <section role="alert" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
           <p>Some workbench outputs were rejected; their previous files and edits were not changed.</p>
-          {Object.entries(virtualState.submissionIssues).map(([owner, issues]) => <div key={owner}>
+          {Object.entries<string[]>(virtualState.submissionIssues).map(([owner, issues]) => <div key={owner}>
             <span>{owner}: {issues.map(issue => issue.slice(0, 200)).join(' · ')}</span>{' '}
             <button type="button" className="underline" onClick={() => dispatchVirtual({ type: 'retry', owner })}>Retry submission</button>
           </div>)}

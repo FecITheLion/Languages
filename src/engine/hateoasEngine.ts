@@ -109,6 +109,13 @@ export interface StoredWorkspace {
   dslSource: string;
 }
 
+function prettyUrlPrefix(origin: string, basePath: string): string {
+  if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(basePath)) {
+    throw new Error('Pretty URL base path must be a slash-terminated path of letters, digits, hyphens, and underscores.');
+  }
+  return `${origin}${basePath === '/' ? '' : basePath.slice(0, -1)}`;
+}
+
 export function formatRfc8288LinkHeader(links: Record<string, HateoasLink>): string {
   return Object.entries(links)
     .slice(0, 12)
@@ -344,7 +351,8 @@ export class RestHateoasEngineStore {
     this.recordHistolog('studio_sync', 'Synced workspace from Studio');
   }
 
-  public buildRootDocument(origin = '') {
+  public buildRootDocument(origin = '', prettyBasePath = '/') {
+    const prettyPrefix = prettyUrlPrefix(origin, prettyBasePath);
     const _links: Record<string, HateoasLink> = {
       self: { href: `${origin}/api`, method: 'GET', title: 'API Root (HATEOAS Discovery)', type: 'application/hal+json' },
       nodes: { href: `${origin}/api/nodes`, method: 'GET', title: 'All Addressable Nodes & Mutable/Immutable Members' },
@@ -359,6 +367,9 @@ export class RestHateoasEngineStore {
       exportTemplate: { href: `${origin}/api/export/{language}`, method: 'GET', templated: true, title: 'Export Workspace in Target Language' },
       logicExportTemplate: { href: `${origin}/api/logic/export/{language}`, method: 'GET', templated: true, title: 'Export Logic/Cauchy in Target Language' },
       mcpServers: { href: `${origin}/api/mcp/servers`, method: 'GET', title: '11 Lazy MCP Tool Servers' },
+      prettyNodeTemplate: { href: `${prettyPrefix}/nodes/{kind}/{nodeId}`, method: 'GET', templated: true },
+      prettyMemberTemplate: { href: `${prettyPrefix}/nodes/{kind}/{nodeId}/members/{member}`, method: 'GET', templated: true },
+      shortMemberTemplate: { href: `${prettyPrefix}/members/{member}?node={kind}/{nodeId}`, method: 'GET', templated: true },
     };
 
     const _actions: Record<string, HateoasAction> = {
@@ -426,7 +437,8 @@ export class RestHateoasEngineStore {
     };
   }
 
-  public listAddressableNodes(origin = ''): AddressableNode[] {
+  public listAddressableNodes(origin = '', prettyBasePath = '/') : AddressableNode[] {
+    const prettyPrefix = prettyUrlPrefix(origin, prettyBasePath);
     const nodes: AddressableNode[] = [];
     const rules = this.getRules();
     const graph = this.getGraph();
@@ -696,11 +708,30 @@ export class RestHateoasEngineStore {
       });
     }
 
+    for (const node of nodes) {
+      const prettyNodeHref = `${prettyPrefix}/nodes/${node.kind}/${encodeURIComponent(node.id)}`;
+      node._links.pretty = { href: prettyNodeHref, method: 'GET', title: 'Pretty node URL' };
+      for (const member of Object.values(node.members)) {
+        const encodedMember = encodeURIComponent(member.name);
+        const nodeIdentity = `${node.kind}/${node.id}`;
+        member._links.pretty = {
+          href: `${prettyNodeHref}/members/${encodedMember}`,
+          method: 'GET',
+          title: 'Extended pretty member URL',
+        };
+        member._links.short = {
+          href: `${prettyPrefix}/members/${encodedMember}?node=${encodeURIComponent(nodeIdentity)}`,
+          method: 'GET',
+          title: 'Short member URL; node query identifies its parent',
+        };
+      }
+    }
+
     return nodes;
   }
 
-  public getAddressableNode(kind: string, nodeId: string, origin = ''): AddressableNode | null {
-    return this.listAddressableNodes(origin).find((n) => n.kind === kind && n.id === nodeId) || null;
+  public getAddressableNode(kind: string, nodeId: string, origin = '', prettyBasePath = '/'): AddressableNode | null {
+    return this.listAddressableNodes(origin, prettyBasePath).find((n) => n.kind === kind && n.id === nodeId) || null;
   }
 
   public mutateNodeMember(

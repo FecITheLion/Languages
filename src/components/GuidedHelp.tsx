@@ -366,13 +366,14 @@ export function GuidedHelp({ context = 'home', className = '' }: GuidedHelpProps
         setVideoStatus('This browser cannot draw the local video. The illustrated steps above are still available.');
         return;
       }
-      stream = canvas.captureStream(12);
+      const recordingStream = canvas.captureStream(12);
+      stream = recordingStream;
       const mimeType = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'].find(
         (type) => MediaRecorder.isTypeSupported(type)
       );
       const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
+        ? new MediaRecorder(recordingStream, { mimeType })
+        : new MediaRecorder(recordingStream);
       recorderRef.current = recorder;
       cancelledVideoRef.current = false;
       videoFailedRef.current = false;
@@ -389,7 +390,7 @@ export function GuidedHelp({ context = 'home', className = '' }: GuidedHelpProps
           window.clearTimeout(timeoutRef.current);
           timeoutRef.current = null;
         }
-        stream.getTracks().forEach((track) => track.stop());
+        recordingStream.getTracks().forEach((track) => track.stop());
       };
       recorder.onstop = () => {
         setIsRecording(false);

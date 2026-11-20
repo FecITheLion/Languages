@@ -32,6 +32,7 @@ export type LogicExportTarget =
   | 'zig'
   | 'dart'
   | 'ocaml';
+export type LogicExportInputMode = 'cli' | 'hardcoded';
 
 export type CauchyParamStyle = 'positional' | 'directional' | 'named';
 
@@ -2467,7 +2468,8 @@ export function exportLogicStatement(
   labels: LogicLabelBinding[],
   evalRes: LogicEvaluationResult,
   cauchy?: CauchySequenceConfig,
-  grammarCtx?: LogicGrammarContext
+  grammarCtx?: LogicGrammarContext,
+  inputMode: LogicExportInputMode = 'cli'
 ): {
   content: string;
   filename: string;
@@ -2605,6 +2607,7 @@ import re
 import symtable
 import sys
 
+CLI_INPUTS_ENABLED = ${inputMode === 'cli' ? 'True' : 'False'}
 LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)}
 
 LOGIC_LABELS = [
@@ -2872,7 +2875,7 @@ def build_cli_parser():
 
 def run_cli(argv=None):
     parser = build_cli_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv if CLI_INPUTS_ENABLED else [])
     active_grammar_rules = _parse_grammar_rules_from_text(args.grammar) if args.grammar else GRAMMAR_RULES
     statement = args.statement
     if args.labels_input:
@@ -3382,8 +3385,10 @@ pub fn parse_cli_args(args: &[String]) -> (String, String, HashMap<String, Strin
     (raw_input, statement, overrides)
 }
 
+pub const CLI_INPUTS_ENABLED: bool = ${inputMode === 'cli'};
+
 pub fn run_cli() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args: Vec<String> = if CLI_INPUTS_ENABLED { std::env::args().skip(1).collect() } else { Vec::new() };
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!("Named literal CLI flags:");
         for (name, kind, def) in REQUIRED_INPUTS {
@@ -3439,6 +3444,7 @@ export const CAUCHY_CONFIG = ${JSON.stringify(
         : '';
     const content = `// Auto-generated ${isTs ? 'TypeScript' : 'JavaScript (ESM)'} Logic, Lambda & Grammar Input Module
 // Accepts named bindings or positional literals in REQUIRED_INPUTS order.
+export const CLI_INPUTS_ENABLED = ${inputMode === 'cli'};
 export const LOGIC_STATEMENT = ${JSON.stringify(cleanStmt)};
 
 export const LOGIC_LABELS${isTs ? ': Array<[string, "number" | "boolean" | "lambda", string]>' : ''} = [
@@ -3909,7 +3915,7 @@ export function parseCliArgs(argv${isTs ? ': string[]' : ''} = []) {
 }
 
 export function runCli(argv${isTs ? ': string[]' : ''} = typeof process !== 'undefined' ? process.argv.slice(2) : []) {
-  const parsed = parseCliArgs(argv);
+  const parsed = parseCliArgs(CLI_INPUTS_ENABLED ? argv : []);
   if (parsed.help) {
     console.log('Named literal CLI options:');
     for (const inp of REQUIRED_INPUTS) {
@@ -3963,6 +3969,7 @@ type LogicLabel struct {
 	Value string
 }
 
+const CliInputsEnabled = ${inputMode === 'cli'}
 const LogicStatement = ${JSON.stringify(translation.translatedStatement)}
 const ActiveGrammar = ${JSON.stringify(inputGrammar.grammarText)}
 const SampleSingleInput = ${JSON.stringify(inputGrammar.sampleSingleInput)}
@@ -4064,6 +4071,7 @@ func EvaluateLogic(statement string, labels []LogicLabel, systemParser func(stri
 
 // ParseCliArgs exposes every named literal variable (--<name> <literal>), editable strings (--input/--statement), or built-in defaults.
 func ParseCliArgs(args []string) (rawInput string, statement string, overrides map[string]string) {
+    if !CliInputsEnabled { args = nil }
 	rawInput = ""
 	statement = LogicStatement
 	overrides = make(map[string]string)
@@ -4110,6 +4118,7 @@ import java.util.function.BiFunction;
 public final class LogicLambdaCalc {
     public record LogicLabel(String name, String kind, String value) {}
 
+    public static final boolean CLI_INPUTS_ENABLED = ${inputMode === 'cli'};
     public static final String LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)};
     public static final String ACTIVE_GRAMMAR = ${JSON.stringify(inputGrammar.grammarText)};
     public static final String SAMPLE_SINGLE_INPUT = ${JSON.stringify(inputGrammar.sampleSingleInput)};
@@ -4195,6 +4204,7 @@ ${entries.join(',\n')}
 
     /** CLI entry point exposing named literal flags (--<var> <literal>), --input, --statement, or defaults. */
     public static void main(String[] args) {
+        if (!CLI_INPUTS_ENABLED) args = new String[0];
         String rawInput = "";
         String statement = LOGIC_STATEMENT;
         Map<String, String> overrides = new LinkedHashMap<>();
@@ -4254,6 +4264,7 @@ struct LogicLabel {
     std::string value;
 };
 
+inline constexpr bool CLI_INPUTS_ENABLED = ${inputMode === 'cli'};
 inline const std::string LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)};
 inline const std::string ACTIVE_GRAMMAR = ${JSON.stringify(inputGrammar.grammarText)};
 inline const std::string SAMPLE_SINGLE_INPUT = ${JSON.stringify(inputGrammar.sampleSingleInput)};
@@ -4372,6 +4383,7 @@ inline std::string evaluate_from_input(
 
 /// Parses CLI arguments exposing named literal variables (--<name> <literal>), --input, --statement, or defaults.
 inline std::unordered_map<std::string, std::string> parse_cli_args(int argc, char** argv) {
+    if (!CLI_INPUTS_ENABLED) argc = 1;
     std::string raw_input = SAMPLE_SINGLE_INPUT;
     std::unordered_map<std::string, std::string> overrides;
     for (int i = 1; i < argc; ++i) {
@@ -4415,6 +4427,7 @@ public sealed record LogicLabel(string Name, string Kind, string Value);
 
 public static class LogicLambdaCalc
 {
+    public const bool CliInputsEnabled = ${inputMode === 'cli'};
     public const string LogicStatement = ${JSON.stringify(translation.translatedStatement)};
     public const string ActiveGrammar = ${JSON.stringify(inputGrammar.grammarText)};
     public const string SampleSingleInput = ${JSON.stringify(inputGrammar.sampleSingleInput)};
@@ -4513,6 +4526,7 @@ ${entries.join('\n')}
 
     public static void Main(string[] args)
     {
+        if (!CliInputsEnabled) args = Array.Empty<string>();
         var rawInput = SampleSingleInput;
         var statement = LogicStatement;
         var overrides = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -4554,6 +4568,7 @@ ${entries.join('\n')}
 // Auto-generated PHP 8 Logic & Lambda Module with Grammar Single-String Input Parser
 declare(strict_types=1);
 
+const CLI_INPUTS_ENABLED = ${inputMode === 'cli'};
 const LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)};
 const ACTIVE_GRAMMAR = ${JSON.stringify(inputGrammar.grammarText)};
 const SAMPLE_SINGLE_INPUT = ${JSON.stringify(inputGrammar.sampleSingleInput)};
@@ -4633,6 +4648,7 @@ function evaluate_logic(string $statement = LOGIC_STATEMENT, array $labels = LOG
 
 // CLI runner exposing named literal flags (--<var> <literal>), --input, --statement, or built-in defaults
 if (PHP_SAPI === 'cli' && isset($argv)) {
+    if (!CLI_INPUTS_ENABLED) $argv = [$argv[0] ?? 'logic_lambda_calc.php'];
     $rawInput = '';
     $statement = LOGIC_STATEMENT;
     $overrides = [];
@@ -4758,6 +4774,7 @@ ${rows.join('\n')}
       const content = String.raw`# Auto-generated Ruby logic evaluator. Expressions are compiled at export time.
 require 'json'
 
+CLI_INPUTS_ENABLED = ${inputMode === 'cli' ? 'true' : 'false'}
 DATA_SPEC = JSON.parse(${data})
 LOGIC_STATEMENT = DATA_SPEC['statement']
 SAMPLE_SINGLE_INPUT = DATA_SPEC['sample']
@@ -4926,7 +4943,7 @@ if __FILE__ == $PROGRAM_NAME
     positional = []
     raw = nil
     overrides = {}
-    args = ARGV.dup
+    args = CLI_INPUTS_ENABLED ? ARGV.dup : []
     until args.empty?
       arg = args.shift
       if arg == '--help' || arg == '-h'

@@ -49,6 +49,7 @@ import {
   type LabelSuggestion,
   type LabelSuggestionOption,
   type LogicCallbackHooks,
+  type LogicExportInputMode,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from '../engine/logicLambdaEngine';
@@ -389,6 +390,7 @@ export function LogicLambdaWorkbench({
   const [exportTarget, setExportTarget] = useState<LogicExportTarget>(() =>
     mapPrimaryToLogicTarget(primaryLanguage)
   );
+  const [exportInputMode, setExportInputMode] = useState<LogicExportInputMode>('cli');
   const [outputViewMode, setOutputViewMode] = useState<'html' | 'edit'>('html');
   const [codeDraft, setCodeDraft] = useState('');
   const [isEditingCode, setIsEditingCode] = useState(false);
@@ -504,7 +506,7 @@ export function LogicLambdaWorkbench({
           rules,
           dialect,
           sampleInput,
-        }),
+        }, exportInputMode),
         error: null,
       };
     } catch (error) {
@@ -514,7 +516,7 @@ export function LogicLambdaWorkbench({
       };
     }
   },
-    [exportTarget, statement, effectiveLabels, evalRes, cauchyConfig, grammarText, rules, dialect, sampleInput]
+    [exportTarget, exportInputMode, statement, effectiveLabels, evalRes, cauchyConfig, grammarText, rules, dialect, sampleInput]
   );
   const { exported, error: exportError } = exportState;
 
@@ -1948,6 +1950,19 @@ export function LogicLambdaWorkbench({
                       {t.label}
                     </option>
                   ))}
+                </select>
+                <label htmlFor="logic-export-input-mode" className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
+                  Inputs
+                </label>
+                <select
+                  id="logic-export-input-mode"
+                  value={exportInputMode}
+                  onChange={(event) => setExportInputMode(event.target.value as LogicExportInputMode)}
+                  className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  title="Choose whether generated CLI runners read command-line inputs or always use the values in this export."
+                >
+                  <option value="cli">CLI inputs (default)</option>
+                  <option value="hardcoded">Hardcoded inputs</option>
                 </select>
               </div>
               <div className="inline-flex rounded-md border border-slate-200 bg-white p-0.5 dark:border-slate-700 dark:bg-slate-900">
