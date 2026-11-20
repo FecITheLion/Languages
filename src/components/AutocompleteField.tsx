@@ -83,6 +83,7 @@ export function AutocompleteField({
 }: AutocompleteFieldProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [hasNavigated, setHasNavigated] = useState(false);
   const [caretPos, setCaretPos] = useState(0);
   const [moduleDrawerOpen, setModuleDrawerOpen] = useState(false);
   const [customModName, setCustomModName] = useState('@custom/helpers');
@@ -102,6 +103,7 @@ export function AutocompleteField({
 
   useEffect(() => {
     setActiveIndex(0);
+    setHasNavigated(false);
   }, [tokenInfo.token, filtered.length]);
 
   useEffect(() => {
@@ -143,6 +145,7 @@ export function AutocompleteField({
     if ((e.ctrlKey || e.metaKey) && e.code === 'Space') {
       e.preventDefault();
       setCaretPos(e.currentTarget.selectionStart ?? value.length);
+      setHasNavigated(true);
       setOpen(true);
       return;
     }
@@ -150,19 +153,29 @@ export function AutocompleteField({
 
     if (e.key === 'ArrowDown') {
       e.preventDefault();
+      setHasNavigated(true);
       setActiveIndex((prev) => (prev + 1) % filtered.length);
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
+      setHasNavigated(true);
       setActiveIndex((prev) => (prev - 1 + filtered.length) % filtered.length);
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      // Only hijack Enter on multiline when popup is explicitly open and user has typed a prefix
-      if (e.key === 'Enter' && multiline && tokenInfo.token.length === 0) return;
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      const chosen = filtered[activeIndex] || filtered[0];
+      if (chosen) applySuggestion(chosen);
+    } else if (e.key === 'Enter') {
+      // Never hijack Enter in multiline editors unless the user explicitly navigated the popup (or pressed Ctrl+Space)
+      if (multiline && !hasNavigated) {
+        setOpen(false);
+        return;
+      }
       e.preventDefault();
       const chosen = filtered[activeIndex] || filtered[0];
       if (chosen) applySuggestion(chosen);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       setOpen(false);
+      setHasNavigated(false);
     }
   };
 
@@ -326,20 +339,17 @@ export function AutocompleteField({
             <div
               ref={backdropRef}
               aria-hidden="true"
-              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words p-3.5 font-mono text-xs leading-relaxed"
+              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words p-3.5 font-mono text-xs leading-5"
             >
               {highlightedLines?.map((lineToks, lineIdx) => (
-                <div key={lineIdx} className="min-h-[1.25rem]">
-                  {lineToks.length === 0 ? (
-                    '\u00A0'
-                  ) : (
-                    lineToks.map((tok, tokIdx) => (
-                      <span key={tokIdx} className={getTokenColorClass(tok.kind, darkSurface)}>
-                        {tok.text}
-                      </span>
-                    ))
-                  )}
-                </div>
+                <span key={lineIdx}>
+                  {lineToks.map((tok, tokIdx) => (
+                    <span key={tokIdx} className={getTokenColorClass(tok.kind, darkSurface)}>
+                      {tok.text}
+                    </span>
+                  ))}
+                  {lineIdx < highlightedLines.length - 1 ? '\n' : '\n'}
+                </span>
               ))}
             </div>
             <textarea
@@ -351,12 +361,14 @@ export function AutocompleteField({
               value={value}
               onChange={handleInputChange}
               onKeyDown={handleKeyDown}
+              onKeyUp={(e) => setCaretPos(e.currentTarget.selectionStart ?? value.length)}
+              onSelect={(e) => setCaretPos(e.currentTarget.selectionStart ?? value.length)}
               onScroll={handleSyncScroll}
               onClick={(e) => setCaretPos(e.currentTarget.selectionStart ?? value.length)}
               spellCheck={false}
               placeholder={placeholder}
               aria-label={ariaLabel}
-              className={`relative z-10 block w-full resize-y bg-transparent p-3.5 font-mono text-xs leading-relaxed text-transparent focus:outline-none ${
+              className={`relative z-10 block w-full resize-y bg-transparent p-3.5 font-mono text-xs leading-5 text-transparent focus:outline-none ${
                 darkSurface ? 'caret-blue-400' : 'caret-blue-600 dark:caret-blue-400'
               } ${className}`}
             />

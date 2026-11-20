@@ -5,6 +5,7 @@ import type {
   ExportLanguage,
   GrammarDiagnostic,
   GrammarRule,
+  GrammarRuleConstraint,
   GrammarSymbolDefinitions,
   GrammarSymbolStatus,
   JsonLdSchemaPackage,
@@ -234,32 +235,279 @@ export function splitGrammarRuleLine(
   return { ok: true, name, expression };
 }
 
+function stripGrammarComments(rawLine: string, commentPrefix: string): string {
+  let out = '';
+  let quote: string | null = null;
+  let i = 0;
+  while (i < rawLine.length) {
+    const ch = rawLine[i];
+    if (quote) {
+      out += ch;
+      if (ch === quote && rawLine[i - 1] !== '\\') quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    // ISO EBNF block comment (* ... *)
+    if (rawLine[i] === '(' && rawLine[i + 1] === '*') {
+      const end = rawLine.indexOf('*)', i + 2);
+      if (end >= 0) {
+        out += ' ';
+        i = end + 2;
+        continue;
+      }
+      break;
+    }
+    // C-style block comment /* ... */
+    if (rawLine[i] === '/' && rawLine[i + 1] === '*') {
+      const end = rawLine.indexOf('*/', i + 2);
+      if (end >= 0) {
+        out += ' ';
+        i = end + 2;
+        continue;
+      }
+      break;
+    }
+    // Dialect line comment prefix
+    if (commentPrefix && rawLine.startsWith(commentPrefix, i)) {
+      break;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out.trim();
+}
+
+export function parseCommentConstraints(rawLine: string): GrammarRuleConstraint[] {
+  const constraints: GrammarRuleConstraint[] = [];
+  let quote: string | null = null;
+  let i = 0;
+  while (i < rawLine.length) {
+    const ch = rawLine[i];
+    if (quote) {
+      if (ch === quote && rawLine[i - 1] !== '\\') quote = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      i += 1;
+      continue;
+    }
+    if (rawLine[i] === '(' && rawLine[i + 1] === '*') {
+      const end = rawLine.indexOf('*)', i + 2);
+      if (end < 0) break;
+      const body = rawLine.slice(i + 2, end).trim();
+      i = end + 2;
+      if (!body) continue;
+
+      // Split clauses on top-level commas or semicolons outside /regex/ and quotes
+      const clauses: string[] = [];
+      let buf = '';
+      let inRegex = false;
+      let innerQuote: string | null = null;
+      for (let j = 0; j < body.length; j += 1) {
+        const c = body[j];
+        if (innerQuote) {
+          buf += c;
+          if (c === innerQuote && body[j - 1] !== '\\') innerQuote = null;
+        } else if (inRegex) {
+          buf += c;
+          if (c === '/' && body[j - 1] !== '\\') inRegex = false;
+        } else if (c === '"' || c === "'") {
+          innerQuote = c;
+          buf += c;
+        } else if (c === '/') {
+          inRegex = true;
+          buf += c;
+        } else if (c === ',' || c === ';') {
+          if (buf.trim()) clauses.push(buf.trim());
+          buf = '';
+        } else {
+          buf += c;
+        }
+      }
+      if (buf.trim()) clauses.push(buf.trim());
+
+      for (const clause of clauses) {
+        const regexOnly = clause.match(/^\/(.+)\/$/);
+        if (regexOnly) {
+          constraints.push({ raw: clause, kind: 'pattern', operator: '~=', value: regexOnly[1] });
+          continue;
+        }
+        const patternKv = clause.match(/^pattern\s*(?:=|:=|~=|:)\s*(?:\/(.+)\/|"([^"]+)"|'([^']+)'|(\S+))$/i);
+        if (patternKv) {
+          const pat = patternKv[1] ?? patternKv[2] ?? patternKv[3] ?? patternKv[4] ?? '';
+          constraints.push({ raw: clause, kind: 'pattern', operator: '~=', value: pat });
+          continue;
+        }
+        const fmtKv = clause.match(/^format\s*(?:=|:=|:)\s*["']?([A-Za-z0-9_-]+)["']?$/i);
+        if (fmtKv) {
+          constraints.push({ raw: clause, kind: 'format', operator: '==', value: fmtKv[1].toLowerCase() });
+          continue;
+        }
+        const numMatch = clause.match(
+          /^(minLength|maxLength|minimum|maximum|exclusiveMinimum|exclusiveMaximum|min|max|multipleOf)\s*(>=|<=|>|<|==|=|:)\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))$/i
+        );
+        if (numMatch) {
+          const key = numMatch[1].toLowerCase();
+          const op = numMatch[2] === '=' || numMatch[2] === ':' ? '==' : (numMatch[2] as GrammarRuleConstraint['operator']);
+          const numVal = Number(numMatch[3]);
+          if (key === 'minlength') {
+            constraints.push({
+              raw: clause,
+              kind: 'minLength',
+              operator: op,
+              value: op === '>' ? numVal + 1 : numVal,
+            });
+          } else if (key === 'maxlength') {
+            constraints.push({
+              raw: clause,
+              kind: 'maxLength',
+              operator: op,
+              value: op === '<' ? numVal - 1 : numVal,
+            });
+          } else if (key === 'exclusiveminimum' || ((key === 'min' || key === 'minimum') && op === '>')) {
+            constraints.push({ raw: clause, kind: 'exclusiveMin', operator: '>', value: numVal });
+          } else if (key === 'exclusivemaximum' || ((key === 'max' || key === 'maximum') && op === '<')) {
+            constraints.push({ raw: clause, kind: 'exclusiveMax', operator: '<', value: numVal });
+          } else if (key === 'min' || key === 'minimum') {
+            constraints.push({ raw: clause, kind: 'min', operator: '>=', value: numVal });
+          } else if (key === 'max' || key === 'maximum') {
+            constraints.push({ raw: clause, kind: 'max', operator: '<=', value: numVal });
+          } else if (key === 'multipleof') {
+            constraints.push({ raw: clause, kind: 'multipleOf', operator: '==', value: numVal });
+          }
+          continue;
+        }
+        constraints.push({ raw: clause, kind: 'custom', value: clause });
+      }
+      continue;
+    }
+    i += 1;
+  }
+  return constraints;
+}
+
+export function validateValueAgainstConstraints(
+  rawValue: string,
+  constraints: GrammarRuleConstraint[]
+): { ok: true } | { ok: false; reason: string } {
+  if (!constraints || constraints.length === 0) return { ok: true };
+  const trimmed = rawValue.trim();
+  const unquoted =
+    (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
+      ? trimmed.slice(1, -1)
+      : trimmed;
+
+  for (const c of constraints) {
+    switch (c.kind) {
+      case 'minLength': {
+        const minLen = Number(c.value);
+        if (unquoted.length < minLen) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: length ${unquoted.length} < ${minLen}` };
+        }
+        break;
+      }
+      case 'maxLength': {
+        const maxLen = Number(c.value);
+        if (unquoted.length > maxLen) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: length ${unquoted.length} > ${maxLen}` };
+        }
+        break;
+      }
+      case 'min': {
+        const n = Number(unquoted);
+        if (!Number.isFinite(n) || n < Number(c.value)) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: ${unquoted} < ${c.value}` };
+        }
+        break;
+      }
+      case 'max': {
+        const n = Number(unquoted);
+        if (!Number.isFinite(n) || n > Number(c.value)) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: ${unquoted} > ${c.value}` };
+        }
+        break;
+      }
+      case 'exclusiveMin': {
+        const n = Number(unquoted);
+        if (!Number.isFinite(n) || n <= Number(c.value)) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: ${unquoted} <= ${c.value}` };
+        }
+        break;
+      }
+      case 'exclusiveMax': {
+        const n = Number(unquoted);
+        if (!Number.isFinite(n) || n >= Number(c.value)) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: ${unquoted} >= ${c.value}` };
+        }
+        break;
+      }
+      case 'multipleOf': {
+        const n = Number(unquoted);
+        const step = Number(c.value);
+        if (!Number.isFinite(n) || !step || Math.abs(n / step - Math.round(n / step)) > 1e-9) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: ${unquoted} is not a multiple of ${step}` };
+        }
+        break;
+      }
+      case 'pattern': {
+        try {
+          const re = new RegExp(String(c.value));
+          if (!re.test(unquoted)) {
+            return { ok: false, reason: `Constraint (${c.raw}) failed: "${unquoted}" did not match /${c.value}/` };
+          }
+        } catch {
+          // Ignore invalid regex in comment
+        }
+        break;
+      }
+      case 'format': {
+        const fmt = String(c.value).toLowerCase();
+        const formatRegexes: Record<string, RegExp> = {
+          email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+          uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+          uri: /^[a-z][a-z0-9+.-]*:\/\/\S+$/i,
+          date: /^\d{4}-\d{2}-\d{2}$/,
+          ipv4: /^(?:\d{1,3}\.){3}\d{1,3}$/,
+        };
+        const re = formatRegexes[fmt];
+        if (re && !re.test(unquoted)) {
+          return { ok: false, reason: `Constraint (${c.raw}) failed: "${unquoted}" is not a valid ${fmt}` };
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return { ok: true };
+}
+
 export function parseGrammar(text: string, dialect: DialectConfig): GrammarRule[] {
   const op = dialect.ruleOperator ?? '';
   const delim = dialect.choiceDelimiter || '|';
   const comment = dialect.commentPrefix || '//';
   const lines = text.split(/\r?\n/);
 
-  const rawRules: Array<{ lineNumber: number; name: string; expression: string; rawLine: string }> = [];
+  const rawRules: Array<{
+    lineNumber: number;
+    name: string;
+    expression: string;
+    rawLine: string;
+    constraints: GrammarRuleConstraint[];
+  }> = [];
 
   lines.forEach((rawLine, index) => {
-    let cleaned = rawLine.trim();
+    const cleaned = stripGrammarComments(rawLine.trim(), comment);
     if (!cleaned) return;
-    if (comment && cleaned.startsWith(comment)) return;
-    if (comment) {
-      let quote: string | null = null;
-      for (let i = 0; i < cleaned.length; i += 1) {
-        const ch = cleaned[i];
-        if (quote) {
-          if (ch === quote && cleaned[i - 1] !== '\\') quote = null;
-        } else if (ch === '"' || ch === "'") {
-          quote = ch;
-        } else if (cleaned.startsWith(comment, i)) {
-          cleaned = cleaned.slice(0, i).trim();
-          break;
-        }
-      }
-    }
     const split = splitGrammarRuleLine(cleaned, op);
     if (!split.ok) return;
 
@@ -268,6 +516,7 @@ export function parseGrammar(text: string, dialect: DialectConfig): GrammarRule[
       name: split.name,
       expression: split.expression,
       rawLine: cleaned,
+      constraints: parseCommentConstraints(rawLine),
     });
   });
 
@@ -310,6 +559,7 @@ export function parseGrammar(text: string, dialect: DialectConfig): GrammarRule[
       undefinedReferences,
       literals,
       rawLine: r.rawLine,
+      ...(r.constraints.length > 0 ? { constraints: r.constraints } : {}),
     };
   });
 }
@@ -351,22 +601,48 @@ export function analyzeRuleDependencies(
     if (!trimmed) return;
     if (comment && trimmed.startsWith(comment)) return;
 
-    // Strip inline comments outside quotes
-    let codePart = trimmed;
-    if (comment) {
-      let q: string | null = null;
-      for (let i = 0; i < trimmed.length; i += 1) {
-        const ch = trimmed[i];
-        if (q) {
-          if (ch === q && trimmed[i - 1] !== '\\') q = null;
-        } else if (ch === '"' || ch === "'") {
-          q = ch;
-        } else if (trimmed.startsWith(comment, i)) {
-          codePart = trimmed.slice(0, i).trim();
-          break;
-        }
+    // Strip EBNF (* ... *), C /* ... */, and line comments outside quotes
+    let codePart = '';
+    let q: string | null = null;
+    for (let i = 0; i < trimmed.length; ) {
+      const ch = trimmed[i];
+      if (q) {
+        codePart += ch;
+        if (ch === q && trimmed[i - 1] !== '\\') q = null;
+        i += 1;
+        continue;
       }
+      if (ch === '"' || ch === "'") {
+        q = ch;
+        codePart += ch;
+        i += 1;
+        continue;
+      }
+      if (trimmed[i] === '(' && trimmed[i + 1] === '*') {
+        const end = trimmed.indexOf('*)', i + 2);
+        if (end >= 0) {
+          codePart += ' ';
+          i = end + 2;
+          continue;
+        }
+        break;
+      }
+      if (trimmed[i] === '/' && trimmed[i + 1] === '*') {
+        const end = trimmed.indexOf('*/', i + 2);
+        if (end >= 0) {
+          codePart += ' ';
+          i = end + 2;
+          continue;
+        }
+        break;
+      }
+      if (comment && trimmed.startsWith(comment, i)) {
+        break;
+      }
+      codePart += ch;
+      i += 1;
     }
+    codePart = codePart.trim();
     if (!codePart) return;
 
     if (hasUnclosedQuote(codePart)) {
@@ -1214,13 +1490,14 @@ export function rewriteGrammarDialectTokens(
   rawGrammarText: string,
   prevDialect: DialectConfig,
   nextDialect: DialectConfig,
-  lastKnownSymbols?: Partial<ResolvedGrammarSymbols>
+  lastKnownSymbols?: Partial<ResolvedGrammarSymbols>,
+  lastKnownTokens?: { choiceDelimiter?: string; commentPrefix?: string }
 ): string {
   const prevOp = prevDialect.ruleOperator.trim();
   const nextOp = nextDialect.ruleOperator.trim();
-  const prevChoice = prevDialect.choiceDelimiter.trim();
+  const prevChoice = prevDialect.choiceDelimiter.trim() || lastKnownTokens?.choiceDelimiter?.trim() || '';
   const nextChoice = nextDialect.choiceDelimiter.trim();
-  const prevComment = prevDialect.commentPrefix.trim();
+  const prevComment = prevDialect.commentPrefix.trim() || lastKnownTokens?.commentPrefix?.trim() || '';
   const nextComment = nextDialect.commentPrefix.trim();
 
   const prevSyms = resolveGrammarSymbols(prevDialect);
@@ -2346,6 +2623,9 @@ export function grammarToSchemaJson(
       { '@type': 'PropertyValue', name: 'references', value: rule.referencedRules },
       { '@type': 'PropertyValue', name: 'precedence', value: precedence },
       { '@type': 'PropertyValue', name: 'associativity', value: associativity },
+      ...(rule.constraints && rule.constraints.length > 0
+        ? [{ '@type': 'PropertyValue', name: 'constraints', value: rule.constraints.map((c) => c.raw) }]
+        : []),
     ];
 
     for (const customProp of cfg?.properties || []) {
@@ -2398,6 +2678,33 @@ export function grammarToSchemaJson(
         defObj.pattern = mut.patternOverride;
       } else if (rule.literals.length > 0 && rule.referencedRules.length === 0) {
         defObj.enum = rule.literals;
+      }
+      if (rule.constraints && rule.constraints.length > 0) {
+        defObj['x-constraints'] = rule.constraints;
+        for (const c of rule.constraints) {
+          if (c.kind === 'minLength') defObj.minLength = Number(c.value);
+          else if (c.kind === 'maxLength') defObj.maxLength = Number(c.value);
+          else if (c.kind === 'min') {
+            defObj.minimum = Number(c.value);
+            if (!applyMut) defObj.type = 'number';
+          } else if (c.kind === 'max') {
+            defObj.maximum = Number(c.value);
+            if (!applyMut) defObj.type = 'number';
+          } else if (c.kind === 'exclusiveMin') {
+            defObj.exclusiveMinimum = Number(c.value);
+            if (!applyMut) defObj.type = 'number';
+          } else if (c.kind === 'exclusiveMax') {
+            defObj.exclusiveMaximum = Number(c.value);
+            if (!applyMut) defObj.type = 'number';
+          } else if (c.kind === 'multipleOf') {
+            defObj.multipleOf = Number(c.value);
+            if (!applyMut) defObj.type = 'number';
+          } else if (c.kind === 'pattern' && !defObj.pattern) {
+            defObj.pattern = String(c.value);
+          } else if (c.kind === 'format') {
+            defObj.format = String(c.value);
+          }
+        }
       }
       defs[propName] = defObj;
     }
@@ -2499,12 +2806,19 @@ export function schemaJsonToGrammar(
         const term = item as Record<string, unknown>;
         const name = String(term.name || term.termCode || '').trim();
         let expression = '';
+        let constraintComment = '';
         if (Array.isArray(term.additionalProperty)) {
           const exprProp = term.additionalProperty.find(
             (p) => p && typeof p === 'object' && (p as Record<string, unknown>).name === 'expression'
           ) as Record<string, unknown> | undefined;
           if (exprProp && typeof exprProp.value === 'string') {
             expression = exprProp.value;
+          }
+          const constrProp = term.additionalProperty.find(
+            (p) => p && typeof p === 'object' && (p as Record<string, unknown>).name === 'constraints'
+          ) as Record<string, unknown> | undefined;
+          if (constrProp && Array.isArray(constrProp.value) && constrProp.value.length > 0) {
+            constraintComment = ` (* ${constrProp.value.map(String).join(', ')} *)`;
           }
         }
         if (!expression && term.potentialAction && typeof term.potentialAction === 'object') {
@@ -2514,7 +2828,7 @@ export function schemaJsonToGrammar(
           }
         }
         if (name && expression) {
-          lines.push(formatGrammarRuleLine(name, expression, dialect.ruleOperator));
+          lines.push(`${formatGrammarRuleLine(name, expression, dialect.ruleOperator)}${constraintComment}`);
         }
       }
     } else if (sourceDoc.$defs && typeof sourceDoc.$defs === 'object') {
@@ -3203,6 +3517,16 @@ export function evaluateGrammarPayload(
   const MAX_OUTCOMES_PER_NODE = 24;
   const MAX_REPEAT_ITERS = 128;
   const activeCalls = new Set<string>();
+  const evalStartMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let backtrackCount = 0;
+  const constraintViolations: Array<{
+    rule: string;
+    reason: string;
+    startOffset: number;
+    endOffset: number;
+    value: string;
+    depth: number;
+  }> = [];
 
   function evalExpr(
     node: GrammarExprNode,
@@ -3226,6 +3550,9 @@ export function evaluateGrammarPayload(
                 matched: true,
                 consumed: node.value,
                 note: 'Terminal literal matched',
+                startOffset: pos,
+                endOffset: pos + node.value.length,
+                kind: 'terminal',
               },
             ],
           },
@@ -3246,6 +3573,9 @@ export function evaluateGrammarPayload(
                 matched: true,
                 consumed: ch,
                 note: 'Wildcard matched single char',
+                startOffset: pos,
+                endOffset: pos + 1,
+                kind: 'terminal',
               },
             ],
           },
@@ -3266,6 +3596,9 @@ export function evaluateGrammarPayload(
                 matched: true,
                 consumed: '',
                 note: node.kind === 'start' ? 'Start anchor matched' : 'End anchor matched',
+                startOffset: pos,
+                endOffset: pos,
+                kind: 'terminal',
               },
             ],
           },
@@ -3286,6 +3619,9 @@ export function evaluateGrammarPayload(
                 matched: true,
                 consumed: m[0],
                 note: 'Character class matched',
+                startOffset: pos,
+                endOffset: pos + m[0].length,
+                kind: 'terminal',
               },
             ],
           },
@@ -3520,11 +3856,17 @@ export function evaluateGrammarPayload(
               matched: true,
               consumed: payload.slice(pos, out.endPos),
               note: `Matched branch: ${altEntry.raw}`,
+              startOffset: pos,
+              endOffset: out.endPos,
+              kind: 'nonterminal',
             };
             collected.push({
               endPos: out.endPos,
               trace: [headerStep, ...out.trace],
             });
+          }
+          if (altOutcomes.length === 0 && parsedAlts.length > 1) {
+            backtrackCount += 1;
           }
         }
       }
@@ -3532,23 +3874,113 @@ export function evaluateGrammarPayload(
       activeCalls.delete(callKey);
     }
 
+    // Enforce EBNF comment constraints (* minLength>=3, min>=18, /regex/, etc. *)
+    const ruleConstraints = rule.constraints || [];
+    const rejectedByConstraint: Array<{
+      rule: string;
+      reason: string;
+      startOffset: number;
+      endOffset: number;
+      value: string;
+      depth: number;
+    }> = [];
+    const filteredCollected =
+      ruleConstraints.length > 0
+        ? collected.filter((outcome) => {
+            const matchedText = payload.slice(pos, outcome.endPos);
+            const check = validateValueAgainstConstraints(matchedText, ruleConstraints);
+            if (check.ok) {
+              outcome.trace.push({
+                depth,
+                rule: ruleName,
+                inputSlice: matchedText.slice(0, 20),
+                matched: true,
+                consumed: matchedText,
+                note: `Satisfied constraints (* ${ruleConstraints.map((c) => c.raw).join(', ')} *)`,
+                startOffset: pos,
+                endOffset: outcome.endPos,
+                kind: 'constraint',
+              });
+              return true;
+            }
+            rejectedByConstraint.push({
+              rule: ruleName,
+              reason: check.reason,
+              startOffset: pos,
+              endOffset: outcome.endPos,
+              value: matchedText,
+              depth,
+            });
+            return false;
+          })
+        : collected;
+
+    if (filteredCollected.length === 0 && rejectedByConstraint.length > 0) {
+      backtrackCount += 1;
+      rejectedByConstraint.sort((a, b) => b.endOffset - a.endOffset);
+      constraintViolations.push(rejectedByConstraint[0]);
+    }
+
     // Prefer longest match first so greedy/maximal parses resolve cleanly
-    collected.sort((a, b) => b.endPos - a.endPos);
-    return collected.slice(0, MAX_OUTCOMES_PER_NODE);
+    filteredCollected.sort((a, b) => b.endPos - a.endPos);
+    return filteredCollected.slice(0, MAX_OUTCOMES_PER_NODE);
   }
 
   const outcomes = matchRuleAll(startRule.name, 0, 0);
   const fullOutcome = outcomes.find((o) => o.endPos === payload.length);
   const bestOutcome = fullOutcome || outcomes[0] || null;
+  const evalEndMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const durationMs = Math.max(0.01, Number((evalEndMs - evalStartMs).toFixed(2)));
 
   if (fullOutcome) {
+    const constraintsPassed = fullOutcome.trace.filter((t) => t.kind === 'constraint' && t.matched).length;
+    const constraintLabel =
+      constraintsPassed > 0
+        ? ` · ${constraintsPassed}/${constraintsPassed} constraint${constraintsPassed === 1 ? '' : 's'} passed`
+        : '';
     return {
       matched: true,
       consumedLength: fullOutcome.endPos,
       remaining: '',
-      summary: `Valid match for <${startRule.name}> (${fullOutcome.endPos}/${payload.length} chars)`,
-      detail: `Consumed all ${payload.length} characters across ${fullOutcome.trace.length} expansion steps.`,
-      trace: fullOutcome.trace.slice(0, 140),
+      summary: `Valid match for <${startRule.name}> (${fullOutcome.endPos}/${payload.length} chars)${constraintLabel}`,
+      detail: `Consumed all ${payload.length} characters across ${fullOutcome.trace.length} expansion steps (${durationMs}ms).`,
+      trace: fullOutcome.trace.slice(0, 180),
+      durationMs,
+      backtracks: backtrackCount,
+      constraintsPassed,
+      constraintsFailed: 0,
+      constraintViolations: [],
+    };
+  }
+
+  if (constraintViolations.length > 0 && (!bestOutcome || bestOutcome.endPos < payload.length)) {
+    const primaryViolation = constraintViolations[0];
+    const violationTrace: EvaluationTraceStep[] = [
+      ...(bestOutcome ? bestOutcome.trace.slice(0, 120) : []),
+      ...constraintViolations.slice(0, 8).map((v) => ({
+        depth: v.depth,
+        rule: v.rule,
+        inputSlice: v.value.slice(0, 20),
+        matched: false,
+        consumed: v.value,
+        note: v.reason,
+        startOffset: v.startOffset,
+        endOffset: v.endOffset,
+        kind: 'constraint' as const,
+      })),
+    ];
+    return {
+      matched: false,
+      consumedLength: bestOutcome?.endPos ?? primaryViolation.endOffset,
+      remaining: payload.slice(bestOutcome?.endPos ?? primaryViolation.endOffset),
+      summary: `Syntax matched, but constraint failed on <${primaryViolation.rule}> (0/${constraintViolations.length} failed)`,
+      detail: primaryViolation.reason,
+      trace: violationTrace,
+      durationMs,
+      backtracks: backtrackCount,
+      constraintsPassed: 0,
+      constraintsFailed: constraintViolations.length,
+      constraintViolations: constraintViolations.map(({ depth: _d, ...rest }) => rest),
     };
   }
 
@@ -3560,7 +3992,12 @@ export function evaluateGrammarPayload(
       remaining,
       summary: `Partial match (${bestOutcome.endPos}/${payload.length} chars)`,
       detail: `Rule <${startRule.name}> matched prefix "${payload.slice(0, bestOutcome.endPos)}", trailing "${remaining}" unconsumed.`,
-      trace: bestOutcome.trace.slice(0, 140),
+      trace: bestOutcome.trace.slice(0, 180),
+      durationMs,
+      backtracks: backtrackCount,
+      constraintsPassed: bestOutcome.trace.filter((t) => t.kind === 'constraint' && t.matched).length,
+      constraintsFailed: 0,
+      constraintViolations: [],
     };
   }
 
@@ -3578,8 +4015,16 @@ export function evaluateGrammarPayload(
         matched: false,
         consumed: '',
         note: 'No alternative matched from offset 0',
+        startOffset: 0,
+        endOffset: 0,
+        kind: 'backtrack',
       },
     ],
+    durationMs,
+    backtracks: backtrackCount,
+    constraintsPassed: 0,
+    constraintsFailed: 0,
+    constraintViolations: [],
   };
 }
 

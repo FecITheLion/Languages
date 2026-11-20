@@ -107,3 +107,60 @@ test('generated Python and Rust input handling', () => {
     for (const path of paths) rmSync(path, { force: true });
   }
 });
+
+test('exported LOGIC_LABELS excludes unused lambda callbacks while keeping transitive dependencies', () => {
+  const labels: LogicLabelBinding[] = [
+    label('price', '50', 'number'),
+    label('tax', '10', 'number'),
+    label('double', 'λx. x * 2', 'lambda'),
+    label('apply_discount', 'λf. λv. f(v) - 10', 'lambda'),
+    label('helper', 'λn. n + 1', 'lambda'),
+    label('used_via_chain', 'λx. helper(x)', 'lambda'),
+    label('tax_fn', 'λx. x * 1.08', 'lambda'),
+    label('within_limit', 'λval. λmax_val. val ≤ max_val', 'lambda'),
+  ];
+  const stmt = '(apply_discount(double)(price) ≥ 80) ∧ ¬(tax > 15) ∧ (used_via_chain(1) > 0)';
+  const res = evaluateLogicStatement(stmt, labels);
+  for (const target of ['python', 'rust', 'javascript', 'jsonld'] as const) {
+    const out = exportLogicStatement(target, stmt, labels, res).content;
+    assert.match(out, /double/, `${target} should keep used callback double`);
+    assert.match(out, /apply_discount/, `${target} should keep used callback apply_discount`);
+    assert.match(out, /used_via_chain/, `${target} should keep used callback used_via_chain`);
+    assert.match(out, /helper/, `${target} should keep transitively used callback helper`);
+    assert.doesNotMatch(out, /tax_fn/, `${target} should exclude unused callback tax_fn`);
+    assert.doesNotMatch(out, /within_limit/, `${target} should exclude unused callback within_limit`);
+  }
+
+  // Verify Python-specific codegen improvements
+  const pyOut = exportLogicStatement('python', stmt, labels, res).content;
+  assert.doesNotMatch(pyOut, /"apply_discount":/, 'Python GRAMMAR_RULES should exclude lambda callback apply_discount');
+  assert.doesNotMatch(pyOut, /"double":/, 'Python GRAMMAR_RULES should exclude lambda callback double');
+  assert.doesNotMatch(pyOut, /SAMPLE_SINGLE_INPUT = "[^"]*(?:apply_discount|double)=/, 'SAMPLE_SINGLE_INPUT should exclude lambda callbacks');
+  assert.doesNotMatch(pyOut, /if statement == LOGIC_STATEMENT else/, 'Python parse_logic_call should not bypass _normalize_to_python_expr');
+
+  try {
+    writeFileSync(paths[0], pyOut);
+    // 1. Default run seeds Variables: with defaults
+    const defRun = run('python', []);
+    assert.equal(defRun.status, 0, defRun.stderr || String(defRun.error));
+    assert.match(defRun.stdout, /Variables: \{'price': 50, 'tax': 10\}/);
+    assert.match(defRun.stdout, /Result: True/);
+
+    // 2. Unary plus (+45) and chained comparisons (0 <= price <= 100)
+    result('python', ['--statement', '0 <= +price <= 100'], 'True');
+    result('python', ['--statement', '+45 + 5'], '50');
+
+    // 3. Implication (→) in _normalize_to_python_expr
+    result('python', ['--statement', '(price > 40) → (tax < 20)'], 'True');
+    result('python', ['--statement', '(price > 40) → (tax > 20)'], 'False');
+
+    // 4. Default grammar validation rejects malformed numeric value without --grammar
+    const badDefault = run('python', ['--input', 'price=notanumber']);
+    assert.notEqual(badDefault.status, 0);
+
+    // 5. Parenthesized alternation & literal pipe in --grammar
+    result('python', ['--input', 'price=50', '--grammar', 'price ::= ("50" | "60")'], 'True');
+  } finally {
+    rmSync(paths[0], { force: true });
+  }
+});

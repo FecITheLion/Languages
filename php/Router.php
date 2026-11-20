@@ -124,6 +124,7 @@ function serve_api(string $route): never {
     if ($route === 'api/nodes') serve_grammar_nodes($method);
     if ($route === 'api/evaluate') serve_grammar_evaluation($method);
     if ($route === 'api/schema/predicate-tree') serve_schema_predicate($method);
+    if ($route === 'api/schemastore/catalog' || $route === 'api/schemastore/schema') serve_schemastore($route, $method);
     if ($route === 'api/engine/clear' || $route === 'api/histolog' || $route === 'api/histolog/diff'
         || preg_match('~^api/histolog/\d+(?:/restore)?$~', $route)) serve_history($route, $method);
     if (preg_match('~^api/logic/export/[^/]+$~', $route)) serve_logic_export($route, $method);

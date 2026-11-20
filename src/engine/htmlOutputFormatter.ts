@@ -14,6 +14,8 @@ export interface StudioLintIssue {
     | 'UNUSED_RULE'
     | 'UNDEFINED_REF'
     | 'DISABLED_SYMBOL'
+    | 'SYNTAX_OPERATOR'
+    | 'UNCLOSED_QUOTE'
     | 'UNUSED_LABEL'
     | 'UNUSED_CALLBACK'
     | 'UNUSED_LAMBDA_PARAM'
@@ -59,7 +61,11 @@ export function analyzeStudioLint(input: {
             ? 'DUPLICATE_RULE'
             : d.code === 'CYCLE'
               ? 'CYCLE'
-              : 'UNDEFINED_REF';
+              : d.code === 'SYNTAX_OPERATOR'
+                ? 'SYNTAX_OPERATOR'
+                : d.code === 'UNCLOSED_QUOTE'
+                  ? 'UNCLOSED_QUOTE'
+                  : 'UNDEFINED_REF';
     issues.push({
       id: `dag_${d.id}`,
       severity: d.severity,
@@ -77,7 +83,11 @@ export function analyzeStudioLint(input: {
   }
 
   // 2. Unused grammar rules (inDegree === 0 and not the active start rule)
-  const startRule = input.evalRule.trim() || input.rules[0]?.name || '';
+  const definedRuleNames = new Set(input.rules.map((r) => r.name));
+  const startRule =
+    (input.evalRule.trim() && definedRuleNames.has(input.evalRule.trim())
+      ? input.evalRule.trim()
+      : input.rules[0]?.name) || '';
   for (const node of input.graph.nodes) {
     if (node.isMissing) continue;
     if (node.inDegree === 0 && node.name !== startRule && input.rules.length > 1) {

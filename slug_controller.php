@@ -104,7 +104,10 @@ function dispatch_slug_route(mixed $rawSlug): never {
         header('Cache-Control: no-cache');
         header('X-Content-Type-Options: nosniff');
         header('Content-Type: text/html; charset=utf-8');
-        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') echo render_api_html($template, 'document', [], $html);
+        if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') {
+            $values = function_exists('php_studio_document_values') ? php_studio_document_values($effectiveBase, $template) : [];
+            echo render_api_html($template, 'document', $values, $html);
+        }
         exit;
     }
     http_response_code(200);

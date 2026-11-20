@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import {
   CheckCircle2,
+  CloudDownload,
   Copy,
-  Download,
-  ExternalLink,
   FileCode2,
+  Globe,
+  Loader2,
   Play,
   RotateCcw,
   Save,
+  Search,
   XCircle,
 } from 'lucide-react';
 import {
@@ -15,12 +17,17 @@ import {
   DEFAULT_SCHEMA_EBNF_GRAMMAR,
   DEFAULT_TEST_INSTANCE_SAMPLE,
   evaluateSchemaPredicateStudio,
-  generateStandaloneSchemaPredicateHtml,
   SCHEMA_PREDICATE_PRESETS,
   type PredicateNodeEvaluation,
   type SchemaPredicateNode,
 } from '../engine/schemaPredicateEngine';
-import { resolveAssetUrl } from '../engine/runtimePaths';
+import {
+  fetchSchemaStoreCatalog,
+  fetchSchemaStoreDocument,
+  POPULAR_SCHEMASTORE_ENTRIES,
+  synthesizeSampleInstanceFromSchema,
+  type SchemaStoreCatalogEntry,
+} from '../engine/schemaStoreClient';
 import type { VirtualSubmission } from '../engine/virtualFiles';
 
 interface SchemaPredicateWorkbenchProps {
@@ -103,15 +110,69 @@ export function SchemaPredicateWorkbench({
   const [schemaText, setSchemaText] = useState(DEFAULT_JSON_SCHEMA_SAMPLE);
   const [instanceText, setInstanceText] = useState(DEFAULT_TEST_INSTANCE_SAMPLE);
   const [ebnfMode, setEbnfMode] = useState<'subset' | 'compiled'>('subset');
-  const [showHtmlPreview, setShowHtmlPreview] = useState(false);
+
+  // Dynamic SchemaStore loader state
+  const [catalog, setCatalog] = useState<SchemaStoreCatalogEntry[]>(POPULAR_SCHEMASTORE_ENTRIES);
+  const [catalogLoadedCount, setCatalogLoadedCount] = useState<number | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [schemaLoadingUrl, setSchemaLoadingUrl] = useState<string | null>(null);
+  const [schemaStoreQuery, setSchemaStoreQuery] = useState('');
+  const [customSchemaUrl, setCustomSchemaUrl] = useState('https://json.schemastore.org/package.json');
+  const [loadedSchemaSource, setLoadedSchemaSource] = useState<string | null>(null);
+  const [schemaStoreError, setSchemaStoreError] = useState<string | null>(null);
+  const [autoFillSample, setAutoFillSample] = useState(true);
+
+  const filteredCatalog = useMemo(() => {
+    const q = schemaStoreQuery.trim().toLowerCase();
+    if (!q) return catalog.slice(0, 18);
+    return catalog
+      .filter(
+        (entry) =>
+          entry.name.toLowerCase().includes(q) ||
+          entry.description.toLowerCase().includes(q) ||
+          (entry.fileMatch || []).some((m) => m.toLowerCase().includes(q))
+      )
+      .slice(0, 24);
+  }, [catalog, schemaStoreQuery]);
+
+  const handleLoadCatalog = async () => {
+    setCatalogLoading(true);
+    setSchemaStoreError(null);
+    const res = await fetchSchemaStoreCatalog();
+    setCatalogLoading(false);
+    if (!res.ok) {
+      setSchemaStoreError(res.error);
+      onNotify(res.error);
+      return;
+    }
+    setCatalog(res.schemas);
+    setCatalogLoadedCount(res.schemas.length);
+    onNotify(`Loaded ${res.schemas.length} schemas from SchemaStore (${res.source}).`);
+  };
+
+  const handleLoadSchemaFromUrl = async (url: string, label?: string) => {
+    setSchemaLoadingUrl(url);
+    setSchemaStoreError(null);
+    const res = await fetchSchemaStoreDocument(url);
+    setSchemaLoadingUrl(null);
+    if (!res.ok) {
+      setSchemaStoreError(res.error);
+      onNotify(res.error);
+      return;
+    }
+    const formattedSchema = JSON.stringify(res.schema, null, 2);
+    setSchemaText(formattedSchema);
+    setCustomSchemaUrl(url);
+    setLoadedSchemaSource(label || url);
+    if (autoFillSample) {
+      const synthesized = synthesizeSampleInstanceFromSchema(res.schema);
+      setInstanceText(JSON.stringify(synthesized, null, 2));
+    }
+    onNotify(`Loaded SchemaStore schema "${label || url}" (${res.source}).`);
+  };
 
   const studioResult = useMemo(
     () => evaluateSchemaPredicateStudio(schemaText, instanceText),
-    [schemaText, instanceText]
-  );
-
-  const standaloneHtml = useMemo(
-    () => generateStandaloneSchemaPredicateHtml(schemaText, instanceText),
     [schemaText, instanceText]
   );
 
@@ -239,6 +300,122 @@ export function SchemaPredicateWorkbench({
             </button>
           )}
         </div>
+      </div>
+
+      {/* SchemaStore Dynamic Loader Bar */}
+      <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 dark:border-slate-800 dark:bg-slate-900/70">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Globe className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            <span className="font-semibold text-slate-900 dark:text-slate-100">
+              SchemaStore Dynamic Loader
+            </span>
+            <span className="rounded-full bg-slate-200/80 px-2 py-0.5 font-mono text-[10px] text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+              {catalogLoadedCount ? `${catalogLoadedCount} catalog schemas` : `${POPULAR_SCHEMASTORE_ENTRIES.length} quick-picks`}
+            </span>
+            {loadedSchemaSource && (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-mono text-[10px] font-medium text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300">
+                Active: {loadedSchemaSource}
+              </span>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-400">
+              <input
+                type="checkbox"
+                checked={autoFillSample}
+                onChange={(e) => setAutoFillSample(e.target.checked)}
+                className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              Auto-generate sample JSON
+            </label>
+            <button
+              type="button"
+              onClick={() => void handleLoadCatalog()}
+              disabled={catalogLoading}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-60 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+            >
+              {catalogLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CloudDownload className="h-3.5 w-3.5" />}
+              {catalogLoadedCount ? 'Refresh Full Catalog' : 'Fetch Full SchemaStore Catalog'}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+          {/* Search & Pick from SchemaStore Catalog */}
+          <div className="flex items-center gap-1.5">
+            <div className="relative flex-1">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={schemaStoreQuery}
+                onChange={(e) => setSchemaStoreQuery(e.target.value)}
+                placeholder="Search SchemaStore (e.g. tsconfig, package, docker, workflow)..."
+                aria-label="Search SchemaStore catalog"
+                className="w-full rounded-lg border border-slate-200 bg-white py-1.5 pr-2.5 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+              />
+            </div>
+          </div>
+
+          {/* Direct Schema URL Loader */}
+          <div className="flex items-center gap-1.5">
+            <input
+              type="url"
+              value={customSchemaUrl}
+              onChange={(e) => setCustomSchemaUrl(e.target.value)}
+              placeholder="https://json.schemastore.org/package.json"
+              aria-label="Direct JSON Schema URL"
+              className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+            />
+            <button
+              type="button"
+              onClick={() => void handleLoadSchemaFromUrl(customSchemaUrl)}
+              disabled={Boolean(schemaLoadingUrl)}
+              className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-60"
+            >
+              {schemaLoadingUrl === customSchemaUrl ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CloudDownload className="h-3.5 w-3.5" />
+              )}
+              Load URL
+            </button>
+          </div>
+        </div>
+
+        {/* Clickable SchemaStore Entries */}
+        <div className="flex flex-wrap gap-1.5">
+          {filteredCatalog.map((entry) => {
+            const isLoading = schemaLoadingUrl === entry.url;
+            return (
+              <button
+                key={entry.url}
+                type="button"
+                disabled={Boolean(schemaLoadingUrl)}
+                onClick={() => void handleLoadSchemaFromUrl(entry.url, entry.name)}
+                title={`${entry.description || entry.name} (${entry.url})`}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 transition-colors hover:border-blue-400 hover:bg-blue-50 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-blue-950/40"
+              >
+                {isLoading && <Loader2 className="h-3 w-3 animate-spin text-blue-600" />}
+                <span>{entry.name}</span>
+              </button>
+            );
+          })}
+          {filteredCatalog.length === 0 && (
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              No matches in current list. Click &ldquo;Fetch Full SchemaStore Catalog&rdquo; to search all ~700 schemas.
+            </span>
+          )}
+        </div>
+
+        {schemaStoreError && (
+          <div
+            role="alert"
+            className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+          >
+            {schemaStoreError}
+          </div>
+        )}
       </div>
 
       {/* 4-Panel 2x2 Grid */}
@@ -411,64 +588,6 @@ export function SchemaPredicateWorkbench({
             ) : null}
           </div>
         </section>
-      </div>
-
-      {/* Standalone Single-HTML PWA Export & Preview */}
-      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Standalone Single-HTML PWA Export with Live Preview
-            </h4>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Self-contained <code className="font-mono">schema-ebnf-predicate-studio.html</code> with inline PWA manifest and zero external dependencies.
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setShowHtmlPreview((v) => !v)}
-              className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200"
-            >
-              {showHtmlPreview ? 'Hide Preview' : 'Show Preview'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void navigator.clipboard?.writeText(standaloneHtml);
-                onNotify('Copied single-file JSON Schema EBNF PWA HTML.');
-              }}
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200"
-            >
-              <Copy className="h-3.5 w-3.5" /> Copy Single HTML
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                onDownloadFile(standaloneHtml, 'schema-ebnf-predicate-studio.html', 'text/html;charset=utf-8')
-              }
-              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-            >
-              <Download className="h-3.5 w-3.5" /> Download Single HTML
-            </button>
-            <a
-              href={resolveAssetUrl('schema-ebnf-predicate-studio.html')}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
-            >
-              <ExternalLink className="h-3.5 w-3.5" /> Open Standalone Page
-            </a>
-          </div>
-        </div>
-        {showHtmlPreview && (
-          <iframe
-            title="JSON Schema EBNF Predicate Tree Studio Live Preview"
-            sandbox="allow-scripts"
-            srcDoc={standaloneHtml}
-            className="h-[520px] w-full rounded-lg border border-slate-200 bg-slate-950 dark:border-slate-700"
-          />
-        )}
       </div>
     </div>
   );

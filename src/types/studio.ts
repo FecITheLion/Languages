@@ -270,6 +270,23 @@ export interface SchemaConfig {
   includePotentialActions: boolean;
 }
 
+export interface GrammarRuleConstraint {
+  raw: string;
+  kind:
+    | 'minLength'
+    | 'maxLength'
+    | 'min'
+    | 'max'
+    | 'exclusiveMin'
+    | 'exclusiveMax'
+    | 'multipleOf'
+    | 'pattern'
+    | 'format'
+    | 'custom';
+  operator?: '>=' | '<=' | '>' | '<' | '==' | '!=' | '~=';
+  value: string | number;
+}
+
 export interface GrammarRule {
   id: string;
   lineNumber: number;
@@ -280,6 +297,7 @@ export interface GrammarRule {
   undefinedReferences: string[];
   literals: string[];
   rawLine: string;
+  constraints?: GrammarRuleConstraint[];
 }
 
 export interface GrammarDiagnostic {
@@ -355,6 +373,17 @@ export interface EvaluationTraceStep {
   matched: boolean;
   consumed: string;
   note: string;
+  startOffset?: number;
+  endOffset?: number;
+  kind?: 'nonterminal' | 'terminal' | 'constraint' | 'backtrack';
+}
+
+export interface EvaluationConstraintViolation {
+  rule: string;
+  reason: string;
+  startOffset: number;
+  endOffset: number;
+  value: string;
 }
 
 export interface EvaluationResult {
@@ -364,6 +393,11 @@ export interface EvaluationResult {
   summary: string;
   detail: string;
   trace: EvaluationTraceStep[];
+  durationMs?: number;
+  backtracks?: number;
+  constraintsPassed?: number;
+  constraintsFailed?: number;
+  constraintViolations?: EvaluationConstraintViolation[];
 }
 
 export interface DslFlowNode {

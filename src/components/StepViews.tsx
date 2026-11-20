@@ -38,6 +38,7 @@ import type { AutocompleteSuggestion, ReferencedModuleExport } from '../engine/m
 import type { StudioLintIssue } from '../engine/htmlOutputFormatter';
 import { DocTooltip } from './DocTooltip';
 import { LogicLambdaWorkbench } from './LogicLambdaWorkbench';
+import { EvaluatorWorkbench } from './EvaluatorWorkbench';
 import { McpServersWorkbench, type PipelineMcpUiEffect } from './McpServersWorkbench';
 import { RuleDependencyGraph } from './RuleDependencyGraph';
 import { RulePropertiesWorkbench } from './RulePropertiesWorkbench';
@@ -581,7 +582,7 @@ export function StepViews(props: StepViewsProps) {
                 Reset All Operators
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            <div className="grid grid-cols-2 gap-2">
               {(() => {
                 const resolved = resolveGrammarSymbols(props.dialect);
                 return GRAMMAR_SYMBOL_SPECS.map((spec) => {
@@ -1240,7 +1241,7 @@ export function StepViews(props: StepViewsProps) {
                         <span className="font-mono text-xs tabular-nums text-slate-400">L{rule.lineNumber}</span>
                       </div>
                     </div>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                       <input
                         type="text"
                         disabled={isLocked}
@@ -1304,122 +1305,18 @@ export function StepViews(props: StepViewsProps) {
    * ------------------------------------------------------------------------ */
   if (activePage === 'evaluator') {
     return (
-      <div className={gridClass}>
-        <div className={`${spans.primary} space-y-4`}>
-          <div>
-            <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-              06. Recursive Grammar Evaluator &amp; Trace
-            </h3>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Validates payloads with backtracking longest-match resolution across repetitions, inline choices, lookahead, lookbehind, character classes, and Workbench 5 schema mutations.
-            </p>
-            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-1.5 font-mono text-[11px] text-slate-600 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
-              <span><strong className="text-slate-800 dark:text-slate-200">Repeat:</strong> + * ? {'{m,n}'} {'{e}'} [e]</span>
-              <span><strong className="text-slate-800 dark:text-slate-200">Choice:</strong> (a | b)</span>
-              <span><strong className="text-slate-800 dark:text-slate-200">Lookahead:</strong> (?=e) (?!e) &amp;e !e</span>
-              <span><strong className="text-slate-800 dark:text-slate-200">Lookbehind:</strong> (?&lt;=e) (?&lt;!e)</span>
-              <span><strong className="text-slate-800 dark:text-slate-200">Class/Regex:</strong> [0-9] [^a-z] . /re/ ^ $</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div>
-              <label htmlFor="evalRuleSelect" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                Start Rule Select
-              </label>
-              <select
-                id="evalRuleSelect"
-                data-tour-id="workbench.evaluator.rule"
-                value={props.evalRule}
-                onChange={(e) => props.onEvalRuleChange(e.target.value)}
-                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-              >
-                {props.rules.length === 0 ? (
-                  <option value="">No rules available</option>
-                ) : (
-                  props.rules.map((r) => (
-                    <option key={r.id} value={r.name}>
-                      {r.name}
-                    </option>
-                  ))
-                )}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="evalRuleInput" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                Start Rule Name
-              </label>
-              <input
-                id="evalRuleInput"
-                type="text"
-                value={props.evalRule}
-                onChange={(e) => props.onEvalRuleChange(e.target.value)}
-                className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label htmlFor="evalPayloadInput" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-              Evaluation Payload
-            </label>
-            <textarea
-              id="evalPayloadInput"
-              data-tour-id="workbench.evaluator.payload"
-              rows={3}
-              value={props.evalPayload}
-              onChange={(e) => props.onEvalPayloadChange(e.target.value)}
-              placeholder="Enter test string..."
-              className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white p-3 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-            />
-          </div>
-
-          <div
-            data-tour-id="workbench.evaluator.result"
-            className={`flex items-start gap-3 rounded-lg border p-3.5 ${
-              props.evalResult.matched
-                ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200'
-                : 'border-amber-200 bg-amber-50/70 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200'
-            }`}
-          >
-            {props.evalResult.matched ? (
-              <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            ) : (
-              <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
-            )}
-            <div className="min-w-0 text-sm">
-              <div className="font-semibold">{props.evalResult.summary}</div>
-              <div className="mt-0.5 text-xs opacity-90">{props.evalResult.detail}</div>
-            </div>
-          </div>
-        </div>
-
-        <div className={`${spans.secondary} flex flex-col`}>
-          <div className="mb-2 flex items-center justify-between text-xs">
-            <span className="font-semibold text-slate-700 dark:text-slate-300">Recursive Expansion Trace</span>
-            <span className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
-              {props.evalResult.trace.length} steps
-            </span>
-          </div>
-          <div className="max-h-80 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs text-slate-200 dark:border-slate-800">
-            {props.evalResult.trace.length === 0 ? (
-              <div className="text-slate-400">Enter a payload to inspect recursive descent steps.</div>
-            ) : (
-              props.evalResult.trace.map((step, idx) => (
-                <div key={`${step.rule}-${idx}`} className="py-0.5 leading-relaxed">
-                  <span className="text-slate-500">{'  '.repeat(step.depth)}</span>
-                  <span className={step.matched ? 'text-emerald-400' : 'text-amber-400'}>
-                    {step.matched ? 'MATCH' : 'MISS '}
-                  </span>{' '}
-                  <span className="text-blue-300">{step.rule}</span>{' '}
-                  {step.consumed && <span className="text-slate-300">"{step.consumed}"</span>}{' '}
-                  <span className="text-slate-500">— {step.note}</span>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+      <EvaluatorWorkbench
+        gridClass={gridClass}
+        primarySpan={spans.primary}
+        secondarySpan={spans.secondary}
+        rules={props.rules}
+        dialect={props.dialect}
+        evalRule={props.evalRule}
+        evalPayload={props.evalPayload}
+        evalResult={props.evalResult}
+        onEvalRuleChange={props.onEvalRuleChange}
+        onEvalPayloadChange={props.onEvalPayloadChange}
+      />
     );
   }
 

@@ -437,6 +437,7 @@ export type BoolAstNode =
   | { type: 'Binary'; op: string; left: BoolAstNode; right: BoolAstNode }
   | { type: 'Quantifier'; q: '∀' | '∃' | '∃!'; variable: string; body: BoolAstNode }
   | { type: 'Lambda'; params: string[]; body: BoolAstNode }
+  | { type: 'Ternary'; cond: BoolAstNode; thenExpr: BoolAstNode; elseExpr: BoolAstNode }
   | { type: 'Call'; name?: string; callee: BoolAstNode; args: BoolAstNode[] };
 
 export interface MultilineCallableValue {
@@ -471,11 +472,11 @@ export function parsePreInputLiterals(raw: string): PreInputParseResult {
   for (let idx = 0; idx < lines.length; idx += 1) {
     const trimmed = lines[idx].trim();
     if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:=|:=|≜)\s*(true|false|⊤|⊥|-?\d+(?:\.\d+)?)$/i.exec(trimmed);
+    const match = /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*(?:=|:=|≜)\s*(true|false|⊤|⊥|-?\d+(?:\.\d+)?)$/i.exec(trimmed);
     if (!match) {
       errors.push({
         line: idx + 1,
-        message: `Line ${idx + 1}: Pre-input only allows boolean or numeric literals (e.g., e=true, x=1; not "${trimmed}").`,
+        message: `Line ${idx + 1}: Pre-input only allows boolean or numeric literals (e.g., e=true, order.price=45; not "${trimmed}").`,
       });
       continue;
     }
@@ -512,6 +513,8 @@ type BoolToken =
   | { kind: 'paren'; value: '(' | ')' }
   | { kind: 'comma'; value: ',' }
   | { kind: 'dot'; value: '.' }
+  | { kind: 'question'; value: '?' }
+  | { kind: 'colon'; value: ':' }
   | { kind: 'eof'; value: '' };
 
 const KEYWORD_OP_MAP: Record<string, { kind: 'op' | 'bool'; value: string | boolean }> = {
@@ -608,6 +611,8 @@ function tokenizeBooleanExpr(src: string): { ok: true; tokens: BoolToken[] } | {
     if (ch === '(' || ch === ')') { tokens.push({ kind: 'paren', value: ch }); i += 1; continue; }
     if (ch === ',') { tokens.push({ kind: 'comma', value: ',' }); i += 1; continue; }
     if (ch === '.') { tokens.push({ kind: 'dot', value: '.' }); i += 1; continue; }
+    if (ch === '?') { tokens.push({ kind: 'question', value: '?' }); i += 1; continue; }
+    if (ch === ':') { tokens.push({ kind: 'colon', value: ':' }); i += 1; continue; }
     if (ch === '⊤') { tokens.push({ kind: 'bool', value: true }); i += 1; continue; }
     if (ch === '⊥' || ch === '½') { tokens.push({ kind: 'bool', value: false }); i += 1; continue; }
     if (ch === 'λ' || ch === '\\') {
@@ -811,7 +816,22 @@ export function parseBooleanExprAst(
     }
     const arrowLam = tryParseArrowLambda();
     if (arrowLam) return arrowLam;
-    return parseExpr(0);
+    const cond = parseExpr(0);
+    if (peek()?.kind === 'question') {
+      take();
+      const thenExpr = parseLambdaOrExpr();
+      if (peek()?.kind !== 'colon') {
+        throw new Error(
+          peek()?.kind === 'eof'
+            ? 'INCOMPLETE:Expected ":" in ternary expression.'
+            : 'Expected ":" in ternary expression.'
+        );
+      }
+      take();
+      const elseExpr = parseLambdaOrExpr();
+      return { type: 'Ternary', cond, thenExpr, elseExpr };
+    }
+    return cond;
   };
 
   const parsePrimary = (): BoolAstNode => {
@@ -855,26 +875,38 @@ export function parseBooleanExprAst(
 
   const parseUnaryOrCall = (): BoolAstNode => {
     let node = parsePrimary();
-    while (peek()?.kind === 'paren' && peek()?.value === '(') {
-      take();
-      const args: BoolAstNode[] = [];
-      if (!(peek()?.kind === 'paren' && peek()?.value === ')')) {
-        args.push(parseLambdaOrExpr());
-        while (peek()?.kind === 'comma') {
-          take();
-          args.push(parseLambdaOrExpr());
+    while (true) {
+      if (peek()?.kind === 'dot' && peek(1)?.kind === 'id') {
+        take();
+        const subProp = take().value as string;
+        if (node.type === 'Var') {
+          node = { type: 'Var', name: `${node.name}.${subProp}` };
         }
+        continue;
       }
-      const close = take();
-      if (!close || close.kind !== 'paren' || close.value !== ')') {
-        throw new Error('INCOMPLETE:Expected ")" to close call arguments.');
+      if (peek()?.kind === 'paren' && peek()?.value === '(') {
+        take();
+        const args: BoolAstNode[] = [];
+        if (!(peek()?.kind === 'paren' && peek()?.value === ')')) {
+          args.push(parseLambdaOrExpr());
+          while (peek()?.kind === 'comma') {
+            take();
+            args.push(parseLambdaOrExpr());
+          }
+        }
+        const close = take();
+        if (!close || close.kind !== 'paren' || close.value !== ')') {
+          throw new Error('INCOMPLETE:Expected ")" to close call arguments.');
+        }
+        node = {
+          type: 'Call',
+          name: node.type === 'Var' ? node.name : undefined,
+          callee: node,
+          args,
+        };
+        continue;
       }
-      node = {
-        type: 'Call',
-        name: node.type === 'Var' ? node.name : undefined,
-        callee: node,
-        args,
-      };
+      break;
     }
     return node;
   };
@@ -921,8 +953,8 @@ export interface MultilineLogicalBlock {
   compactText: string;
 }
 
-const TRAILING_CONTINUATION_RE = /(?:=|:=|≜|->|=>|<->|<=>|\|\||&&|\/\\|\\\/|!&|!\|[ \t]*|\*\*|==|!=|<=|>=|[¬!~∼&∧|∨⊕→↔≡≠⊼⊽↑↓⊸⊗⅋⊢⊨⇝⊩∴∵⊘+\-*/%<>.,(λ\\])[ \t]*$/;
-const LEADING_CONTINUATION_RE = /^(?:[)&|∧∨⊕→↔≡≠⊼⊽↑↓⊸⊗⅋⊢⊨⇝⊩∴∵⊘+\-*/%<>]|\*\*|==|!=|<=|>=|->|=>|<->|and\b|or\b|xor\b|implies\b|iff\b|therefore\b|because\b)/i;
+const TRAILING_CONTINUATION_RE = /(?:=|:=|≜|->|=>|<->|<=>|\|\||&&|\/\\|\\\/|!&|!\|[ \t]*|\*\*|==|!=|<=|>=|[¬!~∼&∧|∨⊕→↔≡≠⊼⊽↑↓⊸⊗⅋⊢⊨⇝⊩∴∵⊘+\-*/%<>.,(?:λ\\])[ \t]*$/;
+const LEADING_CONTINUATION_RE = /^(?:[)&|∧∨⊕→↔≡≠⊼⊽↑↓⊸⊗⅋⊢⊨⇝⊩∴∵⊘+\-*/%<>?:]|\*\*|==|!=|<=|>=|->|=>|<->|and\b|or\b|xor\b|implies\b|iff\b|therefore\b|because\b)/i;
 
 function parenDelta(text: string): number {
   let d = 0;
@@ -934,21 +966,21 @@ function parenDelta(text: string): number {
 }
 
 function tryValidSingleStatement(text: string): { valid: boolean; incomplete: boolean } {
-  const defMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*)\)\s*(?:=(?![=>])|:=|≜)\s*(.+)$/s.exec(text);
+  const defMatch = /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*\(([^)]*)\)\s*(?:=(?![=>])|:=|≜)\s*(.+)$/s.exec(text);
   if (defMatch) {
     const body = defMatch[3].trim();
     if (!body) return { valid: false, incomplete: true };
     const p = parseBooleanExprAst(body);
     return { valid: p.ok, incomplete: Boolean(!p.ok && p.incomplete) };
   }
-  const assignMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:=(?![=>])|:=|≜)\s*(.+)$/s.exec(text);
+  const assignMatch = /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*(?:=(?![=>])|:=|≜)\s*(.+)$/s.exec(text);
   if (assignMatch) {
     const rhs = assignMatch[2].trim();
     if (!rhs) return { valid: false, incomplete: true };
     const p = parseBooleanExprAst(rhs);
     return { valid: p.ok, incomplete: Boolean(!p.ok && p.incomplete) };
   }
-  if (/^([A-Za-z_][A-Za-z0-9_]*(?:\s*\([^)]*\))?)\s*(?:=(?![=>])|:=|≜)\s*$/s.test(text)) {
+  if (/^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*(?:\s*\([^)]*\))?)\s*(?:=(?![=>])|:=|≜)\s*$/s.test(text)) {
     return { valid: false, incomplete: true };
   }
   const p = parseBooleanExprAst(text);
@@ -1267,6 +1299,10 @@ function evalRuntimeAst(
         closureEnv: { ...env },
         isNamedDefinition: false,
       };
+    case 'Ternary':
+      return toBoolVal(evalRuntimeAst(node.cond, env, callables, onFreeVar, depth + 1))
+        ? evalRuntimeAst(node.thenExpr, env, callables, onFreeVar, depth + 1)
+        : evalRuntimeAst(node.elseExpr, env, callables, onFreeVar, depth + 1);
     case 'Unary':
       return evalUnaryVal(node.op, evalRuntimeAst(node.arg, env, callables, onFreeVar, depth + 1));
     case 'Binary':
@@ -1343,6 +1379,11 @@ export function collectAstFreeVars(
       collectAstFreeVars(node.body, next, callableNames, out);
       return;
     }
+    case 'Ternary':
+      collectAstFreeVars(node.cond, boundLocals, callableNames, out);
+      collectAstFreeVars(node.thenExpr, boundLocals, callableNames, out);
+      collectAstFreeVars(node.elseExpr, boundLocals, callableNames, out);
+      return;
     case 'Call':
       if (node.callee.type !== 'Var') {
         collectAstFreeVars(node.callee, boundLocals, callableNames, out);
@@ -1412,6 +1453,13 @@ function findFirstDefiniteBool(
   if (node.type === 'Binary') {
     return findFirstDefiniteBool(node.left, env) ?? findFirstDefiniteBool(node.right, env);
   }
+  if (node.type === 'Ternary') {
+    return (
+      findFirstDefiniteBool(node.cond, env) ??
+      findFirstDefiniteBool(node.thenExpr, env) ??
+      findFirstDefiniteBool(node.elseExpr, env)
+    );
+  }
   if (node.type === 'Call') {
     for (const arg of node.args) {
       const found = findFirstDefiniteBool(arg, env);
@@ -1477,6 +1525,8 @@ function formatPointerAnnotatedAst(
       return `${node.q}${node.variable}. ${formatPointerAnnotatedAst(node.body, bindings, refsOut)}`;
     case 'Lambda':
       return `λ(${node.params.join(',')}). ${formatPointerAnnotatedAst(node.body, bindings, refsOut)}`;
+    case 'Ternary':
+      return `${formatPointerAnnotatedAst(node.cond, bindings, refsOut)} ? ${formatPointerAnnotatedAst(node.thenExpr, bindings, refsOut)} : ${formatPointerAnnotatedAst(node.elseExpr, bindings, refsOut)}`;
     case 'Call': {
       const calleeStr =
         node.callee.type === 'Var'
@@ -1617,7 +1667,7 @@ export function evaluateMultilineBooleanProgram(
       continue;
     }
 
-    const assignMatch = /^([A-Za-z_][A-Za-z0-9_]*)\s*(?:=(?![=>])|:=|≜)\s*(.+)$/.exec(text);
+    const assignMatch = /^([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\s*(?:=(?![=>])|:=|≜)\s*(.+)$/.exec(text);
     if (assignMatch) {
       const varName = assignMatch[1];
       const rhsRaw = assignMatch[2].trim();

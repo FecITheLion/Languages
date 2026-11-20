@@ -228,9 +228,9 @@ const KEYPAD_CATEGORIES: KeypadCategoryDef[] = [
 ];
 
 const KEYPAD_LAYOUT_MODES: Array<{ id: KeypadLayoutMode; label: string; shortLabel: string; icon: typeof LayoutGrid }> = [
-  { id: 'grid', label: 'Grid', shortLabel: 'Grid', icon: LayoutGrid },
-  { id: 'lanes', label: 'Stage Lanes', shortLabel: 'Lanes', icon: Columns3 },
-  { id: 'rail', label: 'Rail', shortLabel: 'Rail', icon: Rows3 },
+  { id: 'rail', label: 'Tabs', shortLabel: 'Tabs', icon: Rows3 },
+  { id: 'lanes', label: 'Compact', shortLabel: 'Compact', icon: Columns3 },
+  { id: 'grid', label: 'Full', shortLabel: 'Full', icon: LayoutGrid },
 ];
 
 const KEYPAD_STAGE_LANES: Array<{ id: 'logic' | 'arith' | 'lambda'; label: string }> = [
@@ -389,9 +389,11 @@ export function LogicLambdaWorkbench({
   const [cauchyConfig, setCauchyConfig] = useState<CauchySequenceConfig>(DEFAULT_CAUCHY_CONFIG);
   const [calculatorMode, setCalculatorMode] = useState<'lambda' | 'multiline'>('lambda');
   const [activeTab, setActiveTab] = useState<'export' | 'trace' | 'truth'>('export');
-  const [exportTarget, setExportTarget] = useState<LogicExportTarget>(() =>
-    mapPrimaryToLogicTarget(primaryLanguage)
-  );
+  const [stepTargetOverride, setStepTargetOverride] = useState<LogicExportTarget | ''>('');
+  const exportTarget: LogicExportTarget = stepTargetOverride || mapPrimaryToLogicTarget(primaryLanguage);
+  const setExportTarget = (next: LogicExportTarget) => {
+    setStepTargetOverride(next === mapPrimaryToLogicTarget(primaryLanguage) ? '' : next);
+  };
   const [exportInputMode, setExportInputMode] = useState<LogicExportInputMode>('cli');
   const [outputViewMode, setOutputViewMode] = useState<'html' | 'edit'>('html');
   const [codeDraft, setCodeDraft] = useState('');
@@ -992,7 +994,7 @@ export function LogicLambdaWorkbench({
             }}
             spellCheck={false}
             placeholder="e.g. (apply_discount(double)(price) ≥ 80) ∧ ¬(tax > 15)"
-            className="w-full rounded-lg border border-slate-200 bg-slate-950 px-3.5 py-2.5 font-mono text-sm text-slate-100 focus:border-blue-500 focus:outline-none dark:border-slate-800"
+            className="w-full rounded-lg border border-slate-300 bg-white px-3.5 py-2.5 font-mono text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
           />
 
           {/* Statement History Drawer */}
@@ -1152,7 +1154,7 @@ export function LogicLambdaWorkbench({
           )}
 
           {keypadLayoutMode === 'lanes' && (
-            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
               {KEYPAD_STAGE_LANES.map((lane) => {
                 const laneCats = KEYPAD_CATEGORIES.filter((c) => c.stageLane === lane.id);
                 return (
@@ -1390,9 +1392,17 @@ export function LogicLambdaWorkbench({
                 </button>
               )}
             </div>
-            <div className="rounded border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
-              <span className="mr-1.5 text-[10px] uppercase text-slate-400">Translated:</span>
-              {namedTranslation.translatedStatement}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
+              <span className="min-w-0 break-all">
+                <span className="mr-1.5 text-[10px] uppercase text-slate-400">Translated:</span>
+                {namedTranslation.translatedStatement}
+              </span>
+              <span
+                title="Curried λ-calls like apply_discount(double)(price) are automatically uncurried into multi-arg calls for target codegen."
+                className="shrink-0 cursor-help rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 font-sans text-[10px] font-medium text-blue-700 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+              >
+                Curried → Multi-arg
+              </span>
             </div>
             {namedTranslation.callbacks.length > 0 && (
               <div className="divide-y divide-slate-200/70 rounded border border-slate-200 bg-white font-mono text-[11px] dark:divide-slate-800/70 dark:border-slate-800 dark:bg-slate-900">
@@ -1610,7 +1620,7 @@ export function LogicLambdaWorkbench({
               <div className="flex items-center justify-between gap-2 text-xs">
                 <span className="inline-flex items-center gap-1.5 font-semibold text-slate-800 dark:text-slate-200">
                   <Globe className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-                  Saved Local Global Callbacks ({globalCallbacks.length})
+                  Workspace Callbacks ({globalCallbacks.length})
                   <DocTooltip docKey="globalCallbacks" />
                 </span>
                 <span className="text-[11px] text-slate-500 dark:text-slate-400">
@@ -1678,7 +1688,7 @@ export function LogicLambdaWorkbench({
 
             {cauchyConfig.enabled && (
               <div className="space-y-2.5 border-t border-slate-200/80 pt-2.5 dark:border-slate-800">
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   <div>
                     <label
                       htmlFor="cauchy-style"
@@ -1884,7 +1894,7 @@ export function LogicLambdaWorkbench({
                 {lambdaLabels.length} λ closure{lambdaLabels.length === 1 ? '' : 's'} available
               </span>
             </div>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
               {(
                 [
                   ['onFinalResult', 'onFinalResult'],
@@ -1980,17 +1990,20 @@ export function LogicLambdaWorkbench({
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-100 p-1.5 dark:border-slate-800 dark:bg-slate-950">
               <div className="flex flex-wrap items-center gap-1.5">
                 <label htmlFor="logic-export-lang" className="text-[11px] font-medium text-slate-600 dark:text-slate-400">
-                  Target Language
+                  Override for this step
                 </label>
                 <select
                   id="logic-export-lang"
-                  value={exportTarget}
-                  onChange={(e) => setExportTarget(e.target.value as LogicExportTarget)}
+                  value={stepTargetOverride}
+                  onChange={(e) => setStepTargetOverride(e.target.value as LogicExportTarget | '')}
                   className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                 >
+                  <option value="">
+                    Follow Global ({EXPORT_TARGETS.find((t) => t.id === mapPrimaryToLogicTarget(primaryLanguage))?.label || primaryLanguage})
+                  </option>
                   {EXPORT_TARGETS.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.label}
+                      Override: {t.label}
                     </option>
                   ))}
                 </select>

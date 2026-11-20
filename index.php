@@ -87,7 +87,8 @@ if (preg_match('~^(?:api|healthz)(?:/|$)~i', $relative)) {
     serve_api($relative);
 }
 if (!in_array($_SERVER['REQUEST_METHOD'] ?? 'GET', ['GET', 'HEAD'], true)) fail_request(405, 'Method not allowed');
-if (preg_match('~(?:^|/)\.~', $relative) || preg_match('~^php(?:/|$)~i', $relative)) fail_request(404, 'Not found');
+if (preg_match('~(?:^|/)\.~', $relative) || preg_match('~^(?:php|src|tests?|node_modules)(?:/|$)~i', $relative)) fail_request(404, 'Not found');
+if (preg_match('~^(?:package(?:-lock)?\.json|tsconfig\.json|metadata\.json|firebase-applet-config\.json|bun\.lock|install\.php|server\.ts|vite\.config\.ts)$~i', $relative)) fail_request(404, 'Not found');
 
 $mime = [
     'html' => 'text/html; charset=utf-8', 'js' => 'text/javascript; charset=utf-8',
@@ -104,13 +105,16 @@ if ($relative === 'index.html') {
     $html = load_spa_document_html(__DIR__, $effectiveBase);
     if ($html === null) fail_request(503, 'Built SPA not installed');
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') {
-        echo render_api_html(requested_template_name(), 'document', [], $html);
+        $templateName = requested_template_name();
+        $values = function_exists('php_studio_document_values') ? php_studio_document_values($effectiveBase, $templateName) : [];
+        echo render_api_html($templateName, 'document', $values, $html);
     }
     exit;
 }
 $resolved = null;
 if ($relative !== '') {
-    $roots = $usingDistDir ? [$spaRoot, __DIR__] : [__DIR__];
+    $publicDir = __DIR__ . DIRECTORY_SEPARATOR . 'public';
+    $roots = $usingDistDir ? [$spaRoot, $publicDir, __DIR__] : [$publicDir, __DIR__];
     foreach ($roots as $candidateRoot) {
         $rootReal = realpath($candidateRoot);
         if ($rootReal === false) continue;
@@ -138,5 +142,7 @@ header('Cache-Control: no-cache');
 $html = load_spa_document_html(__DIR__, $effectiveBase);
 if ($html === null) fail_request(503, 'Built SPA not installed');
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'HEAD') {
-    echo render_api_html(requested_template_name(), 'document', [], $html);
+    $templateName = requested_template_name();
+    $values = function_exists('php_studio_document_values') ? php_studio_document_values($effectiveBase, $templateName) : [];
+    echo render_api_html($templateName, 'document', $values, $html);
 }

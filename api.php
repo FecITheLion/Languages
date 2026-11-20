@@ -4,6 +4,7 @@ if (!defined('PHP_API_ENTRY') && !defined('PHP_RENDER_ENTRY')) { http_response_c
 
 require_once __DIR__ . '/php/Storage.php';
 require_once __DIR__ . '/php/TemplateEngine.php';
+require_once __DIR__ . '/php/PhpStudioView.php';
 require_once __DIR__ . '/php/GrammarEngine.php';
 require_once __DIR__ . '/php/LogicEngine.php';
 require_once __DIR__ . '/php/SchemaPredicateEngine.php';
@@ -15,5 +16,6 @@ require_once __DIR__ . '/php/handlers/workspaces.php';
 require_once __DIR__ . '/php/handlers/templates.php';
 require_once __DIR__ . '/php/handlers/modules.php';
 require_once __DIR__ . '/php/handlers/sessions.php';
+require_once __DIR__ . '/php/handlers/schemastore.php';
 require_once __DIR__ . '/php/handlers/mcp.php';
 require_once __DIR__ . '/php/Router.php';

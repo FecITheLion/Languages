@@ -1,5 +1,10 @@
 import { compileWatToWasm, decompileWasmToWat } from './bidirectionalEngine.ts';
 import type { DialectConfig, GrammarRule, WasmCompilationResult } from '../types/studio.ts';
+import {
+  buildLowerTargetExecutableModule,
+  emitCompiledTargetExpr,
+  lowerLogicAstForCodegen,
+} from './logicTargetCodegen.ts';
 
 export interface LogicGrammarContext {
   grammarText?: string;
@@ -2379,6 +2384,12 @@ function buildLogicInputGrammarSpec(
   grammarCtx?: LogicGrammarContext
 ): ResolvedInputGrammarSpec {
   const seen = new Set<string>();
+  const lambdaNames = new Set(
+    allLabels
+      .filter((l) => l.kind === 'lambda')
+      .map((l) => l.name.trim())
+      .filter(Boolean)
+  );
   const requiredInputs: Array<{ name: string; kind: 'number' | 'boolean'; defaultValue: string }> = [];
 
   for (const l of allLabels) {
@@ -2394,7 +2405,7 @@ function buildLogicInputGrammarSpec(
   }
 
   for (const freeVar of evalRes.freeVariables) {
-    if (!freeVar || seen.has(freeVar)) continue;
+    if (!freeVar || seen.has(freeVar) || lambdaNames.has(freeVar)) continue;
     seen.add(freeVar);
     requiredInputs.push({ name: freeVar, kind: 'number', defaultValue: '0' });
   }
@@ -2418,7 +2429,7 @@ function buildLogicInputGrammarSpec(
     if (!existingNames.has(inp.name)) {
       syntheticInputRules.push({
         name: inp.name,
-        expression: inp.kind === 'boolean' ? '"true" | "false" | "1" | "0"' : '"-"? digit+ ("." digit+)?',
+        expression: inp.kind === 'boolean' ? '"true" | "false" | "1" | "0"' : '("+" | "-")? digit+ ("." digit+)?',
       });
     }
   }
@@ -2462,6 +2473,85 @@ export function getLogicExportUnsupportedReason(
     : null;
 }
 
+function collectFreeIdentifiersFromExpr(expr: string, out: Set<string>): void {
+  const trimmed = expr.trim();
+  if (!trimmed) return;
+  const parsed = parseLogicExpression(trimmed);
+  if (parsed.ok) {
+    const walk = (node: LogicAstNode, bound: Set<string>): void => {
+      switch (node.type) {
+        case 'Identifier':
+          if (!bound.has(node.name)) out.add(node.name);
+          return;
+        case 'UnaryOp':
+          walk(node.operand, bound);
+          return;
+        case 'BinaryOp':
+          walk(node.left, bound);
+          walk(node.right, bound);
+          return;
+        case 'Lambda': {
+          const next = new Set(bound);
+          next.add(node.param);
+          walk(node.body, next);
+          return;
+        }
+        case 'Quantifier': {
+          const next = new Set(bound);
+          next.add(node.variable);
+          walk(node.body, next);
+          return;
+        }
+        case 'Call':
+          walk(node.callee, bound);
+          walk(node.arg, bound);
+          return;
+        default:
+          return;
+      }
+    };
+    walk(parsed.ast, new Set());
+    return;
+  }
+  for (const m of trimmed.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+    out.add(m[0]);
+  }
+}
+
+function collectUsedCallbackNames(
+  rawLabels: LogicLabelBinding[],
+  statement: string,
+  translatedStatement: string,
+  cauchy?: CauchySequenceConfig
+): Set<string> {
+  const reachable = new Set<string>();
+  collectFreeIdentifiersFromExpr(statement, reachable);
+  collectFreeIdentifiersFromExpr(translatedStatement, reachable);
+  if (cauchy?.enabled) {
+    collectFreeIdentifiersFromExpr(cauchy.recurrenceExpr || '', reachable);
+    collectFreeIdentifiersFromExpr(cauchy.seedValues || '', reachable);
+  }
+  for (const l of rawLabels) {
+    if (l.kind !== 'lambda') {
+      collectFreeIdentifiersFromExpr(l.value, reachable);
+    }
+  }
+
+  const lambdaLabels = rawLabels.filter((l) => l.kind === 'lambda' && l.name.trim());
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const l of lambdaLabels) {
+      const name = l.name.trim();
+      if (!reachable.has(name)) continue;
+      const before = reachable.size;
+      collectFreeIdentifiersFromExpr(l.value, reachable);
+      if (reachable.size > before) changed = true;
+    }
+  }
+  return reachable;
+}
+
 export function exportLogicStatement(
   target: LogicExportTarget,
   statement: string,
@@ -2479,14 +2569,30 @@ export function exportLogicStatement(
   const cauchyEval = cauchy?.enabled ? evaluateCauchySequence(cauchy, labels) : null;
   const cleanStmt = statement.trim();
   const translation = translateLambdaCallsToNamedCallbacks(cleanStmt, labels);
-  const allLabels = [...labels, ...translation.liftedLabels];
+  const rawAllLabels = [...labels, ...translation.liftedLabels];
+  const usedCallbackNames = collectUsedCallbackNames(
+    rawAllLabels,
+    cleanStmt,
+    translation.translatedStatement,
+    cauchy
+  );
+  const usedInputLabels = labels.filter(
+    (l) => l.kind !== 'lambda' || usedCallbackNames.has(l.name.trim())
+  );
+  const allLabels = rawAllLabels.filter(
+    (l) => l.kind !== 'lambda' || usedCallbackNames.has(l.name.trim())
+  );
+  const usedCallbacks = translation.callbacks.filter((cb) =>
+    usedCallbackNames.has(cb.name.trim())
+  );
   const namedArity = new Map<string, number>();
-  for (const cb of translation.callbacks) {
+  for (const cb of usedCallbacks) {
     namedArity.set(cb.name, cb.params.length);
   }
 
   const translatedAstParsed = parseLogicExpression(translation.translatedStatement);
   const exprAst = translatedAstParsed.ok ? translatedAstParsed.ast : evalRes.ast;
+  const loweredPlan = exprAst ? lowerLogicAstForCodegen(exprAst, allLabels, parseLogicExpression) : null;
   const astExprPy = exprAst ? astToPythonExpr(exprAst, namedArity) : 'None';
   const astExprRs = exprAst ? astToRustExpr(exprAst, namedArity) : 'false';
   const inputGrammar = buildLogicInputGrammarSpec(allLabels, evalRes, grammarCtx);
@@ -2626,24 +2732,54 @@ ${requiredInputEntries.join('\n')}
 
 SAMPLE_SINGLE_INPUT = ${JSON.stringify(inputGrammar.sampleSingleInput)}
 
-def _compile_grammar_rule_regex(rule_name: str, grammar_rules=GRAMMAR_RULES, depth: int = 0) -> str:
-    if depth > 8:
-        return r'[^\\s,;]+'
-    expr = grammar_rules.get(rule_name)
-    if not expr:
-        return r'-?\\d+(?:\\.\\d+)?|true|false|[^\\s,;]+'
-    if rule_name == 'digit':
-        return r'[0-9]'
-    # Handle quoted literals, rule references, and quantifiers (+, *, ?)
-    alts = [a.strip() for a in expr.split('|') if a.strip()]
+def _split_top_level_alts(expr: str):
+    parts = []
+    buf = []
+    depth = 0
+    quote = None
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if quote:
+            buf.append(ch)
+            if ch == '\\\\' and i + 1 < len(expr):
+                i += 1
+                buf.append(expr[i])
+            elif ch == quote:
+                quote = None
+        else:
+            if ch in ('"', "'"):
+                quote = ch
+                buf.append(ch)
+            elif ch == '(':
+                depth += 1
+                buf.append(ch)
+            elif ch == ')' and depth > 0:
+                depth -= 1
+                buf.append(ch)
+            elif ch == '|' and depth == 0:
+                seg = ''.join(buf).strip()
+                if seg:
+                    parts.append(seg)
+                buf = []
+            else:
+                buf.append(ch)
+        i += 1
+    seg = ''.join(buf).strip()
+    if seg:
+        parts.append(seg)
+    return parts
+
+def _compile_grammar_expr_regex(expr: str, grammar_rules=GRAMMAR_RULES, depth: int = 0) -> str:
+    alts = _split_top_level_alts(expr)
     compiled_alts = []
     for alt in alts:
-        tokens = re.findall(r'''"[^"]*"|'[^']*'|[A-Za-z_][A-Za-z0-9_]*[+*?]?|[()+*?]''', alt)
+        tokens = re.findall(r"""(?:"[^"]*"|'[^']*'|[A-Za-z_][A-Za-z0-9_]*[+*?]?|[()|+*?])""", alt)
         seq = []
         for tok in tokens:
             if (tok.startswith('"') and tok.endswith('"')) or (tok.startswith("'") and tok.endswith("'")):
                 seq.append(re.escape(tok[1:-1]))
-            elif tok in ('(', ')', '+', '*', '?'):
+            elif tok in ('(', ')', '|', '+', '*', '?'):
                 seq.append(tok)
             else:
                 q = tok[-1] if tok[-1] in '+*?' else ''
@@ -2653,6 +2789,16 @@ def _compile_grammar_rule_regex(rule_name: str, grammar_rules=GRAMMAR_RULES, dep
         compiled_alts.append(''.join(seq))
     return '(?:' + '|'.join(compiled_alts) + ')' if compiled_alts else r'[^\\s,;]+'
 
+def _compile_grammar_rule_regex(rule_name: str, grammar_rules=GRAMMAR_RULES, depth: int = 0) -> str:
+    if depth > 8:
+        return r'[^\\s,;]+'
+    expr = grammar_rules.get(rule_name)
+    if not expr:
+        return r'[+-]?\\d+(?:\\.\\d+)?|true|false|[^\\s,;]+'
+    if rule_name == 'digit':
+        return r'[0-9]'
+    return _compile_grammar_expr_regex(expr, grammar_rules, depth)
+
 def parse_inputs_from_string(raw_input: str, grammar_rules=GRAMMAR_RULES, required_inputs=REQUIRED_INPUTS):
     """Extract named assignments and positional literals from a single string."""
     text = str(raw_input or '').strip()
@@ -2661,7 +2807,7 @@ def parse_inputs_from_string(raw_input: str, grammar_rules=GRAMMAR_RULES, requir
     assignments = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\\s*[:=]\\s*([^\\s,;]+)')
     for match in assignments.finditer(text):
         name, value = match.groups()
-        if name in grammar_rules and grammar_rules[name] != GRAMMAR_RULES.get(name):
+        if name in grammar_rules:
             pattern = _compile_grammar_rule_regex(name, grammar_rules)
             if not re.fullmatch(pattern, value, re.IGNORECASE):
                 raise ValueError(f"Input {name} does not match its grammar rule")
@@ -2678,6 +2824,72 @@ def parse_inputs_from_string(raw_input: str, grammar_rules=GRAMMAR_RULES, requir
         parsed[target[0]] = token
     return parsed
 
+def _rewrite_implications(expr: str) -> str:
+    # Split on top-level implication arrows ('→' or '->') right-associatively
+    parts = []
+    buf = []
+    depth = 0
+    i = 0
+    while i < len(expr):
+        ch = expr[i]
+        if ch == '(':
+            depth += 1
+            buf.append(ch)
+            i += 1
+        elif ch == ')':
+            if depth > 0:
+                depth -= 1
+            buf.append(ch)
+            i += 1
+        elif depth == 0 and ch == '→':
+            parts.append(''.join(buf).strip())
+            buf = []
+            i += 1
+        elif depth == 0 and expr[i:i+2] == '->':
+            parts.append(''.join(buf).strip())
+            buf = []
+            i += 2
+        else:
+            buf.append(ch)
+            i += 1
+    parts.append(''.join(buf).strip())
+    if len(parts) > 1:
+        rewritten = [_rewrite_implications(p) for p in parts]
+        acc = rewritten[-1]
+        for p in reversed(rewritten[:-1]):
+            acc = f"((not ({p})) or ({acc}))"
+        return acc
+    # Recursively rewrite parenthesized sub-expressions
+    out = []
+    i = 0
+    while i < len(expr):
+        if expr[i] == '(':
+            depth = 1
+            j = i + 1
+            while j < len(expr) and depth > 0:
+                if expr[j] == '(':
+                    depth += 1
+                elif expr[j] == ')':
+                    depth -= 1
+                j += 1
+            inner = expr[i + 1:j - 1]
+            out.append('(' + _rewrite_implications(inner) + ')')
+            i = j
+        else:
+            out.append(expr[i])
+            i += 1
+    return ''.join(out)
+
+def _rewrite_quantifiers(expr: str) -> str:
+    m = re.search(r'([∀∃])\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*', expr)
+    if not m:
+        return expr
+    q_sym, var_name = m.group(1), m.group(2)
+    op = 'and' if q_sym == '∀' else 'or'
+    prefix = expr[:m.start()]
+    body = _rewrite_quantifiers(expr[m.end():].strip())
+    return f"{prefix}((lambda _q: bool(_q(False)) {op} bool(_q(True)))(lambda {var_name}: {body}))"
+
 def _normalize_to_python_expr(source: str) -> str:
     expr = source.strip()
     # Convert chained Unicode lambdas (λa. λb. body) into Python multi-arg lambdas
@@ -2685,6 +2897,8 @@ def _normalize_to_python_expr(source: str) -> str:
         params = re.findall(r'[λ\\\\]\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\.', match.group(0))
         return f"lambda {', '.join(params)}: "
     expr = re.sub(r'(?:[λ\\\\]\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\.\\s*)+', _collapse_lambdas, expr)
+    expr = _rewrite_quantifiers(expr)
+    expr = _rewrite_implications(expr)
     expr = expr.replace('⊤', 'True').replace('⊥', 'False')
     expr = expr.replace('¬', ' not ').replace('∧', ' and ').replace('∨', ' or ')
     expr = expr.replace('≤', '<=').replace('≥', '>=').replace('≠', '!=')
@@ -2695,7 +2909,7 @@ def _normalize_to_python_expr(source: str) -> str:
 
 _ALLOWED_DSL_NODES = (
     ast.Expression, ast.Constant, ast.Name, ast.Load,
-    ast.UnaryOp, ast.Not, ast.USub,
+    ast.UnaryOp, ast.Not, ast.USub, ast.UAdd,
     ast.BinOp, ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.Pow,
     ast.BoolOp, ast.And, ast.Or,
     ast.Compare, ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE,
@@ -2711,8 +2925,6 @@ def _eval_dsl_expr(source: str, env: dict, filename: str):
             raise ValueError("Only boolean and numeric literals are supported")
         if isinstance(node, ast.Name) and node.id == '__builtins__':
             raise ValueError("Unsupported identifier: __builtins__")
-        if isinstance(node, ast.Compare) and len(node.ops) != 1:
-            raise ValueError("Chained comparisons are not supported")
         if isinstance(node, ast.Call) and (not node.args or node.keywords):
             raise ValueError("Calls require positional arguments")
         if isinstance(node, ast.arguments) and (
@@ -2742,14 +2954,14 @@ def parse_logic_call(statement: str, labels=LOGIC_LABELS, system_parser=None):
                 env[name] = bool(_eval_dsl_expr(_normalize_to_python_expr(val_str), env, '<label>'))
         elif kind == 'number':
             try:
-                env[name] = int(val_str) if val_str.lstrip('-').isdigit() else float(val_str)
+                env[name] = int(val_str) if val_str.lstrip('+-').isdigit() else float(val_str)
             except ValueError:
                 env[name] = _eval_dsl_expr(_normalize_to_python_expr(val_str), env, '<label>')
         else:
             env[name] = _eval_dsl_expr(_normalize_to_python_expr(val_str), env, '<callback>')
 
     ${!translatedAstParsed.ok ? `if statement == LOGIC_STATEMENT:\n        raise ValueError(${JSON.stringify(translatedAstParsed.error)})` : ''}
-    py_expr = ${translatedAstParsed.ok ? JSON.stringify(safeAstExprPy) + ' if statement == LOGIC_STATEMENT else ' : ''}_normalize_to_python_expr(statement)
+    py_expr = _normalize_to_python_expr(statement)
     def unresolved(table):
         names = {s.get_name() for s in table.get_symbols()
                  if s.is_referenced() and s.is_global() and s.get_name() not in env}
@@ -2789,7 +3001,7 @@ def _coerce_cli_literal(raw_val: str, kind: str):
         raise argparse.ArgumentTypeError(f"Expected boolean literal (true/false), got {raw_val!r}")
     if kind == 'number':
         try:
-            return int(text) if re.fullmatch(r'-?\\d+', text) else float(text)
+            return int(text) if re.fullmatch(r'[+-]?\\d+', text) else float(text)
         except ValueError as exc:
             raise argparse.ArgumentTypeError(f"Expected numeric literal, got {raw_val!r}") from exc
     return text
@@ -2908,9 +3120,17 @@ def run_cli(argv=None):
     for k, v in overrides.items():
         resolved[k] = v
 
-    # Convert resolved strings to typed literals for clear display
-    typed_vars = {name: _coerce_cli_literal(resolved[name], kind)
-                  for name, kind, _ in REQUIRED_INPUTS if name in resolved}
+    # Seed defaults from REQUIRED_INPUTS / LOGIC_LABELS, then apply CLI overrides
+    default_label_names = {name for name, kind, _ in LOGIC_LABELS if kind != 'lambda'}
+    typed_vars = {}
+    for name, kind, default_val in REQUIRED_INPUTS:
+        if name in resolved:
+            typed_vars[name] = _coerce_cli_literal(resolved[name], kind)
+        elif name in default_label_names:
+            try:
+                typed_vars[name] = _coerce_cli_literal(default_val, kind)
+            except Exception:
+                typed_vars[name] = default_val
     result = evaluate_from_input(
         raw_input=raw_input,
         statement=statement,
@@ -2958,7 +3178,7 @@ if __name__ == '__main__':
           { flag: '--grammar', target: 'ACTIVE_GRAMMAR', defaultValue: inputGrammar.grammarText },
         ],
       },
-      'x-named-callbacks': translation.callbacks.map((cb) => ({
+      'x-named-callbacks': usedCallbacks.map((cb) => ({
         name: cb.name,
         params: cb.params,
         signature: cb.signature,
@@ -3418,7 +3638,7 @@ fn main() {
 
   if (target === 'typescript' || target === 'javascript') {
     const isTs = target === 'typescript';
-    const labelTuples = labels.map(
+    const labelTuples = usedInputLabels.map(
       (l) => `  [${JSON.stringify(l.name)}, ${JSON.stringify(l.kind)}, ${JSON.stringify(l.value)}],`
     );
     const grammarRuleMap = Object.fromEntries(inputGrammar.rules.map((r) => [r.name, r.expression]));
@@ -4063,10 +4283,21 @@ func EvaluateLogic(statement string, labels []LogicLabel, systemParser func(stri
 	if systemParser != nil {
 		return systemParser(statement, labels)
 	}
-	if statement == LogicStatement && labelsMatchDefaults(labels) {
-		${evalRes.ok ? `return ${JSON.stringify(evalRes.displayValue)}` : ''}
+	if statement != LogicStatement {
+		panic(fmt.Sprintf("Dynamic statement override requires systemParser: %q", statement))
 	}
-	panic("Go export requires a systemParser callback; standalone expression evaluation is not implemented")
+${evalRes.ok && loweredPlan ? `	vals := make(map[string]string, len(labels))
+	for _, l := range labels {
+		if l.Kind != "lambda" {
+			vals[l.Name] = l.Value
+		}
+	}
+${loweredPlan.usedVars.map((v) =>
+  (loweredPlan.varTypes.get(v) || 'number') === 'boolean'
+    ? `\tv_${v} := strings.EqualFold(strings.TrimSpace(vals[${JSON.stringify(v)}]), "true") || strings.TrimSpace(vals[${JSON.stringify(v)}]) == "1"`
+    : `\tv_${v}, err_${v} := strconv.ParseFloat(strings.TrimSpace(vals[${JSON.stringify(v)}]), 64)\n\tif err_${v} != nil { panic(fmt.Sprintf("invalid numeric input %s: %v", ${JSON.stringify(v)}, err_${v})) }`
+).join('\n')}
+	return ${emitCompiledTargetExpr(loweredPlan.ast, 'go')}` : `	panic("Logic expression failed to compile")`}
 }
 
 // ParseCliArgs exposes every named literal variable (--<name> <literal>), editable strings (--input/--statement), or built-in defaults.
@@ -4196,10 +4427,19 @@ ${entries.join(',\n')}
         if (systemParser != null) {
             return systemParser.apply(statement, labels);
         }
-        if (statement.equals(LOGIC_STATEMENT) && labels.equals(LOGIC_LABELS)) {
-            ${evalRes.ok ? `return ${JSON.stringify(evalRes.displayValue)};` : ''}
+        if (!statement.equals(LOGIC_STATEMENT)) {
+            throw new UnsupportedOperationException("Dynamic statement override requires systemParser: " + statement);
         }
-        throw new UnsupportedOperationException("Java export requires a systemParser callback; standalone expression evaluation is not implemented");
+${evalRes.ok && loweredPlan ? `        Map<String, String> vals = new LinkedHashMap<>();
+        for (LogicLabel lbl : labels) {
+            if (!"lambda".equals(lbl.kind())) vals.put(lbl.name(), lbl.value());
+        }
+${loweredPlan.usedVars.map((v) =>
+  (loweredPlan.varTypes.get(v) || 'number') === 'boolean'
+    ? `        boolean v_${v} = "true".equalsIgnoreCase(vals.getOrDefault(${JSON.stringify(v)}, "false").trim()) || "1".equals(vals.getOrDefault(${JSON.stringify(v)}, "0").trim());`
+    : `        double v_${v} = Double.parseDouble(vals.getOrDefault(${JSON.stringify(v)}, "0").trim());`
+).join('\n')}
+        return ${emitCompiledTargetExpr(loweredPlan.ast, 'java')};` : `        throw new IllegalStateException("Logic expression failed to compile");`}
     }
 
     /** CLI entry point exposing named literal flags (--<var> <literal>), --input, --statement, or defaults. */
@@ -4343,11 +4583,20 @@ inline std::string evaluate_logic(
                 break;
             }
         }
-        if (matches_defaults) {
-            ${evalRes.ok ? `return ${JSON.stringify(evalRes.displayValue)};` : ''}
-        }
+    if (statement != LOGIC_STATEMENT) {
+        throw std::runtime_error("Dynamic statement override requires system_parser: " + statement);
     }
-    throw std::runtime_error("C++ export requires a system_parser callback; standalone expression evaluation is not implemented");
+${evalRes.ok && loweredPlan ? `    std::unordered_map<std::string, std::string> vals;
+    for (const auto& lbl : labels) {
+        if (lbl.kind != "lambda") vals[lbl.name] = lbl.value;
+    }
+${loweredPlan.usedVars.map((v) =>
+  (loweredPlan.varTypes.get(v) || 'number') === 'boolean'
+    ? `    bool v_${v} = (vals[${JSON.stringify(v)}] == "true" || vals[${JSON.stringify(v)}] == "1");`
+    : `    double v_${v} = std::stod(vals.at(${JSON.stringify(v)}));`
+).join('\n')}
+    auto result = ${emitCompiledTargetExpr(loweredPlan.ast, 'cpp')};
+    return ${loweredPlan.resultType === 'boolean' ? '(result ? "true" : "false")' : 'std::to_string(result)'};` : `    throw std::runtime_error("Logic expression failed to compile");`}
 }
 
 inline std::string evaluate_from_input_statement(
@@ -4517,11 +4766,17 @@ ${entries.join('\n')}
     {
         var activeLabels = labels ?? LogicLabels;
         if (systemParser is not null) return systemParser(statement, activeLabels);
-        if (statement == LogicStatement && activeLabels.SequenceEqual(LogicLabels))
+        if (statement != LogicStatement)
         {
-            ${evalRes.ok ? `return ${JSON.stringify(evalRes.displayValue)};` : ''}
+            throw new NotSupportedException($"Dynamic statement override requires systemParser: {statement}");
         }
-        throw new NotSupportedException("C# export requires a systemParser callback; standalone expression evaluation is not implemented");
+${evalRes.ok && loweredPlan ? `        var vals = activeLabels.Where(l => l.Kind != "lambda").ToDictionary(l => l.Name, l => l.Value);
+${loweredPlan.usedVars.map((v) =>
+  (loweredPlan.varTypes.get(v) || 'number') === 'boolean'
+    ? `        bool v_${v} = string.Equals(vals.GetValueOrDefault(${JSON.stringify(v)}, "false").Trim(), "true", StringComparison.OrdinalIgnoreCase) || vals.GetValueOrDefault(${JSON.stringify(v)}, "0").Trim() == "1";`
+    : `        double v_${v} = double.Parse(vals[${JSON.stringify(v)}].Trim(), CultureInfo.InvariantCulture);`
+).join('\n')}
+        return ${emitCompiledTargetExpr(loweredPlan.ast, 'csharp')};` : `        throw new InvalidOperationException("Logic expression failed to compile");`}
     }
 
     public static void Main(string[] args)
@@ -4625,9 +4880,6 @@ function evaluate_from_input(string $rawInput = SAMPLE_SINGLE_INPUT, ?callable $
 }
 
 function evaluate_from_input_statement(string $rawInput, string $statement, ?callable $systemParser = null): mixed {
-    if ($systemParser === null && ($rawInput === '' || $rawInput === SAMPLE_SINGLE_INPUT) && $statement === LOGIC_STATEMENT) {
-        ${evalRes.ok ? `return ${JSON.stringify(evalRes.displayValue)};` : ''}
-    }
     $inputs = parse_inputs_from_string($rawInput);
     $merged = array_map(
         fn($lbl) => [$lbl[0], $lbl[1], ($lbl[1] !== 'lambda' && isset($inputs[$lbl[0]])) ? $inputs[$lbl[0]] : $lbl[2]],
@@ -4640,10 +4892,19 @@ function evaluate_logic(string $statement = LOGIC_STATEMENT, array $labels = LOG
     if ($systemParser !== null) {
         return $systemParser($statement, $labels);
     }
-    if ($statement === LOGIC_STATEMENT && $labels === LOGIC_LABELS) {
-        ${evalRes.ok ? `return ${JSON.stringify(evalRes.displayValue)};` : ''}
+    if ($statement !== LOGIC_STATEMENT) {
+        throw new LogicException("Dynamic statement override requires systemParser: {$statement}");
     }
-    throw new LogicException('PHP export requires a systemParser callback; standalone expression evaluation is not implemented');
+${evalRes.ok && loweredPlan ? `    $vals = [];
+    foreach ($labels as [$name, $kind, $val]) {
+        if ($kind !== 'lambda') $vals[$name] = (string)$val;
+    }
+${loweredPlan.usedVars.map((v) =>
+  (loweredPlan.varTypes.get(v) || 'number') === 'boolean'
+    ? `    $v_${v} = in_array(strtolower(trim($vals[${JSON.stringify(v)}] ?? 'false')), ['true', '1', '⊤'], true);`
+    : `    if (!isset($vals[${JSON.stringify(v)}]) || !is_numeric(trim($vals[${JSON.stringify(v)}]))) throw new InvalidArgumentException("Invalid or missing numeric input: ${v}");\n    $v_${v} = (float)trim($vals[${JSON.stringify(v)}]);`
+).join('\n')}
+    return ${emitCompiledTargetExpr(loweredPlan.ast, 'php')};` : `    throw new LogicException("Logic expression failed to compile");`}
 }
 
 // CLI runner exposing named literal flags (--<var> <literal>), --input, --statement, or built-in defaults
@@ -4709,8 +4970,22 @@ VALUES (${sqlEsc(translation.translatedStatement)}, ${sqlEsc(inputGrammar.sample
 
 ${rows.join('\n')}
 
--- Single-string input extraction view using grammar key=value tokens
--- Example: SELECT * FROM parse_logic_input(${sqlEsc(inputGrammar.sampleSingleInput)});
+-- Compiled executable SQL evaluation query built directly from parsed logic AST
+${evalRes.ok && loweredPlan ? `WITH inputs AS (
+  SELECT ${loweredPlan.usedVars.length > 0
+    ? loweredPlan.usedVars
+        .map((v) => {
+          const defVal = allLabels.find((l) => l.name === v)?.value.trim() || ((loweredPlan.varTypes.get(v) || 'number') === 'boolean' ? 'FALSE' : '0.0');
+          const lit = (loweredPlan.varTypes.get(v) || 'number') === 'boolean'
+            ? (defVal.toLowerCase() === 'true' || defVal === '1' ? 'TRUE' : 'FALSE')
+            : String(Number(defVal) || 0);
+          return `${lit} AS ${v}`;
+        })
+        .join(', ')
+    : '1 AS _unit'}
+)
+SELECT (${emitCompiledTargetExpr(loweredPlan.ast, 'sql')}) AS result
+FROM inputs;` : '-- Logic expression failed to compile'}
 `;
     return { content, filename: 'logic_lambda_calc.sql', mime: 'application/sql' };
   }
@@ -4758,7 +5033,7 @@ ${rows.join('\n')}
     const activeGrammarStr = JSON.stringify(inputGrammar.grammarText);
     if (target === 'ruby') {
       const parsed = parseLogicExpression(cleanStmt);
-      const bindings = labels.map((label) => {
+      const bindings = usedInputLabels.map((label) => {
         const value = parseLogicExpression(label.value.trim());
         return { name: label.name.trim(), kind: label.kind, raw: label.value.trim(), ast: value.ok ? value.ast : null };
       }).filter((label) => label.name);
@@ -4979,9 +5254,18 @@ end
       return { content, filename: 'logic_lambda_calc.rb', mime: 'text/plain' };
     }
     const content = `${commentPrefix} Auto-generated ${target.toUpperCase()} Logic, Arithmetic, Lambda & Grammar Input Module${commentSuffix}
-${commentPrefix} Only the verified sample result is available; dynamic evaluation is unsupported.${commentSuffix}
+${commentPrefix} Full parsed logic compiled into executable ${target.toUpperCase()} code.${commentSuffix}
 ${cauchyNote}
-${target === 'swift' ? `public let LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)}\npublic let ACTIVE_GRAMMAR = ${activeGrammarStr}\npublic let SAMPLE_SINGLE_INPUT = ${sampleStr}\npublic let LOGIC_LABELS: [String: String] = [\n${allLabels.map((l) => `    ${JSON.stringify(l.name)}: ${JSON.stringify(l.value)}`).join(',\n') || '    :'}\n]\npublic func parseInputsFromString(_ rawInput: String) -> [String: String] {\n    var out = LOGIC_LABELS\n    for tok in rawInput.split(whereSeparator: { $0.isWhitespace || $0 == "," || $0 == ";" }) {\n        let parts = tok.split(separator: "=", maxSplits: 1)\n        if parts.count == 2 { out[String(parts[0])] = String(parts[1]) }\n    }\n    return out\n}\npublic func evaluateFromInput(_ rawInput: String = SAMPLE_SINGLE_INPUT) -> String {\n${evalRes.ok ? `    if rawInput == SAMPLE_SINGLE_INPUT { return ${JSON.stringify(evalRes.displayValue)} }\n` : ''}    fatalError("Dynamic evaluation is not implemented for this export")\n}` : ''}${target === 'kotlin' ? `const val LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)}\nconst val ACTIVE_GRAMMAR = ${activeGrammarStr}\nconst val SAMPLE_SINGLE_INPUT = ${sampleStr}\nval LOGIC_LABELS: Map<String, String> = mapOf(\n${allLabels.map((l) => `    ${JSON.stringify(l.name)} to ${JSON.stringify(l.value)}`).join(',\n')}\n)\nfun parseInputsFromString(rawInput: String): Map<String, String> = buildMap {\n    putAll(LOGIC_LABELS)\n    rawInput.trim().split(Regex("[\\\\s,;]+")).forEach { tok ->\n        val sep = tok.indexOf('=').takeIf { it > 0 } ?: tok.indexOf(':')\n        if (sep > 0) put(tok.substring(0, sep), tok.substring(sep + 1))\n    }\n}\nfun evaluateFromInput(rawInput: String = SAMPLE_SINGLE_INPUT): String {\n${evalRes.ok ? `    if (rawInput == SAMPLE_SINGLE_INPUT) return ${JSON.stringify(evalRes.displayValue)}\n` : ''}    throw UnsupportedOperationException("Dynamic evaluation is not implemented for this export")\n}` : ''}${target === 'scala' ? `object LogicModule:\n  val LOGIC_STATEMENT: String = ${JSON.stringify(translation.translatedStatement)}\n  val ACTIVE_GRAMMAR: String = ${activeGrammarStr}\n  val SAMPLE_SINGLE_INPUT: String = ${sampleStr}\n  val LOGIC_LABELS: Map[String, String] = Map(\n${allLabels.map((l) => `    ${JSON.stringify(l.name)} -> ${JSON.stringify(l.value)}`).join(',\n')}\n  )\n  def parseInputsFromString(rawInput: String): Map[String, String] =\n    val pairs = rawInput.split("[\\\\s,;]+").collect { case s if s.contains("=") => val Array(k, v) = s.split("=", 2); k -> v }\n    LOGIC_LABELS ++ pairs\n  def evaluateFromInput(rawInput: String = SAMPLE_SINGLE_INPUT): String =\n${evalRes.ok ? `    if rawInput == SAMPLE_SINGLE_INPUT then return ${JSON.stringify(evalRes.displayValue)}\n` : ''}    throw new UnsupportedOperationException("Dynamic evaluation is not implemented for this export")` : ''}${target === 'haskell' ? `module LogicLambdaCalc where\nlogicStatement :: String\nlogicStatement = ${JSON.stringify(translation.translatedStatement)}\nactiveGrammar :: String\nactiveGrammar = ${activeGrammarStr}\nsampleSingleInput :: String\nsampleSingleInput = ${sampleStr}\nlogicLabels :: [(String, String)]\nlogicLabels = [\n${allLabels.map((l) => `  (${JSON.stringify(l.name)}, ${JSON.stringify(l.value)})`).join(',\n')}\n]\nparseInputsFromString :: String -> [(String, String)]\nparseInputsFromString raw = [(takeWhile (/= '=') w, drop 1 (dropWhile (/= '=') w)) | w <- words raw, '=' \`elem\` w]\nevaluateFromInput :: String -> String\nevaluateFromInput raw = ${evalRes.ok ? `if raw == sampleSingleInput then ${JSON.stringify(evalRes.displayValue)} else ` : ''}error "Dynamic evaluation is not implemented for this export"` : ''}${target === 'elixir' ? `defmodule LogicLambdaCalc do\n  @logic_statement ${JSON.stringify(translation.translatedStatement)}\n  @active_grammar ${activeGrammarStr}\n  @sample_single_input ${sampleStr}\n  @logic_labels %{\n${allLabels.map((l) => `    ${JSON.stringify(l.name)} => ${JSON.stringify(l.value)}`).join(',\n')}\n  }\n  def parse_inputs_from_string(raw_input) do\n    raw_input |> String.split(~r/[\\s,;]+/, trim: true) |> Enum.reduce(@logic_labels, fn tok, acc ->\n      case String.split(tok, ~r/[:=]/, parts: 2) do\n        [k, v] -> Map.put(acc, k, v)\n        _ -> acc\n      end\n    end)\n  end\n  def evaluate_from_input(raw_input \\\\ @sample_single_input) do\n${evalRes.ok ? `    if raw_input == @sample_single_input do\n      %{statement: @logic_statement, inputs: parse_inputs_from_string(raw_input), result: ${JSON.stringify(evalRes.displayValue)}}\n    else\n      raise "Dynamic evaluation is not implemented for this export"\n    end` : `    raise "Dynamic evaluation is not implemented for this export"`}\n  end\nend` : ''}${target === 'lua' ? `local M = {}\nM.LOGIC_STATEMENT = ${JSON.stringify(translation.translatedStatement)}\nM.ACTIVE_GRAMMAR = ${activeGrammarStr}\nM.SAMPLE_SINGLE_INPUT = ${sampleStr}\nM.LOGIC_LABELS = {\n${allLabels.map((l) => `  [${JSON.stringify(l.name)}] = ${JSON.stringify(l.value)}`).join(',\n')}\n}\nfunction M.parse_inputs_from_string(raw_input)\n  local out = {}\n  for k, v in pairs(M.LOGIC_LABELS) do out[k] = v end\n  for k, v in string.gmatch(raw_input or "", "([%w_]+)[:=]([^%s,;]+)") do out[k] = v end\n  return out\nend\nfunction M.evaluate_from_input(raw_input)\n  if raw_input == nil then raw_input = M.SAMPLE_SINGLE_INPUT end\n${evalRes.ok ? `  if raw_input == M.SAMPLE_SINGLE_INPUT then return ${JSON.stringify(evalRes.displayValue)} end\n` : ''}  error("Dynamic evaluation is not implemented for this export")\nend\nreturn M` : ''}${target === 'zig' ? `pub const LOGIC_STATEMENT: []const u8 = ${JSON.stringify(translation.translatedStatement)};\npub const ACTIVE_GRAMMAR: []const u8 = ${activeGrammarStr};\npub const SAMPLE_SINGLE_INPUT: []const u8 = ${sampleStr};\npub const EVALUATED_RESULT: []const u8 = ${JSON.stringify(evalRes.displayValue)};\npub fn evaluateFromInput(raw_input: []const u8) error{UnsupportedEvaluation}![]const u8 {\n${evalRes.ok ? `    if (@import("std").mem.eql(u8, raw_input, SAMPLE_SINGLE_INPUT)) return EVALUATED_RESULT;\n` : `    _ = raw_input;\n`}    return error.UnsupportedEvaluation;\n}\n// Grammar single-string input bindings:\n${allLabels.map((l) => `// ${l.name} = ${l.value}`).join('\n')}` : ''}${target === 'dart' ? `const String logicStatement = ${JSON.stringify(translation.translatedStatement)};\nconst String activeGrammar = ${activeGrammarStr};\nconst String sampleSingleInput = ${sampleStr};\nconst Map<String, String> logicLabels = {\n${allLabels.map((l) => `  ${JSON.stringify(l.name)}: ${JSON.stringify(l.value)},`).join('\n')}\n};\nMap<String, String> parseInputsFromString(String rawInput) {\n  final out = Map<String, String>.from(logicLabels);\n  for (final tok in rawInput.trim().split(RegExp(r'[\\s,;]+'))) {\n    final parts = tok.split(RegExp(r'[:=]'));\n    if (parts.length == 2) out[parts[0]] = parts[1];\n  }\n  return out;\n}\nString evaluateFromInput([String rawInput = sampleSingleInput]) {\n${evalRes.ok ? `  if (rawInput == sampleSingleInput) return ${JSON.stringify(evalRes.displayValue)};\n` : ''}  throw UnsupportedError("Dynamic evaluation is not implemented for this export");\n}` : ''}${target === 'ocaml' ? `let logic_statement = ${JSON.stringify(translation.translatedStatement)}\nlet active_grammar = ${activeGrammarStr}\nlet sample_single_input = ${sampleStr}\nlet logic_labels = [\n${allLabels.map((l) => `  (${JSON.stringify(l.name)}, ${JSON.stringify(l.value)})`).join(';\n')}\n]\nlet parse_inputs_from_string raw_input =\n  raw_input |> String.split_on_char ' ' |> List.filter_map (fun tok ->\n    match String.split_on_char '=' tok with [k; v] -> Some (k, v) | _ -> None)\nlet evaluate_from_input raw_input = ${evalRes.ok ? `if raw_input = sample_single_input then ${JSON.stringify(evalRes.displayValue)} else ` : ''}failwith "Dynamic evaluation is not implemented for this export"` : ''}
+${buildLowerTargetExecutableModule({
+      target,
+      translatedStatement: translation.translatedStatement,
+      activeGrammarStr,
+      sampleStr,
+      allLabels,
+      evalOk: evalRes.ok,
+      evalDisplayValue: evalRes.displayValue,
+      plan: loweredPlan,
+    })}
 ${commentPrefix} Bound labels summary:${commentSuffix}\n${labelsText
       .split('\n')
       .map((line) => `${commentPrefix} ${line}${commentSuffix}`)
@@ -5003,7 +5287,7 @@ ${commentPrefix} Bound labels summary:${commentSuffix}\n${labelsText
           ? 1
           : 0
         : 0;
-  const serializedLabels = labels
+  const serializedLabels = usedInputLabels
     .map((l) => `${l.name}:${l.kind}=${l.value.replace(/["\\;|]/g, '')}`)
     .join(';');
   const cleanSample = inputGrammar.sampleSingleInput.replace(/["\\]/g, '');
@@ -5031,7 +5315,7 @@ ${inputMode === 'cli' ? `    (if (local.get $len)
 
   ;; Returns number of required grammar inputs / bound labels
   (func (export "label_count") (result i32)
-    (i32.const ${labels.length})
+    (i32.const ${usedInputLabels.length})
   )
 
   ;; Arithmetic helper callback ($a + $b)

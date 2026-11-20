@@ -119,6 +119,7 @@ import {
   type ReferencedModuleExport,
 } from './engine/moduleAutocompleteEngine';
 import { buildPipelineBreadcrumbs } from './engine/pipelineBreadcrumbs';
+import { buildFinalPipelineCompiler } from './engine/pipelineCompilerEngine';
 import { downloadPhpProjectZip } from './engine/phpZipPackager';
 import { resolveApiUrl } from './engine/runtimePaths';
 import {
@@ -477,6 +478,12 @@ export default function App() {
     }
     return seed;
   });
+  const lastKnownDialectTokensRef = useRef<{ choiceDelimiter: string; commentPrefix: string }>({
+    choiceDelimiter:
+      (initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config).choiceDelimiter || '|',
+    commentPrefix:
+      (initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config).commentPrefix || '//',
+  });
   const [schemaConfig, setSchemaConfig] = useState<SchemaConfig>(
     initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG
   );
@@ -504,8 +511,13 @@ export default function App() {
     initialDeepLink?.stageFilter ?? 'all'
   );
   const [pipelineLayoutMode, setPipelineLayoutMode] = useState<PipelineGridMode>(
-    initialDeepLink?.pipelineLayoutMode ?? 'compact'
+    initialDeepLink?.pipelineLayoutMode ?? 'rail'
   );
+  const [showHelpPanel, setShowHelpPanel] = useState(false);
+  const [toolsMenuOpen, setToolsMenuOpen] = useState(false);
+  const [mirrorTab, setMirrorTab] = useState<'grammar' | 'json' | 'compiled'>('grammar');
+  const [showLiveMirror, setShowLiveMirror] = useState(true);
+  const [dismissedHomePitch, setDismissedHomePitch] = useState(false);
   const [selectedMcpServerId, setSelectedMcpServerId] = useState<McpServerId>(
     initialDeepLink?.selectedMcpServerId ?? 'pipeline'
   );
@@ -1781,7 +1793,25 @@ export default function App() {
         nextLastKnown[spec.key] = nextResolved[spec.key];
       }
     }
-    const rewrittenGrammar = rewriteGrammarDialectTokens(grammarText, dialect, next, savedLastKnown);
+    if (dialect.choiceDelimiter.trim()) {
+      lastKnownDialectTokensRef.current.choiceDelimiter = dialect.choiceDelimiter.trim();
+    }
+    if (dialect.commentPrefix.trim()) {
+      lastKnownDialectTokensRef.current.commentPrefix = dialect.commentPrefix.trim();
+    }
+    const rewrittenGrammar = rewriteGrammarDialectTokens(
+      grammarText,
+      dialect,
+      next,
+      savedLastKnown,
+      lastKnownDialectTokensRef.current
+    );
+    if (next.choiceDelimiter.trim()) {
+      lastKnownDialectTokensRef.current.choiceDelimiter = next.choiceDelimiter.trim();
+    }
+    if (next.commentPrefix.trim()) {
+      lastKnownDialectTokensRef.current.commentPrefix = next.commentPrefix.trim();
+    }
     setLastKnownDialectSymbols(nextLastKnown);
     setDialect(next);
     if (rewrittenGrammar !== grammarText) {
@@ -2552,6 +2582,45 @@ export default function App() {
 
   // Carousel & DSL Flow Navigation
   const flows = parsedDsl.flows;
+  const finalPipelineCompiler = useMemo(
+    () =>
+      buildFinalPipelineCompiler({
+        flows,
+        verifiedSteps,
+        primaryLanguage,
+        rules,
+        dialect,
+        schemaConfig,
+        mutations,
+        mutationPolicy,
+        ruleConfigs,
+        grammarText,
+        jsonText,
+        watSource,
+        evalRule,
+        evalPayload,
+        logicStatement,
+        logicLabelCount: logicLabels.length,
+      }),
+    [
+      flows,
+      verifiedSteps,
+      primaryLanguage,
+      rules,
+      dialect,
+      schemaConfig,
+      mutations,
+      mutationPolicy,
+      ruleConfigs,
+      grammarText,
+      jsonText,
+      watSource,
+      evalRule,
+      evalPayload,
+      logicStatement,
+      logicLabels.length,
+    ]
+  );
   const currentStepIndex = Math.max(
     0,
     flows.findIndex((f) => f.page === activePage)
@@ -2566,6 +2635,40 @@ export default function App() {
     next: 'FLOW_RULE_PROPS',
     label: '1. Grammar & DAG',
   };
+
+  const currentPass = finalPipelineCompiler.passes.find((p) => p.page === currentFlow.page) || null;
+
+  // Keep pipeline stage filter synchronized to the active step to prevent navigation drift
+  useEffect(() => {
+    if (stageFilter !== 'all' && stageFilter !== currentFlow.stage) {
+      setStageFilter(currentFlow.stage);
+    }
+  }, [activePage, currentFlow.stage, stageFilter]);
+
+  const unusedLintIssues = useMemo(
+    () => studioLintIssues.filter((i) => i.code === 'UNUSED_CALLBACK' || i.code === 'UNUSED_LABEL'),
+    [studioLintIssues]
+  );
+
+  const handleRemoveUnusedLint = useCallback(() => {
+    const unusedSymbols = new Set(unusedLintIssues.map((i) => i.symbol).filter(Boolean));
+    if (unusedSymbols.size === 0) return;
+    setLogicLabels((prev) => prev.filter((l) => !unusedSymbols.has(l.name.trim())));
+    setGlobalCallbacks((prev) => {
+      const next = prev.filter((cb) => !unusedSymbols.has(cb.name.trim()));
+      saveGlobalCallbacks(next);
+      return next;
+    });
+    showNotice(`Removed ${unusedSymbols.size} unused callback/label${unusedSymbols.size === 1 ? '' : 's'}.`);
+  }, [unusedLintIssues]);
+
+  const handleJumpToLint = useCallback(() => {
+    setShowLiveMirror(true);
+    setMobileWorkbenchPane('mirror');
+    window.setTimeout(() => {
+      document.getElementById('studio-lint-diagnostics')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 60);
+  }, []);
 
   const breadcrumbs = useMemo(
     () =>
@@ -3052,7 +3155,7 @@ export default function App() {
     {
       id: 'formal_logic',
       fullLabel: 'Formal Logic & λ',
-      compactLabel: 'Logic λ',
+      compactLabel: 'Logic',
       icon: Sparkles,
       active: topView === 'formal_logic',
       onClick: () => setTopView('formal_logic'),
@@ -3060,7 +3163,7 @@ export default function App() {
     {
       id: 'schema_predicate',
       fullLabel: 'Schema EBNF Studio',
-      compactLabel: 'Schema AST',
+      compactLabel: 'Schema',
       icon: Columns2,
       active: topView === 'schema_predicate',
       onClick: () => setTopView('schema_predicate'),
@@ -3076,7 +3179,7 @@ export default function App() {
     {
       id: 'histolog',
       fullLabel: 'Histolog & Diff',
-      compactLabel: 'History',
+      compactLabel: 'Hist',
       icon: History,
       active: topView === 'histolog',
       onClick: () => setTopView('histolog'),
@@ -3092,7 +3195,7 @@ export default function App() {
     {
       id: 'modules',
       fullLabel: 'Module Workbench',
-      compactLabel: 'Modules',
+      compactLabel: 'Mods',
       icon: Boxes,
       active: topView === 'modules',
       onClick: () => setTopView('modules'),
@@ -3100,7 +3203,7 @@ export default function App() {
     {
       id: 'middleware',
       fullLabel: 'Middleware Suite',
-      compactLabel: 'Middleware',
+      compactLabel: 'MW',
       icon: Sliders,
       active: topView === 'middleware',
       onClick: () => setTopView('middleware'),
@@ -3124,8 +3227,8 @@ export default function App() {
   ];
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      {/* STRICT 3-ZONE TOP BAR CONTRACT (compact on mobile <= 56px, full labels on desktop) */}
+    <div className="min-h-screen overflow-x-clip bg-slate-50 pb-10 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+      {/* STREAMLINED SINGLE-ROW IDE WORKBENCH HEADER */}
       <header
         data-tour-id={
           topView === 'workbench'
@@ -3140,80 +3243,46 @@ export default function App() {
         }
         className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-xs dark:border-slate-800 dark:bg-slate-900/95"
       >
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 py-2.5 sm:px-6 md:py-3.5">
-          {/* Zone 1: Single-line Brand Wordmark */}
+        <div className="mx-auto flex w-full max-w-[1440px] items-center justify-between gap-2.5 px-3 py-2 sm:px-5">
+          {/* Left: Brand */}
           <button
             type="button"
             onClick={() => setTopView('workbench')}
-            className="shrink-0 whitespace-nowrap text-sm font-bold tracking-tight text-slate-900 sm:text-base dark:text-slate-100"
+            className="shrink-0 whitespace-nowrap text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100"
           >
-            Grammar2JSON Studio
+            G2J Studio
           </button>
 
-          {/* Zone 2: 5 Clean Non-Redundant Single-Line Nav Links (abbreviate ONLY when narrow viewport demands it) */}
-          <nav data-tour="nav" className="hidden items-center gap-4 md:flex lg:gap-6" aria-label="Primary sections">
-            {primaryNavItems.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                onClick={item.onClick}
-                className={`shrink-0 whitespace-nowrap border-b-2 py-1 text-sm font-medium transition-colors ${
-                  item.active
-                    ? 'border-blue-600 text-slate-900 dark:border-blue-400 dark:text-slate-100'
-                    : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-                }`}
-              >
-                <span className="hidden xl:inline">{item.fullLabel}</span>
-                <span className="xl:hidden">{item.compactLabel}</span>
-              </button>
-            ))}
+          {/* Center: Shorthand Nav (scrolls cleanly, never clips left) */}
+          <nav
+            data-tour="nav"
+            className="hidden min-w-0 flex-1 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden md:block"
+            aria-label="Primary sections"
+          >
+            <div className="mx-auto flex w-max items-center gap-3 lg:gap-4">
+              {primaryNavItems.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  title={item.fullLabel}
+                  onClick={item.onClick}
+                  className={`shrink-0 whitespace-nowrap border-b-2 py-1 text-xs font-medium transition-colors ${
+                    item.active
+                      ? 'border-blue-600 text-slate-900 dark:border-blue-400 dark:text-slate-100'
+                      : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+                  }`}
+                >
+                  <span>{item.compactLabel}</span>
+                </button>
+              ))}
+            </div>
           </nav>
 
-          {/* Zone 3: 1 Primary Action */}
-          <div className="shrink-0">
-            <button
-              type="button"
-              onClick={handleDownloadProjectZip}
-              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700 sm:px-4"
-            >
-              <Download className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Download Project ZIP</span>
-              <span className="sm:hidden">ZIP</span>
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-[1440px] space-y-5 px-3 py-4 pb-20 sm:px-6 sm:py-6 md:pb-8">
-        {isOffline && showOfflineBanner && (
-          <div
-            role="status"
-            aria-live="polite"
-            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-4 py-2.5 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
-          >
-            <div className="flex items-center gap-2">
-              <WifiOff className="h-4 w-4 shrink-0" />
-              <span>
-                <strong>Offline mode:</strong> The cached SPA shell, local workbenches, and cached public templates remain available. Server API writes and remote MCP calls require connectivity.
-              </span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setShowOfflineBanner(false)}
-              className="rounded border border-amber-400 px-2 py-0.5 text-[11px] font-medium hover:bg-amber-100 dark:border-amber-700 dark:hover:bg-amber-900/50"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
-        {/* WORKSPACE TOOLBAR: GLOBAL SEARCH, 22-LANGUAGE SWITCHER, AUTO-SAVE, UNDO/REDO, CLEAR/RESTORE, DEEP LINKS */}
-        {topView === 'workbench' && <GuideBanner guideId="home" variant="hero" />}
-
-        <section data-tour="toolbar" className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            {/* Search Box */}
-            <div className="relative flex-1 lg:max-w-md">
-              <Search className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          {/* Right: Compact IDE Controls (Search, Language, Undo/Redo, Tools, Help, Theme, ZIP) */}
+          <div data-tour="toolbar" className="flex shrink-0 items-center gap-1.5">
+            {/* Compact Search */}
+            <div className="relative hidden sm:block">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
               <input
                 type="search"
                 value={searchQuery}
@@ -3225,8 +3294,8 @@ export default function App() {
                   setSearchQuery(e.target.value);
                   setSearchOpen(true);
                 }}
-                placeholder="Search OpenAPI routes, DSL flows, rules, AST symbols, or WASM exports..."
-                className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pr-9 pl-10 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                placeholder="Search..."
+                className="w-32 rounded-lg border border-slate-200 bg-slate-50 py-1 pr-6 pl-8 text-xs text-slate-900 placeholder:text-slate-400 transition-all focus:w-52 focus:border-blue-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               />
               {searchQuery && (
                 <button
@@ -3236,29 +3305,21 @@ export default function App() {
                     setSearchOpen(false);
                   }}
                   aria-label="Clear search"
-                  className="absolute top-1/2 right-2.5 -translate-y-1/2 rounded p-1 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
+                  className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded p-0.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-3 w-3" />
                 </button>
               )}
-
-              {/* Live Search Dropdown */}
               {searchOpen && searchQuery.trim() !== '' && (
-                <div className="absolute right-0 left-0 z-20 mt-2 max-h-80 overflow-auto rounded-xl border border-slate-200 bg-white p-2 shadow-lg dark:border-slate-800 dark:bg-slate-900">
-                  <div className="flex items-center justify-between px-2.5 py-1.5 text-xs text-slate-500 dark:text-slate-400">
-                    <span>Search Results ({searchHits.length})</span>
-                    <button
-                      type="button"
-                      onClick={() => setSearchOpen(false)}
-                      className="text-slate-400 hover:text-slate-700 dark:hover:text-slate-200"
-                    >
+                <div className="absolute right-0 z-40 mt-2 max-h-80 w-80 overflow-auto rounded-xl border border-slate-200 bg-white p-2 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+                  <div className="flex items-center justify-between px-2 py-1 text-[11px] text-slate-500">
+                    <span>Results ({searchHits.length})</span>
+                    <button type="button" onClick={() => setSearchOpen(false)} className="hover:text-slate-800 dark:hover:text-slate-200">
                       Close
                     </button>
                   </div>
                   {searchHits.length === 0 ? (
-                    <div className="px-3 py-4 text-xs text-slate-500">
-                      No OpenAPI operations, DSL flows, rules, or AST symbols match &quot;{searchQuery}&quot;.
-                    </div>
+                    <div className="px-2 py-3 text-xs text-slate-500">No matches for &quot;{searchQuery}&quot;.</div>
                   ) : (
                     <div className="divide-y divide-slate-100 dark:divide-slate-800">
                       {searchHits.map((hit) => (
@@ -3270,19 +3331,13 @@ export default function App() {
                             setActivePage(hit.targetPage);
                             setSearchOpen(false);
                           }}
-                          className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/70"
+                          className="flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-left hover:bg-slate-50 dark:hover:bg-slate-800/70"
                         >
                           <div className="min-w-0">
-                            <div className="truncate text-xs font-medium text-slate-900 dark:text-slate-100">
-                              {hit.title}
-                            </div>
-                            <div className="truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                              {hit.kind} · {hit.subtitle}
-                            </div>
+                            <div className="truncate text-xs font-medium text-slate-900 dark:text-slate-100">{hit.title}</div>
+                            <div className="truncate font-mono text-[10px] text-slate-500">{hit.kind} · {hit.subtitle}</div>
                           </div>
-                          <span className="shrink-0 font-mono text-[11px] font-semibold text-blue-600 dark:text-blue-400">
-                            {hit.method}
-                          </span>
+                          <span className="shrink-0 font-mono text-[10px] font-semibold text-blue-600 dark:text-blue-400">{hit.method}</span>
                         </button>
                       ))}
                     </div>
@@ -3291,279 +3346,278 @@ export default function App() {
               )}
             </div>
 
-            {/* 22-Language Selector + Quick Target Tabs + Samples + Deep Link + Clear/Restore + Theme */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex items-center gap-1.5">
-                <div
-                  className="hidden items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5 sm:inline-flex dark:border-slate-800 dark:bg-slate-950"
-                  role="group"
-                  aria-label="Primary language quick switcher"
-                >
-                  {(
-                    [
-                      ['json', 'JSON-LD'],
-                      ['python', 'Python'],
-                      ['rust', 'Rust'],
-                      ['wasm', 'WASM'],
-                    ] as const
-                  ).map(([lang, label]) => (
-                    <button
-                      key={lang}
-                      type="button"
-                      onClick={() => handleSelectLanguage(lang)}
-                      className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                        primaryLanguage === lang
-                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
-                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-                      }`}
-                    >
-                      {label}
+            {/* 22-Language Selector */}
+            <select
+              aria-label="Target programming language"
+              value={primaryLanguage}
+              onChange={(e) => handleSelectLanguage(e.target.value as PrimaryLanguage)}
+              className="max-w-[118px] rounded-lg border border-slate-200 bg-white px-2 py-1 font-mono text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+            >
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <option key={lang.id} value={lang.id}>
+                  {lang.shortLabel} ({lang.extension})
+                </option>
+              ))}
+            </select>
+
+            {/* Undo / Redo */}
+            <div className="hidden items-center overflow-hidden rounded-lg border border-slate-200 bg-white lg:inline-flex dark:border-slate-700 dark:bg-slate-900">
+              <button
+                type="button"
+                disabled={!canUndo}
+                onClick={handleUndo}
+                title="Undo (Ctrl/Cmd+Z)"
+                aria-label="Undo"
+                className="p-1.5 text-slate-600 hover:bg-slate-50 disabled:opacity-35 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled={!canRedo}
+                onClick={handleRedo}
+                title="Redo (Ctrl/Cmd+Shift+Z)"
+                aria-label="Redo"
+                className="border-l border-slate-200 p-1.5 text-slate-600 hover:bg-slate-50 disabled:opacity-35 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+
+            {/* Tools Popover (Files Split, Clear/Restore, Reset, Links) */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  setToolsMenuOpen((o) => !o);
+                  setClearMenuOpen(false);
+                }}
+                title="Workspace tools, reset, and share links"
+                className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs font-medium transition-colors ${
+                  toolsMenuOpen
+                    ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-600 dark:bg-blue-950/40 dark:text-blue-300'
+                    : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800'
+                }`}
+              >
+                <Sliders className="h-3.5 w-3.5" />
+                <span className="hidden xl:inline">Tools</span>
+              </button>
+              {toolsMenuOpen && (
+                <div className="absolute right-0 z-40 mt-2 w-72 space-y-2 rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                  <div className="flex items-center justify-between font-semibold text-slate-800 dark:text-slate-200">
+                    <span>Workspace Tools</span>
+                    <button type="button" onClick={() => setToolsMenuOpen(false)} className="text-slate-400 hover:text-slate-600">
+                      <X className="h-3.5 w-3.5" />
                     </button>
-                  ))}
-                </div>
-
-                <select
-                  aria-label="Select target programming language (22 supported)"
-                  value={primaryLanguage}
-                  onChange={(e) => handleSelectLanguage(e.target.value as PrimaryLanguage)}
-                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                >
-                  {SUPPORTED_LANGUAGES.map((lang) => (
-                    <option key={lang.id} value={lang.id}>
-                      {lang.label} ({lang.extension})
-                    </option>
-                  ))}
-                </select>
-                <DocTooltip docKey="languageSelection" />
-              </div>
-
-              {/* Clear / Restore Menu */}
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setClearMenuOpen((o) => !o)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                >
-                  <Eraser className="h-3.5 w-3.5" />
-                  <span className="hidden md:inline">Clear / Restore</span>
-                  <span className="md:hidden">Clear</span>
-                </button>
-                {clearMenuOpen && (
-                  <div className="absolute right-0 z-30 mt-2 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-900">
-                    <div className="mb-2 flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200">
-                      <span>Clear Engine or Section</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {topView !== 'files' && (
                       <button
                         type="button"
-                        onClick={() => setClearMenuOpen(false)}
-                        className="text-slate-400 hover:text-slate-600"
+                        onClick={() => {
+                          setShowVirtualFiles((v) => !v);
+                          setToolsMenuOpen(false);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
                       >
-                        <X className="h-3.5 w-3.5" />
+                        <FolderTree className="h-3.5 w-3.5 shrink-0" />
+                        <span>{showVirtualFiles ? 'Hide Files' : 'Files Split'}</span>
                       </button>
-                    </div>
-                    <div className="grid grid-cols-2 gap-1.5">
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleCopyDeepLink({ includeFullState: false });
+                        setToolsMenuOpen(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                    >
+                      <Link2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>Copy Link</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleCopyDeepLink({ includeFullState: true });
+                        setToolsMenuOpen(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1.5 text-left font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                    >
+                      <Share2 className="h-3.5 w-3.5 shrink-0" />
+                      <span>Share State</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (histologEntries[0]) {
+                          handleRestoreGeneration(histologEntries[0]);
+                          setVerifiedSteps([]);
+                          setActivePage('dialect');
+                          setTopView('workbench');
+                          showNotice('Reset workspace to clean starting state.');
+                        } else {
+                          handleClearEntireEngine();
+                        }
+                        setToolsMenuOpen(false);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-1.5 text-left font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                      <span>Reset Demo</span>
+                    </button>
+                  </div>
+                  <div className="border-t border-slate-100 pt-2 dark:border-slate-800">
+                    <div className="mb-1.5 text-[11px] font-semibold text-slate-500">Clear Section</div>
+                    <div className="grid grid-cols-2 gap-1">
                       {(
                         [
-                          ['grammar', 'Grammar Rules'],
-                          ['jsonld', 'JSON-LD Schema'],
-                          ['logic', 'Logic & λ Calc'],
-                          ['mutations', 'Line Mutations'],
-                          ['evaluator', 'Eval Payload'],
-                          ['python', 'Python AST'],
-                          ['rust', 'Rust AST'],
-                          ['wat', 'WASM / WAT'],
-                          ['dsl', 'Reset DSL Flows'],
-                          ['callbacks', 'Global Callbacks'],
+                          ['grammar', 'Grammar'],
+                          ['jsonld', 'JSON-LD'],
+                          ['logic', 'Logic & λ'],
+                          ['mutations', 'Mutations'],
+                          ['evaluator', 'Evaluator'],
+                          ['dsl', 'DSL Flows'],
                         ] as Array<[EngineSectionKey, string]>
                       ).map(([sec, lbl]) => (
                         <button
                           key={sec}
                           type="button"
-                          onClick={() => handleClearSection(sec)}
-                          className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[11px] font-medium text-slate-700 hover:border-amber-400 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                          onClick={() => {
+                            handleClearSection(sec);
+                            setToolsMenuOpen(false);
+                          }}
+                          className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[11px] font-medium text-slate-700 hover:border-amber-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
                         >
                           {lbl}
                         </button>
                       ))}
                     </div>
-                    <div className="mt-2.5 flex flex-col gap-1.5 border-t border-slate-100 pt-2.5 dark:border-slate-800">
-                      <button
-                        type="button"
-                        onClick={handleClearEntireEngine}
-                        className="w-full rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
-                      >
-                        Clear Entire Engine
-                      </button>
-                      {histologEntries[0] && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            handleRestoreGeneration(histologEntries[0]);
-                            setClearMenuOpen(false);
-                          }}
-                          className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                        >
-                          <RotateCcw className="h-3 w-3" />
-                          Restore Initial Generation (G0)
-                        </button>
-                      )}
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleClearEntireEngine();
+                        setToolsMenuOpen(false);
+                      }}
+                      className="mt-2 inline-flex w-full items-center justify-center gap-1 rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                    >
+                      <Eraser className="h-3.5 w-3.5" />
+                      Clear Entire Engine
+                    </button>
                   </div>
-                )}
-              </div>
-
-              {/* Persistent Reset Demo / Start Fresh action for beginners & clean runs */}
-              <button
-                type="button"
-                onClick={() => {
-                  if (histologEntries[0]) {
-                    handleRestoreGeneration(histologEntries[0]);
-                    setVerifiedSteps([]);
-                    setActivePage('dialect');
-                    setTopView('workbench');
-                    showNotice('Reset demo workspace to its clean starting state.');
-                  } else {
-                    handleClearEntireEngine();
-                  }
-                }}
-                title="Reset demo workspace to initial starting state"
-                className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/70 px-2.5 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300 dark:hover:bg-blue-900/50"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                <span className="hidden lg:inline">Reset Demo / Start Fresh</span>
-                <span className="lg:hidden">Reset Demo</span>
-              </button>
-
-              {/* Direct Link & Shareable State Link */}
-              <button
-                type="button"
-                onClick={() => void handleCopyDeepLink({ includeFullState: false })}
-                title="Copy direct URL for current view & workbench"
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                <Link2 className="h-3.5 w-3.5" />
-                <span className="hidden lg:inline">Copy Link</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => void handleCopyDeepLink({ includeFullState: true })}
-                title="Copy full shareable URL encoding workspace state (#state=...)"
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                <Share2 className="h-3.5 w-3.5" />
-                <span className="hidden xl:inline">Share State</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setDarkMode((d) => !d)}
-                aria-label={darkMode ? 'Switch to light theme' : 'Switch to dark theme'}
-                className="rounded-lg border border-slate-200 bg-white p-2 text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                {darkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* Clean unboxed typographic metadata bar with Auto-Save + Chained Undo/Redo + Historic Diff Link */}
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-xs text-slate-500 dark:border-slate-800/80 dark:text-slate-400">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-mono">{currentFlow.id}</span>
-              <span aria-hidden="true">·</span>
-              <span className="tabular-nums">
-                Step {currentFlow.step} of {flows.length}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="hidden sm:inline">Sync: {syncDirection}</span>
-              <span className="sm:hidden">{selectedLangMeta.label}</span>
-              <span aria-hidden="true">·</span>
-              <button
-                type="button"
-                disabled={recoveryPending}
-                onClick={() => setAutoSaveEnabled((v) => !v)}
-                title="Toggle automatic localStorage workspace persistence"
-                className={`inline-flex items-center gap-1 font-medium ${
-                  autoSaveEnabled
-                    ? 'text-emerald-600 dark:text-emerald-400'
-                    : 'text-amber-600 dark:text-amber-400'
-                }`}
-              >
-                <Save className="h-3 w-3" />
-                <span>
-                  {autoSaveEnabled
-                    ? lastAutoSavedAt
-                      ? `Auto-saved ${new Date(lastAutoSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
-                      : 'Auto-Save On'
-                    : 'Auto-Save Paused'}
-                </span>
-              </button>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              {notice && (
-                <div className="font-medium text-blue-600 dark:text-blue-400" role="status">
-                  {notice}
                 </div>
               )}
-
-              {/* Chained Undo / Redo + Clickable Historic Diff Reference */}
-              <div className="inline-flex items-center gap-1">
-                <button
-                  type="button"
-                  disabled={!canUndo}
-                  onClick={handleUndo}
-                  title="Undo to previous Histolog generation (Ctrl/Cmd+Z)"
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                >
-                  <Undo2 className="h-3 w-3" />
-                  <span>Undo</span>
-                </button>
-                <button
-                  type="button"
-                  disabled={!canRedo}
-                  onClick={handleRedo}
-                  title="Redo to next Histolog generation (Ctrl/Cmd+Shift+Z)"
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                >
-                  <Redo2 className="h-3 w-3" />
-                  <span>Redo</span>
-                </button>
-                <span className="font-mono text-[11px] tabular-nums text-slate-400">
-                  G{histologEntries[histologCursor]?.generation ?? 0}/{histologEntries[histologEntries.length - 1]?.generation ?? 0}
-                </span>
-                {lastDiffRef && (
-                  <button
-                    type="button"
-                    onClick={() => setTopView('histolog')}
-                    title="Inspect historic diff in Histolog"
-                    className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 font-mono text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
-                  >
-                    <FileDiff className="h-3 w-3" />
-                    Diff G{lastDiffRef.from}↔G{lastDiffRef.to}
-                  </button>
-                )}
-              </div>
             </div>
-          </div>
-        </section>
 
-        {!online && (
-          <div role="status" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-100">
-            You appear to be offline. API requests, cloud storage, and server-dependent exports need a connection; some previously unvisited tools may also be unavailable.
+            {/* On-demand Help Toggle */}
+            <button
+              type="button"
+              onClick={() => setShowHelpPanel((v) => !v)}
+              title="Toggle guides & breadcrumbs"
+              aria-label="Toggle guides"
+              className={`rounded-lg border px-2 py-1 text-xs font-semibold transition-colors ${
+                showHelpPanel
+                  ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-600 dark:bg-blue-950/40 dark:text-blue-300'
+                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              ?
+            </button>
+
+            {/* Theme Toggle */}
+            <button
+              type="button"
+              onClick={() => setDarkMode((d) => !d)}
+              aria-label={darkMode ? 'Switch to light theme' : 'Switch to dark theme'}
+              className="rounded-lg border border-slate-200 bg-white p-1.5 text-slate-600 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800"
+            >
+              {darkMode ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
+            </button>
+
+            {/* Primary Export Action */}
+            <button
+              type="button"
+              onClick={handleDownloadProjectZip}
+              title="Download full project ZIP"
+              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+            >
+              <Download className="h-3.5 w-3.5" />
+              <span>ZIP</span>
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-[1440px] space-y-3 px-3 py-3 pb-20 sm:px-5 md:pb-12">
+        {isOffline && showOfflineBanner && (
+          <div
+            role="status"
+            aria-live="polite"
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
+          >
+            <div className="flex items-center gap-2">
+              <WifiOff className="h-4 w-4 shrink-0" />
+              <span><strong>Offline mode:</strong> Local workbenches remain available; API writes require connectivity.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowOfflineBanner(false)}
+              className="rounded border border-amber-400 px-2 py-0.5 text-[11px] font-medium hover:bg-amber-100 dark:border-amber-700"
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
-        {/* WELL-DEFINED WAI-ARIA + SCHEMA.ORG BREADCRUMB NAVIGATION */}
-        <PipelineBreadcrumbs
-          breadcrumbs={breadcrumbs}
-          onNavigate={handleBreadcrumbNavigate}
-          onOpenPipelineMcp={() => handleOpenMcpServer('pipeline')}
-          onExportJsonLd={triggerTextDownload}
-        />
+        {!online && !isOffline && (
+          <div role="status" className="rounded-lg border border-amber-400 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+            You appear to be offline. API requests and cloud storage need a connection.
+          </div>
+        )}
+
+        {/* ON-DEMAND HELP & BREADCRUMBS DRAWER (Hidden by default to keep workspace clean) */}
+        {showHelpPanel && (
+          <div className="space-y-3 rounded-xl border border-blue-200 bg-blue-50/40 p-3 dark:border-blue-900/60 dark:bg-blue-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <GuidedHelp context="home" />
+                {topView === 'workbench' ? (
+                  <GuidedHelp key={activePage} context={activePage} />
+                ) : (
+                  <GuidedHelp key={topView} context={topView === 'files' ? 'virtual_files' : topView} />
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowHelpPanel(false)}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+              >
+                <X className="h-3.5 w-3.5" /> Close Help
+              </button>
+            </div>
+            <PipelineBreadcrumbs
+              breadcrumbs={breadcrumbs}
+              onNavigate={handleBreadcrumbNavigate}
+              onOpenPipelineMcp={() => handleOpenMcpServer('pipeline')}
+              onExportJsonLd={triggerTextDownload}
+            />
+            {topView === 'workbench' && <GuideBanner guideId={currentFlow.page} />}
+          </div>
+        )}
 
         {topView === 'workbench' ? (
-          <ElevatorPitch copy={STUDIO_HOME_PITCH} compact headingLevel="p" />
+          !dismissedHomePitch && (
+            <ElevatorPitch
+              key={finalPipelineCompiler.isComplete ? 'pitch-complete' : 'pitch-active'}
+              copy={STUDIO_HOME_PITCH}
+              compact
+              headingLevel="p"
+              collapsible
+              defaultCollapsed={finalPipelineCompiler.isComplete}
+              onDismiss={() => setDismissedHomePitch(true)}
+            />
+          )
         ) : standalonePitch ? (
-          <ElevatorPitch copy={standalonePitch} compact headingLevel="p" />
+          <ElevatorPitch copy={standalonePitch} compact headingLevel="p" collapsible />
         ) : null}
 
         {recoveryPending && <section role="alert" className="rounded border border-amber-400 bg-amber-50 p-3 text-sm text-amber-900">
@@ -3836,6 +3890,35 @@ export default function App() {
               verifiedSteps={verifiedSteps}
               stageFilter={stageFilter}
               layoutMode={pipelineLayoutMode}
+              primaryLanguage={primaryLanguage}
+              finalCompiler={finalPipelineCompiler}
+              onPrimaryLanguageChange={(lang) => {
+                setPrimaryLanguage(lang);
+                showNotice(`Target compiler export language set to ${lang.toUpperCase()}.`);
+              }}
+              onBuildStep={(page) => {
+                setActivePage(page);
+                setVerifiedSteps((prev) => (prev.includes(page) ? prev : [...prev, page]));
+                recompileFromGrammar(grammarText, dialect, schemaConfig);
+                showNotice(`Built pipeline pass "${page}" into ${finalPipelineCompiler.filename}.`);
+              }}
+              onBuildAllSteps={() => {
+                setVerifiedSteps(flows.map((f) => f.page));
+                recompileFromGrammar(grammarText, dialect, schemaConfig);
+                showNotice(`Built all ${flows.length} pipeline passes for ${finalPipelineCompiler.filename}.`);
+              }}
+              onExportFinalCompiler={() => {
+                triggerTextDownload(
+                  finalPipelineCompiler.content,
+                  finalPipelineCompiler.filename,
+                  finalPipelineCompiler.mime
+                );
+                showNotice(`Exported final compiler: ${finalPipelineCompiler.filename}`);
+              }}
+              onCopyFinalCompiler={() => {
+                void navigator.clipboard?.writeText(finalPipelineCompiler.content);
+                showNotice(`Copied ${finalPipelineCompiler.filename} to clipboard.`);
+              }}
               onSelectPage={setActivePage}
               onOpenModalForPage={(page) => {
                 setActivePage(page);
@@ -3851,11 +3934,6 @@ export default function App() {
             />
             </div>
 
-            <div className="flex flex-wrap justify-end gap-2">
-              <GuidedHelp context="home" />
-              <GuidedHelp key={activePage} context={activePage} />
-            </div>
-
             {/* Mobile/Tablet Pane Switcher between Active Workbench & Live State Mirror */}
             <div className="flex items-center justify-between gap-2 xl:hidden">
               <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 dark:border-slate-800 dark:bg-slate-900">
@@ -3868,7 +3946,7 @@ export default function App() {
                       : 'text-slate-600 dark:text-slate-300'
                   }`}
                 >
-                  Active Workbench
+                  Step Editor
                 </button>
                 <button
                   type="button"
@@ -3879,97 +3957,190 @@ export default function App() {
                       : 'text-slate-600 dark:text-slate-300'
                   }`}
                 >
-                  Live State Mirror
+                  Live Output
                 </button>
               </div>
               {studioLintIssues.length > 0 && (
-                <span className="font-mono text-xs text-amber-600 dark:text-amber-400">
-                  {studioLintIssues.length} lint notice{studioLintIssues.length === 1 ? '' : 's'}
-                </span>
+                <div className="inline-flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleJumpToLint}
+                    className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 font-mono text-xs font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                  >
+                    {studioLintIssues.length} lint
+                  </button>
+                  {unusedLintIssues.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleRemoveUnusedLint}
+                      className="rounded-md bg-amber-600 px-2 py-1 text-xs font-medium text-white hover:bg-amber-700"
+                    >
+                      Remove unused
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
-            <GuideBanner guideId={currentFlow.page} />
-
-            {/* ACTIVE DSL-CONTROLLED SPLIT PAGE + BIDIRECTIONAL LIVE STATE MIRROR */}
-            <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
-              {/* Left 7 Cols: Active Split Page */}
+            {/* STREAMLINED 2-COLUMN WORKBENCH: LEFT STEP EDITOR | RIGHT TABBED LIVE MIRROR */}
+            <div className={`grid grid-cols-1 gap-4 ${showVirtualFiles || !showLiveMirror ? '' : 'xl:grid-cols-12'}`}>
+              {/* Left 7 Cols: Active Step Editor */}
               <section
                 data-tour="workbench-body"
-                className={`flex flex-col rounded-xl border border-slate-200 bg-white p-4 sm:p-5 xl:col-span-7 dark:border-slate-800 dark:bg-slate-900 ${
+                className={`flex flex-col rounded-xl border border-slate-200 bg-white p-4 ${showVirtualFiles || !showLiveMirror ? '' : 'xl:col-span-7'} dark:border-slate-800 dark:bg-slate-900 ${
                   mobileWorkbenchPane === 'mirror' ? 'hidden xl:flex' : 'flex'
                 }`}
               >
-                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3.5 dark:border-slate-800">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                    <span className="font-mono font-medium text-slate-800 dark:text-slate-200">
-                      pages/{activePage}.php
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5 dark:border-slate-800">
+                  <div className="flex flex-wrap items-center gap-2 text-xs">
+                    <span className="rounded bg-slate-100 px-1.5 py-0.5 font-mono font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                      Step {currentFlow.step}/{flows.length}
                     </span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono">{currentFlow.id}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>Verify: {currentFlow.verify}</span>
+                    <span className="font-semibold text-slate-900 dark:text-slate-100">
+                      {currentFlow.label.replace(/^\d+\.\s*/, '')}
+                    </span>
+                    {currentPass && (
+                      <span
+                        title={currentPass.handoffNote}
+                        className="hidden items-center gap-1 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-600 sm:inline-flex dark:border-slate-700 dark:bg-slate-800/70 dark:text-slate-300"
+                      >
+                        {currentPass.consumesArtifact ? `${currentPass.consumesArtifact} → ` : ''}
+                        {currentPass.artifactTag}
+                      </span>
+                    )}
                   </div>
 
-                  <button
-                    type="button"
-                    data-tour="workbench-verify"
-                    onClick={() => handleVerifyAndAdvance(true)}
-                    className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
-                  >
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Complete &amp; Verify Step {currentFlow.step}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {studioLintIssues.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleJumpToLint}
+                          title="Jump to Live Lint Diagnostics"
+                          className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 font-mono text-[11px] font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                        >
+                          <AlertTriangle className="h-3 w-3" />
+                          {studioLintIssues.length} lint
+                        </button>
+                        {unusedLintIssues.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleRemoveUnusedLint}
+                            title="Remove all unused callbacks and labels"
+                            className="inline-flex items-center gap-1 rounded-lg border border-amber-400 bg-amber-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-amber-700"
+                          >
+                            Remove unused
+                          </button>
+                        )}
+                      </>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowLiveMirror((v) => !v)}
+                      title="Toggle side-by-side Live Output split pane"
+                      className={`hidden items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors xl:inline-flex ${
+                        showLiveMirror
+                          ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                      }`}
+                    >
+                      {showLiveMirror ? 'Split: Live Output On' : 'Split: Live Output Off'}
+                    </button>
+                    <button
+                      type="button"
+                      data-tour="workbench-verify"
+                      onClick={() => handleVerifyAndAdvance(true)}
+                      className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Build &amp; Next Step
+                    </button>
+                  </div>
                 </div>
 
-                <ElevatorPitch copy={workbenchPitch} compact className="mb-5" />
+                {showHelpPanel && <ElevatorPitch copy={workbenchPitch} compact className="mb-4" />}
 
-                <div className="flex-1 pt-1">
-                  <StepViews {...stepViewProps} />
+                <div className="flex-1">
+                  <StepViews {...stepViewProps} layoutStructure="workbar" />
                 </div>
               </section>
 
-              {/* Right 5 Cols: Synchronized Multi-Language Live Mirror (Syntax Coloring + Autocomplete + HTML Output + Lint Tooltips) */}
+              {/* Right 5 Cols: Tabbed Live Mirror (Grammar | JSON-LD | Compiled Target) */}
+              {showLiveMirror && (
               <section
-                className={`flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 sm:p-5 xl:col-span-5 dark:border-slate-800 dark:bg-slate-900 ${
+                className={`flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 ${showVirtualFiles ? '' : 'xl:col-span-5'} dark:border-slate-800 dark:bg-slate-900 ${
                   mobileWorkbenchPane === 'workbench' ? 'hidden xl:flex' : 'flex'
                 }`}
               >
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800">
-                  <div className="flex items-center gap-1.5">
-                    <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      Bidirectional Live State Mirror
-                    </h2>
-                    <DocTooltip docKey="liveMirror" />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                      <Boxes className="h-3 w-3 text-blue-500" />
-                      {loadedModules.length} mod{loadedModules.length === 1 ? '' : 's'}
-                    </span>
-                    <span
-                      className={`font-mono text-xs font-medium ${
-                        jsonValid
-                          ? 'text-emerald-600 dark:text-emerald-400'
-                          : 'text-red-600 dark:text-red-400'
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5 dark:border-slate-800">
+                  <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs dark:border-slate-800 dark:bg-slate-950">
+                    <button
+                      type="button"
+                      onClick={() => setMirrorTab('grammar')}
+                      className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                        mirrorTab === 'grammar'
+                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
                       }`}
                     >
-                      {jsonValid ? 'Valid JSON-LD' : 'Invalid JSON'}
-                    </span>
+                      Grammar ({rules.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMirrorTab('json')}
+                      className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                        mirrorTab === 'json'
+                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                      }`}
+                    >
+                      JSON-LD
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setMirrorTab('compiled')}
+                      className={`rounded-md px-2.5 py-1 font-medium transition-colors ${
+                        mirrorTab === 'compiled'
+                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400'
+                      }`}
+                    >
+                      {selectedLangMeta.shortLabel}
+                    </button>
                   </div>
+                  <span
+                    className={`font-mono text-[11px] font-medium ${
+                      jsonValid ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
+                    }`}
+                  >
+                    {jsonValid ? '✓ Valid' : '✕ JSON Error'}
+                  </span>
                 </div>
 
                 {/* Live Studio Lint Strip (Unused calls, undefined refs, unused lambda params, disabled operators) with hover tooltips */}
                 {studioLintIssues.length > 0 && (
-                  <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5 dark:border-amber-900/60 dark:bg-amber-950/20">
-                    <div className="flex items-center justify-between text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                  <div
+                    id="studio-lint-diagnostics"
+                    className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5 dark:border-amber-900/60 dark:bg-amber-950/20"
+                  >
+                    <div className="flex items-center justify-between gap-2 text-[11px] font-semibold text-amber-800 dark:text-amber-300">
                       <span className="inline-flex items-center gap-1">
                         <AlertTriangle className="h-3.5 w-3.5" />
                         Live Lint Diagnostics ({studioLintIssues.length})
                       </span>
-                      <span className="font-normal text-amber-700/80 dark:text-amber-400/80">
-                        Hover item for details
-                      </span>
+                      {unusedLintIssues.length > 0 ? (
+                        <button
+                          type="button"
+                          onClick={handleRemoveUnusedLint}
+                          className="rounded bg-amber-600 px-2 py-0.5 text-[10px] font-medium text-white hover:bg-amber-700"
+                        >
+                          Remove unused
+                        </button>
+                      ) : (
+                        <span className="font-normal text-amber-700/80 dark:text-amber-400/80">
+                          Hover item for details
+                        </span>
+                      )}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {studioLintIssues.slice(0, 8).map((issue) => (
@@ -4008,7 +4179,8 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Pane 1: Active Grammar Rules (Syntax-Colored Autocomplete Editor <-> Formatted HTML Output) */}
+                {/* Pane 1: Active Grammar Rules */}
+                {mirrorTab === 'grammar' && (
                 <div>
                   <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
                     <label htmlFor="mainGrammarInput" className="font-medium text-slate-700 dark:text-slate-300">
@@ -4068,8 +4240,10 @@ export default function App() {
                     />
                   )}
                 </div>
+                )}
 
-                {/* Pane 2: Editable Schema.org JSON-LD (HTML Output <-> Syntax-Colored Autocomplete Editor) */}
+                {/* Pane 2: Editable Schema.org JSON-LD */}
+                {mirrorTab === 'json' && (
                 <div className="flex flex-1 flex-col">
                   <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
                     <label htmlFor="mainJsonEditor" className="font-medium text-slate-700 dark:text-slate-300">
@@ -4123,10 +4297,11 @@ export default function App() {
                     />
                   )}
                 </div>
+                )}
 
-                {/* Pane 3: Live Compiled Output for Any of the 22 Selected Languages (HTML Output + Download) */}
-                {primaryLanguage !== 'json' && (
-                  <div className="space-y-1.5 border-t border-slate-100 pt-3 dark:border-slate-800">
+                {/* Pane 3: Live Compiled Output for Any of the 22 Selected Languages */}
+                {mirrorTab === 'compiled' && (
+                  <div className="space-y-1.5">
                     <div className="flex items-center justify-between gap-2 text-xs">
                       <span className="inline-flex items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
                         <Code2 className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
@@ -4207,6 +4382,7 @@ export default function App() {
                   </div>
                 )}
               </section>
+              )}
             </div>
           </>
         )}
@@ -4236,6 +4412,58 @@ export default function App() {
           </aside>
         </div>
       </main>
+
+      {/* PERSISTENT DESKTOP STATUS BAR */}
+      <footer className="fixed inset-x-0 bottom-0 z-20 hidden h-7 items-center justify-between gap-4 border-t border-slate-200 bg-white/95 px-4 font-mono text-[11px] text-slate-600 backdrop-blur-xs md:flex dark:border-slate-800 dark:bg-slate-900/95 dark:text-slate-400">
+        <div className="flex items-center gap-3 overflow-hidden">
+          <span className="truncate">
+            Dialect: <strong className="text-slate-800 dark:text-slate-200">{dialect.preset}</strong>
+          </span>
+          <span>{rules.length} rules</span>
+          <span>
+            Pipeline: <strong className="text-slate-800 dark:text-slate-200">{verifiedSteps.length}/{flows.length}</strong>
+          </span>
+          <span>
+            Target: <strong className="text-blue-600 dark:text-blue-400">{selectedLangMeta.shortLabel}</strong>
+          </span>
+          {notice && (
+            <span className="truncate font-sans font-medium text-blue-600 dark:text-blue-400" role="status">
+              · {notice}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            disabled={recoveryPending}
+            onClick={() => setAutoSaveEnabled((v) => !v)}
+            className={`inline-flex items-center gap-1 ${
+              autoSaveEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+            }`}
+          >
+            <Save className="h-3 w-3" />
+            <span>{autoSaveEnabled ? 'Auto-Save' : 'Paused'}</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setTopView('histolog')}
+            className="hover:text-slate-900 dark:hover:text-slate-100"
+            title="Open Histolog revision history"
+          >
+            History Gen: {histologEntries[histologCursor]?.generation ?? 0}/{histologEntries[histologEntries.length - 1]?.generation ?? 0}
+          </button>
+          {lastDiffRef && (
+            <button
+              type="button"
+              onClick={() => setTopView('histolog')}
+              className="inline-flex items-center gap-1 text-blue-600 hover:underline dark:text-blue-400"
+            >
+              <FileDiff className="h-3 w-3" />
+              G{lastDiffRef.from}↔G{lastDiffRef.to}
+            </button>
+          )}
+        </div>
+      </footer>
 
       {/* MOBILE BOTTOM TAB BAR (scrollable destinations, >=44px touch targets, safe-area inset) */}
       <nav

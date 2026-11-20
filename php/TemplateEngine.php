@@ -339,11 +339,27 @@ function spa_document_root(string $baseDir): array {
 }
 
 function load_spa_document_html(string $baseDir, string $effectiveBase): ?string {
+    if (($_GET['ui'] ?? null) === 'php' && function_exists('php_studio_document_template')) {
+        return php_studio_document_template();
+    }
     [$spaRoot, $usingDistDir] = spa_document_root($baseDir);
     $indexPath = $spaRoot . DIRECTORY_SEPARATOR . 'index.html';
-    if (!is_file($indexPath)) return null;
+    if (!is_file($indexPath)) {
+        return function_exists('php_studio_document_template')
+            ? php_studio_document_template()
+            : null;
+    }
     $html = @file_get_contents($indexPath);
-    if (!is_string($html) || $html === '') return null;
+    if (!is_string($html) || $html === '') {
+        return function_exists('php_studio_document_template')
+            ? php_studio_document_template()
+            : null;
+    }
+    if (!$usingDistDir && str_contains($html, '/src/main.tsx')) {
+        return function_exists('php_studio_document_template')
+            ? php_studio_document_template()
+            : null;
+    }
     if ($usingDistDir) {
         $distPrefix = rtrim($effectiveBase, '/') . '/dist/';
         $html = preg_replace(
@@ -391,6 +407,9 @@ function render_api_html(string $templateName, string $fragment, array $values =
         $html = $xpath->query('/html')->item(0);
         if ($html instanceof DOMElement) {
             $html->setAttribute('data-template', $validTemplate);
+            if (is_string($config['themeColor'] ?? null) && preg_match('/^#[0-9a-fA-F]{3,8}$/', $config['themeColor'])) {
+                $html->setAttribute('style', '--theme-color: ' . $config['themeColor'] . ';');
+            }
             foreach ($docBaseAttrs as $attr => $val) {
                 $html->setAttribute($attr, $val);
             }
@@ -399,11 +418,36 @@ function render_api_html(string $templateName, string $fragment, array $values =
     foreach ($xpath->query('//*[@data-template-text]') as $node) {
         if (!$node instanceof DOMElement) continue;
         $key = $node->getAttribute('data-template-text');
-        if (array_key_exists($key, $values)) $node->textContent = (string)$values[$key];
+        if (array_key_exists($key, $values) && !is_array($values[$key])) $node->textContent = (string)$values[$key];
+    }
+    foreach ($xpath->query('//*[@data-template-href]') as $node) {
+        if (!$node instanceof DOMElement) continue;
+        $key = $node->getAttribute('data-template-href');
+        if (array_key_exists($key, $values) && is_string($values[$key])) {
+            $href = trim($values[$key]);
+            if ($href !== '' && !preg_match('/^\s*(?:javascript|data|vbscript):/i', $href)) {
+                $node->setAttribute('href', $href);
+            }
+        }
+        $node->removeAttribute('data-template-href');
+    }
+    foreach ($xpath->query('//select[@data-template-options]') as $select) {
+        if (!$select instanceof DOMElement) continue;
+        $key = $select->getAttribute('data-template-options');
+        if (array_key_exists($key, $values) && is_array($values[$key])) {
+            foreach ($values[$key] as $pair) {
+                if (!is_array($pair) || count($pair) < 2) continue;
+                $opt = $dom->createElement('option');
+                $opt->setAttribute('value', (string)$pair[0]);
+                $opt->textContent = (string)$pair[1];
+                $select->appendChild($opt);
+            }
+        }
+        $select->removeAttribute('data-template-options');
     }
     $result = $dom->saveHTML();
     if (!is_string($result)) throw new RuntimeException('Could not serialize HTML template.');
-    $result = preg_replace('/^<\?xml encoding="UTF-8">/', '', $result) ?? $result;
+    $result = str_replace('<?xml encoding="UTF-8">', '', $result);
     if (count($memoryCache) > 256) $memoryCache = [];
     $memoryCache[$cacheKey] = $result;
     if (function_exists('apcu_store')) apcu_store($cacheKey, $result, 300);

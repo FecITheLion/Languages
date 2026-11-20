@@ -1,24 +1,32 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
+  Code2,
   Columns3,
+  Copy,
+  Download,
   GitMerge,
   GripVertical,
+  Hammer,
   LayoutGrid,
   Maximize2,
+  Play,
   Rows3,
   Scissors,
   Server,
 } from 'lucide-react';
 import { PAGE_TO_MCP_SERVER, type StageProgressSummary } from '../engine/pipelineBreadcrumbs';
-import type {
-  DslFlowNode,
-  McpServerId,
-  PipelineGridMode,
-  PipelineStage,
-  WorkflowSlug,
+import type { FinalCompilerBuild } from '../engine/pipelineCompilerEngine';
+import {
+  SUPPORTED_LANGUAGES,
+  type DslFlowNode,
+  type McpServerId,
+  type PipelineGridMode,
+  type PipelineStage,
+  type PrimaryLanguage,
+  type WorkflowSlug,
 } from '../types/studio';
 
 interface PipelineGridProps {
@@ -29,6 +37,13 @@ interface PipelineGridProps {
   verifiedSteps: WorkflowSlug[];
   stageFilter: 'all' | PipelineStage;
   layoutMode: PipelineGridMode;
+  primaryLanguage: PrimaryLanguage;
+  finalCompiler: FinalCompilerBuild;
+  onPrimaryLanguageChange: (lang: PrimaryLanguage) => void;
+  onBuildStep: (page: WorkflowSlug) => void;
+  onBuildAllSteps: () => void;
+  onExportFinalCompiler: () => void;
+  onCopyFinalCompiler: () => void;
   onSelectPage: (page: WorkflowSlug) => void;
   onOpenModalForPage: (page: WorkflowSlug) => void;
   onStageFilterChange: (stage: 'all' | PipelineStage) => void;
@@ -54,6 +69,13 @@ export function PipelineGrid({
   verifiedSteps,
   stageFilter,
   layoutMode,
+  primaryLanguage,
+  finalCompiler,
+  onPrimaryLanguageChange,
+  onBuildStep,
+  onBuildAllSteps,
+  onExportFinalCompiler,
+  onCopyFinalCompiler,
   onSelectPage,
   onOpenModalForPage,
   onStageFilterChange,
@@ -68,10 +90,13 @@ export function PipelineGrid({
   const [dropTarget, setDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(
     null
   );
+  const [showCompilerPreview, setShowCompilerPreview] = useState(false);
+  const railScrollRef = useRef<HTMLDivElement | null>(null);
 
   const visibleFlows =
     stageFilter === 'all' ? flows : flows.filter((f) => f.stage === stageFilter);
   const verifiedSet = new Set(verifiedSteps);
+  const passByFlowId = new Map(finalCompiler.passes.map((p) => [p.flowId, p]));
   const activeMcpServer = PAGE_TO_MCP_SERVER[activePage] || 'pipeline';
   const completionPct =
     flows.length > 0 ? Math.round((verifiedSteps.length / flows.length) * 100) : 0;
@@ -122,7 +147,7 @@ export function PipelineGrid({
       aria-label="Compiler Pipeline Grid"
       className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
     >
-      {/* Row 1: Compact Header + Mode Switcher + Step Navigation */}
+      {/* Row 1: Header + Build & Export Controls + Mode Switcher */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -136,7 +161,7 @@ export function PipelineGrid({
               ·
             </span>
             <span className="font-mono text-xs tabular-nums text-slate-500 dark:text-slate-400">
-              {verifiedSteps.length}/{flows.length} verified ({completionPct}%)
+              {verifiedSteps.length}/{flows.length} built ({completionPct}%)
             </span>
             <span aria-hidden="true" className="hidden text-slate-300 sm:inline dark:text-slate-700">
               ·
@@ -183,8 +208,7 @@ export function PipelineGrid({
               className="inline-flex min-h-[36px] items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 sm:min-h-0 dark:text-slate-200 dark:hover:bg-slate-800"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
-              <span className="hidden lg:inline">Previous Step</span>
-              <span className="hidden sm:inline lg:hidden">Prev</span>
+              <span className="hidden lg:inline">Prev</span>
             </button>
             <button
               type="button"
@@ -192,8 +216,7 @@ export function PipelineGrid({
               aria-label="Next pipeline step"
               className="inline-flex min-h-[36px] items-center gap-1 border-l border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 sm:min-h-0 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              <span className="hidden lg:inline">Next Step</span>
-              <span className="hidden sm:inline lg:hidden">Next</span>
+              <span className="hidden lg:inline">Next</span>
               <ChevronRight className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -201,19 +224,29 @@ export function PipelineGrid({
           <button
             type="button"
             onClick={() => onOpenModalForPage(activePage)}
-            className="inline-flex min-h-[36px] items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 sm:min-h-0"
+            className="inline-flex min-h-[36px] items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
           >
             <Maximize2 className="h-3.5 w-3.5" />
-            Modal Workbench
+            Modal
           </button>
         </div>
+      </div>
+
+      {/* Progress Bar */}
+      <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+        <div
+          className={`h-full rounded-full transition-all ${
+            finalCompiler.isComplete ? 'bg-emerald-500' : 'bg-blue-600 dark:bg-blue-500'
+          }`}
+          style={{ width: `${completionPct}%` }}
+        />
       </div>
 
       {/* Temporary Drop Option Places for Biject/Split & Merge while dragging a Pipeline Step */}
       {draggedFlowId && (onSplitFlow || onMergeFlows) && (
         <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-violet-400 bg-violet-50/70 px-3 py-2 text-xs dark:border-violet-600 dark:bg-violet-950/35">
           <span className="font-medium text-violet-800 dark:text-violet-200">
-            Dragging <code className="font-mono">{draggedFlowId}</code> — Temporary Drop Options:
+            Dragging <code className="font-mono">{draggedFlowId}</code> — Drop Options:
           </span>
           {onSplitFlow && (
             <>
@@ -228,7 +261,7 @@ export function PipelineGrid({
                 className="inline-flex items-center gap-1 rounded-md border border-dashed border-violet-500 bg-white px-2.5 py-1 font-medium text-violet-700 dark:bg-slate-900 dark:text-violet-300"
               >
                 <Scissors className="h-3 w-3" />
-                Drop to Biject Split (Pre + Post)
+                Biject Split (Pre + Post)
               </div>
               <div
                 onDragOver={(e) => e.preventDefault()}
@@ -241,7 +274,7 @@ export function PipelineGrid({
                 className="inline-flex items-center gap-1 rounded-md border border-dashed border-violet-500 bg-white px-2.5 py-1 font-medium text-violet-700 dark:bg-slate-900 dark:text-violet-300"
               >
                 <Scissors className="h-3 w-3" />
-                Drop to Split Parallel Branch
+                Split Parallel Branch
               </div>
             </>
           )}
@@ -268,10 +301,8 @@ export function PipelineGrid({
         </div>
       )}
 
-      {/* Row 2: Stage Filter Strip with Per-Stage Verified Counters + Active MCP Endpoint */}
-      <div
-        className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800/80"
-      >
+      {/* Row 2: Stage Filter Strip + Active MCP Endpoint */}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800/80">
         <div
           data-tour-id="home.navigation"
           className="no-scrollbar inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
@@ -291,18 +322,24 @@ export function PipelineGrid({
           </button>
           {stageSummaries.map((st) => {
             const isSelected = stageFilter === st.stage;
+            const isActiveStage = st.containsActive;
             return (
               <button
                 key={st.stage}
                 type="button"
                 onClick={() => onStageFilterChange(st.stage)}
                 data-tour-id={st.stage === 'storage' ? 'workbench.schema.export' : undefined}
-                className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                className={`inline-flex items-center gap-1 whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                   isSelected
                     ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
-                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+                    : isActiveStage
+                      ? 'bg-blue-50 text-blue-700 ring-1 ring-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:ring-blue-700'
+                      : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
                 }`}
               >
+                {isActiveStage && (
+                  <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-blue-600 dark:bg-blue-400" />
+                )}
                 {st.shortLabel}{' '}
                 <span className="font-mono tabular-nums opacity-70">
                   {st.verifiedSteps}/{st.totalSteps}
@@ -312,42 +349,29 @@ export function PipelineGrid({
           })}
         </div>
 
-        <div className="flex items-center gap-3 text-xs">
+        <div className="flex flex-wrap items-center gap-3 text-xs">
           <button
             type="button"
             onClick={() => onOpenMcpServer(activeMcpServer)}
             className="inline-flex items-center gap-1.5 whitespace-nowrap font-mono text-[11px] font-medium text-slate-600 transition-colors hover:text-blue-600 dark:text-slate-400 dark:hover:text-blue-400"
           >
             <Server className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
-            <span>Active MCP: /api/mcp/{activeMcpServer}</span>
-          </button>
-          <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
-            ·
-          </span>
-          <button
-            type="button"
-            onClick={() => onOpenMcpServer('pipeline')}
-            className="whitespace-nowrap font-medium text-blue-600 hover:underline dark:text-blue-400"
-          >
-            Pipeline MCP (11 servers) →
+            <span>MCP: /api/mcp/{activeMcpServer}</span>
           </button>
         </div>
       </div>
 
-      {/* MODE 1: COMPACT OPTIMIZED GRID (High-density single-click cards) */}
+      {/* MODE 1: COMPACT 2-COLUMN GRID */}
       {layoutMode === 'compact' && (
-        <div
-          role="list"
-          className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-        >
+        <div role="list" className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
           {visibleFlows.map((flow) => {
             const isActive = flow.page === activePage;
-            const isVerified = verifiedSet.has(flow.page);
+            const isBuilt = verifiedSet.has(flow.page);
+            const pass = passByFlowId.get(flow.id);
             const isDragging = draggedFlowId === flow.id;
             const dropPos = dropTarget?.id === flow.id ? dropTarget.position : null;
             const stepNum = String(flow.step).padStart(2, '0');
             const shortTitle = flow.label.replace(/^\d+\.\s*/, '');
-            const mappedServer = PAGE_TO_MCP_SERVER[flow.page] || 'pipeline';
 
             return (
               <div
@@ -366,7 +390,6 @@ export function PipelineGrid({
                       : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/70 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700 dark:hover:bg-slate-800/50'
                 }`}
               >
-                {/* Thin drop position indicator (compositor-clean hairline) */}
                 {dropPos === 'before' && (
                   <span
                     aria-hidden="true"
@@ -400,20 +423,35 @@ export function PipelineGrid({
                       </span>
                       {shortTitle}
                     </span>
-                    {isVerified && (
-                      <CheckCircle2
-                        aria-label="Verified"
-                        className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400"
-                      />
-                    )}
+                    <span
+                      className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium ${
+                        isBuilt
+                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                          : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                      }`}
+                    >
+                      {pass?.artifactTag || flow.stage}
+                    </span>
                   </div>
-                  <div className="mt-0.5 flex items-center gap-1.5 truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                    <span>{flow.stage}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{flow.lang}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="truncate opacity-80">mcp/{mappedServer}</span>
+                  <div className="mt-0.5 truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                    {pass
+                      ? `${pass.consumesArtifact ? `${pass.consumesArtifact} → ` : ''}${pass.passName} · ${pass.summary}`
+                      : `${flow.stage} · ${flow.lang}`}
                   </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onBuildStep(flow.page)}
+                  title={isBuilt ? `Rebuild ${shortTitle} pass` : `Build ${shortTitle} pass into final compiler`}
+                  className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition-colors ${
+                    isBuilt
+                      ? 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                      : 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300'
+                  }`}
+                >
+                  {isBuilt ? <CheckCircle2 className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                  <span>{isBuilt ? 'Built' : 'Build'}</span>
                 </button>
 
                 <button
@@ -431,9 +469,9 @@ export function PipelineGrid({
         </div>
       )}
 
-      {/* MODE 2: 5-STAGE COMPILER LANES */}
+      {/* MODE 2: STAGE LANES (max 2 columns side-by-side) */}
       {layoutMode === 'lanes' && (
-        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
           {stageSummaries
             .filter((s) => stageFilter === 'all' || s.stage === stageFilter)
             .map((stage) => (
@@ -460,7 +498,6 @@ export function PipelineGrid({
                   </span>
                 </div>
 
-                {/* Stage progress bar */}
                 <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
                   <div
                     className="h-full rounded-full bg-blue-600 transition-all dark:bg-blue-500"
@@ -473,6 +510,7 @@ export function PipelineGrid({
                     const isDragging = draggedFlowId === step.id;
                     const dropPos = dropTarget?.id === step.id ? dropTarget.position : null;
                     const shortTitle = step.label.replace(/^\d+\.\s*/, '');
+                    const pass = passByFlowId.get(step.id);
 
                     return (
                       <div
@@ -510,25 +548,28 @@ export function PipelineGrid({
                           aria-current={step.active ? 'step' : undefined}
                           className="min-w-0 flex-1 text-left"
                         >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="truncate text-xs font-medium">
-                              <span className="mr-1 font-mono text-[11px] tabular-nums text-slate-400">
-                                {String(step.step).padStart(2, '0')}
-                              </span>
-                              {shortTitle}
+                          <div className="truncate text-xs font-medium">
+                            <span className="mr-1 font-mono text-[11px] tabular-nums text-slate-400">
+                              {String(step.step).padStart(2, '0')}
                             </span>
-                            {step.verified && (
-                              <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                            )}
+                            {shortTitle}
                           </div>
+                          {pass && (
+                            <div className="truncate font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                              {pass.summary}
+                            </div>
+                          )}
                         </button>
                         <button
                           type="button"
-                          onClick={() => onOpenModalForPage(step.page)}
-                          aria-label={`Open ${shortTitle} modal`}
-                          className="shrink-0 rounded p-0.5 text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
+                          onClick={() => onBuildStep(step.page)}
+                          className={`shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium ${
+                            step.verified
+                              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                              : 'bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/40 dark:text-blue-300'
+                          }`}
                         >
-                          <Maximize2 className="h-3 w-3" />
+                          {step.verified ? '✓' : 'Build'}
                         </button>
                       </div>
                     );
@@ -539,50 +580,157 @@ export function PipelineGrid({
         </div>
       )}
 
-      {/* MODE 3: ULTRA-COMPACT HORIZONTAL RAIL (Maximum viewport for active workbench) */}
+      {/* MODE 3: HORIZONTAL RAIL (subtle edge fades + < / > scroll controls, no heavy scrollbar) */}
       {layoutMode === 'rail' && (
-        <div
-          role="list"
-          className="mt-3 flex items-center gap-1.5 overflow-x-auto pb-1"
-        >
-          {visibleFlows.map((flow) => {
-            const isActive = flow.page === activePage;
-            const isVerified = verifiedSet.has(flow.page);
-            const shortTitle = flow.label.replace(/^\d+\.\s*/, '');
+        <div className="relative mt-3 flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="Scroll pipeline rail left"
+            onClick={() => railScrollRef.current?.scrollBy({ left: -220, behavior: 'smooth' })}
+            className="inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <ChevronLeft className="h-3.5 w-3.5" />
+          </button>
+          <div className="relative min-w-0 flex-1 overflow-hidden">
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-white to-transparent dark:from-slate-900"
+            />
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute inset-y-0 right-0 z-10 w-6 bg-gradient-to-l from-white to-transparent dark:from-slate-900"
+            />
+            <div
+              ref={railScrollRef}
+              role="list"
+              className="no-scrollbar flex items-center gap-1.5 overflow-x-auto scroll-smooth px-2 py-0.5"
+            >
+              {visibleFlows.map((flow) => {
+                const isActive = flow.page === activePage;
+                const isVerified = verifiedSet.has(flow.page);
+                const shortTitle = flow.label.replace(/^\d+\.\s*/, '');
 
-            return (
-              <button
-                key={flow.id}
-                role="listitem"
-                type="button"
-                onClick={() => onSelectPage(flow.page)}
-                aria-current={isActive ? 'step' : undefined}
-                className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                  isActive
-                    ? 'border-blue-600 bg-blue-600 text-white dark:border-blue-500 dark:bg-blue-600'
-                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800'
-                }`}
-              >
-                <span
-                  className={`font-mono text-[11px] tabular-nums ${
-                    isActive ? 'text-blue-100' : 'text-slate-400'
-                  }`}
-                >
-                  {String(flow.step).padStart(2, '0')}
-                </span>
-                <span>{shortTitle}</span>
-                {isVerified && (
-                  <CheckCircle2
-                    className={`h-3.5 w-3.5 ${
-                      isActive ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'
+                return (
+                  <button
+                    key={flow.id}
+                    role="listitem"
+                    type="button"
+                    onClick={() => onSelectPage(flow.page)}
+                    aria-current={isActive ? 'step' : undefined}
+                    className={`inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+                      isActive
+                        ? 'border-blue-600 bg-blue-600 text-white dark:border-blue-500 dark:bg-blue-600'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-slate-800'
                     }`}
-                  />
-                )}
-              </button>
-            );
-          })}
+                  >
+                    <span
+                      className={`font-mono text-[11px] tabular-nums ${
+                        isActive ? 'text-blue-100' : 'text-slate-400'
+                      }`}
+                    >
+                      {String(flow.step).padStart(2, '0')}
+                    </span>
+                    <span>{shortTitle}</span>
+                    {isVerified && (
+                      <CheckCircle2
+                        className={`h-3.5 w-3.5 ${
+                          isActive ? 'text-white' : 'text-emerald-600 dark:text-emerald-400'
+                        }`}
+                      />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Scroll pipeline rail right"
+            onClick={() => railScrollRef.current?.scrollBy({ left: 220, behavior: 'smooth' })}
+            className="inline-flex h-8 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+          >
+            <ChevronRight className="h-3.5 w-3.5" />
+          </button>
         </div>
       )}
+
+      {/* Row 3: Final Compiler Builder & Target-Language Exporter */}
+      <div className="mt-3 space-y-2.5 rounded-lg border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-800 dark:bg-slate-950/70">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <Hammer className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+            <span className="font-semibold text-slate-900 dark:text-slate-100">
+              Final Compiler Output
+            </span>
+            <span
+              className={`rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold ${
+                finalCompiler.isComplete
+                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                  : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+              }`}
+            >
+              {finalCompiler.builtCount}/{finalCompiler.totalCount} passes
+            </span>
+            <code className="font-mono text-[11px] text-slate-600 dark:text-slate-400">
+              {finalCompiler.filename}
+            </code>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              title="Controlled by the global Target Language selector in the top navbar"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            >
+              <span className="text-[10px] uppercase tracking-wide text-slate-400">Target</span>
+              <span>
+                {SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage)?.label || finalCompiler.languageLabel}
+              </span>
+            </span>
+
+            <button
+              type="button"
+              onClick={onBuildAllSteps}
+              className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+            >
+              <Play className="h-3.5 w-3.5" />
+              Build All Steps
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setShowCompilerPreview((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            >
+              <Code2 className="h-3.5 w-3.5" />
+              {showCompilerPreview ? 'Hide Code' : 'Inspect'}
+            </button>
+
+            <button
+              type="button"
+              onClick={onCopyFinalCompiler}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+            >
+              <Copy className="h-3.5 w-3.5" />
+              Copy
+            </button>
+
+            <button
+              type="button"
+              onClick={onExportFinalCompiler}
+              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              <Download className="h-3.5 w-3.5" />
+              Export {finalCompiler.languageLabel}
+            </button>
+          </div>
+        </div>
+
+        {showCompilerPreview && (
+          <pre className="max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-xs text-slate-100 dark:border-slate-800">
+            {finalCompiler.content}
+          </pre>
+        )}
+      </div>
     </section>
   );
 }

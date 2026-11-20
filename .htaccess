@@ -35,8 +35,11 @@ RewriteRule \.(?:ts|tsx|mts|mjs|map|md|bak|log|sqlite3?)$ - [F,NC,L]
 # Route REST/MCP API and health check to the PHP front controller
 RewriteRule ^(?:api|healthz)(?:/|$) index.php [NC,L]
 
-# Allow front controller index.php
+# Allow front controller index.php and native MCP HTTP endpoint mcp_http.php
 RewriteRule ^index\.php$ - [L]
+RewriteRule ^mcp_http\.php$ - [L]
+RewriteRule ^mcp/?$ mcp_http.php [NC,L]
+RewriteRule ^index\.html$ index.php [NC,L]
 
 # Block any other PHP scripts from direct HTTP execution
 RewriteRule \.(?:php[0-9]*|phtml|phar)$ - [F,NC,L]

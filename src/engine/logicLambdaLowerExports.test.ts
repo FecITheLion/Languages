@@ -83,42 +83,35 @@ test('Ruby reports malformed or unsupported inputs and evaluation failures', (t)
   }
 });
 
-const sampleGuards: Partial<Record<LogicExportTarget, RegExp>> = {
-  swift: /if rawInput == SAMPLE_SINGLE_INPUT \{ return "3" \}/,
-  kotlin: /if \(rawInput == SAMPLE_SINGLE_INPUT\) return "3"/,
-  scala: /if rawInput == SAMPLE_SINGLE_INPUT then return "3"/,
-  haskell: /if raw == sampleSingleInput then "3" else error/,
-  elixir: /if raw_input == @sample_single_input do[\s\S]*?result: "3"[\s\S]*?else[\s\S]*?raise/,
-  lua: /if raw_input == M.SAMPLE_SINGLE_INPUT then return "3" end/,
-  zig: /if \(@import\("std"\)\.mem\.eql\(u8, raw_input, SAMPLE_SINGLE_INPUT\)\) return EVALUATED_RESULT;/,
-  dart: /if \(rawInput == sampleSingleInput\) return "3";/,
-  ocaml: /if raw_input = sample_single_input then "3" else failwith/,
-};
+const compiledTargets: LogicExportTarget[] = [
+  'go',
+  'java',
+  'cpp',
+  'csharp',
+  'php',
+  'sql',
+  'swift',
+  'kotlin',
+  'scala',
+  'haskell',
+  'elixir',
+  'lua',
+  'zig',
+  'dart',
+  'ocaml',
+];
 
-const anySampleGuard: Partial<Record<LogicExportTarget, RegExp>> = {
-  swift: /if rawInput == SAMPLE_SINGLE_INPUT/,
-  kotlin: /if \(rawInput == SAMPLE_SINGLE_INPUT\)/,
-  scala: /if rawInput == SAMPLE_SINGLE_INPUT/,
-  haskell: /if raw == sampleSingleInput/,
-  elixir: /if raw_input == @sample_single_input/,
-  lua: /if raw_input == M.SAMPLE_SINGLE_INPUT/,
-  zig: /mem\.eql\(u8, raw_input, SAMPLE_SINGLE_INPUT\)/,
-  dart: /if \(rawInput == sampleSingleInput\)/,
-  ocaml: /if raw_input = sample_single_input/,
-};
-
-test('lower target templates return only a verified exact sample and reject dynamic input', () => {
-  for (const [name, guard] of Object.entries(sampleGuards)) {
-    const target = name as LogicExportTarget;
+test('all language exports compile parsed logic into executable code without unsupported stubs', () => {
+  for (const target of compiledTargets) {
     const content = artifact(target, 'x + 1');
-    assert.match(content, guard!, target);
-    assert.match(content, /Dynamic evaluation is not implemented|error\.UnsupportedEvaluation/, target);
-    const failed = artifact(target, 'x / 0');
-    assert.doesNotMatch(failed, anySampleGuard[target]!, target);
-    assert.match(failed, /Dynamic evaluation is not implemented|error\.UnsupportedEvaluation/, target);
+    assert.doesNotMatch(
+      content,
+      /Dynamic evaluation is not implemented|standalone expression evaluation is not implemented|error\.UnsupportedEvaluation/,
+      `${target} should not contain dynamic evaluation stub`
+    );
+    assert.match(content, /v_x|inputs\.x/, `${target} should reference compiled variable x`);
     const emptySample = artifact(target, '1 + 1', []);
-    assert.match(emptySample, anySampleGuard[target]!, target);
-    assert.match(emptySample, /"2"/, target);
+    assert.doesNotMatch(emptySample, /Dynamic evaluation is not implemented/, `${target} empty sample`);
   }
   assert.match(artifact('zig', 'x + 1'), /pub const EVALUATED_RESULT: \[\]const u8 = "3";/);
   assert.match(artifact('zig', 'x / 0'), /pub const EVALUATED_RESULT: \[\]const u8 = "Eval Error";/);
@@ -126,21 +119,44 @@ test('lower target templates return only a verified exact sample and reject dyna
   assert.match(artifact('ocaml', '1 + 1', []), /\(\* Bound labels summary: \*\)/);
 });
 
-test('Lua returns the default and rejects modified or failed inputs when available', (t) => {
+test('PHP export executes compiled logic dynamically on modified inputs', (t) => {
+  if (!hasRuntime('php', ['-v'])) {
+    t.skip('PHP is not installed');
+    return;
+  }
+  const code = artifact('php', 'x + 1');
+  const script = code.replace(/^<\?php\s*/, '') + '\necho evaluate_from_input("x=5");\n';
+  const res = spawnSync('php', ['-r', script], { encoding: 'utf8' });
+  assert.equal(res.status, 0, res.stderr || String(res.error));
+  assert.match(res.stdout, /Result: 3/);
+  assert.equal(res.stdout.trim().split(/\r?\n/).pop(), '6');
+
+  const complexBindings: LogicLabelBinding[] = [
+    { id: 'price', name: 'price', kind: 'number', value: '50' },
+    { id: 'tax', name: 'tax', kind: 'number', value: '10' },
+    { id: 'double', name: 'double', kind: 'lambda', value: 'λx. x * 2' },
+    { id: 'apply_discount', name: 'apply_discount', kind: 'lambda', value: 'λcb. λv. cb(v) - 10' },
+  ];
+  const complexCode = artifact('php', '(apply_discount(double)(price) ≥ 80) ∧ ¬(tax > 15)', complexBindings);
+  const complexScript = complexCode.replace(/^<\?php\s*/, '') + '\necho json_encode([evaluate_from_input("price=50 tax=10"), evaluate_from_input("price=30 tax=10")]);\n';
+  const complexRes = spawnSync('php', ['-r', complexScript], { encoding: 'utf8' });
+  assert.equal(complexRes.status, 0, complexRes.stderr || String(complexRes.error));
+  assert.equal(complexRes.stdout.trim().split(/\r?\n/).pop(), '[true,false]');
+});
+
+test('Lua evaluates compiled logic dynamically for default and modified inputs when available', (t) => {
   const check = spawnSync('lua', ['-v'], { encoding: 'utf8' });
   if (check.error && 'code' in check.error && check.error.code === 'ENOENT') {
     t.skip('Lua is not installed');
     return;
   }
-  for (const [statement, expected] of [['x + 1', '3'], ['x / 0', null]] as const) {
-    const script = `local function module()\n${artifact('lua', statement)}\nend
+  const script = `local function module()\n${artifact('lua', 'x + 1')}\nend
 local m = module()
-local ok, result = pcall(m.evaluate_from_input, m.SAMPLE_SINGLE_INPUT)
-assert(ok == ${expected === null ? 'false' : 'true'})
-${expected === null ? '' : `assert(result == ${JSON.stringify(expected)})`}
-assert(not pcall(m.evaluate_from_input, m.SAMPLE_SINGLE_INPUT .. " "))
+local ok1, r1 = pcall(m.evaluate_from_input, m.SAMPLE_SINGLE_INPUT)
+assert(ok1 and tonumber(r1) == 3)
+local ok2, r2 = pcall(m.evaluate_from_input, "x=9")
+assert(ok2 and tonumber(r2) == 10)
 `;
-    const result = spawnSync('lua', ['-'], { input: script, encoding: 'utf8' });
-    assert.equal(result.status, 0, result.stderr);
-  }
+  const result = spawnSync('lua', ['-'], { input: script, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
 });

@@ -342,7 +342,7 @@ export function DomEchelonManipulator({
 
                   {/* LIVE TEMP DROP OPTION PLACES FOR MERGE + EVERY POSSIBLE SPLIT (VISIBLE WHILE DRAGGING) */}
                   {showTempZones && (onMerge || onSplit) && (
-                    <div className="mt-2 grid grid-cols-1 gap-1.5 border-t border-slate-100 pt-2 sm:grid-cols-3 dark:border-slate-800">
+                    <div className="mt-2 grid grid-cols-1 gap-1.5 border-t border-slate-100 pt-2 sm:grid-cols-2 dark:border-slate-800">
                       {onMerge && (
                         <div
                           onDragOver={(e) => {

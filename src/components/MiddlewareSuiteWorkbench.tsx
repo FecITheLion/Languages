@@ -563,7 +563,7 @@ export function MiddlewareSuiteWorkbench({
               <div className="mb-1.5 font-semibold text-slate-700 dark:text-slate-300">
                 Live Slug Pattern Preview Variables
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   value={previewKind}
                   onChange={(e) => setPreviewKind(e.target.value)}
@@ -630,7 +630,7 @@ export function MiddlewareSuiteWorkbench({
             ))}
             <div className="rounded-lg border border-dashed border-slate-300 p-3 dark:border-slate-700">
               <div className="mb-2 text-xs font-semibold">Add / Override Template Theme</div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <input
                   value={newTplName}
                   onChange={(e) => setNewTplName(e.target.value)}

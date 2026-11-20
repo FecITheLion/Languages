@@ -4,10 +4,10 @@ import {
   ChevronRight,
   Copy,
   Download,
-  ExternalLink,
   HelpCircle,
   Save,
   Table2,
+  X,
 } from 'lucide-react';
 import {
   buildMultilineTruthTables,
@@ -15,11 +15,15 @@ import {
   CALCULATOR_LABEL_CONVENTIONS,
   evaluateMultilineBooleanProgram,
   FORMAL_LOGIC_PRESETS,
-  generateStandaloneBooleanCalculatorHtml,
   LOGIC_SYSTEM_CATEGORIES,
   type LabelConventionMeta,
 } from '../engine/multilineBooleanEngine';
-import { resolveAssetUrl } from '../engine/runtimePaths';
+import {
+  compileMultilineLogicToLanguage,
+  compileMultilineLogicToPython,
+  compileMultilineLogicToWasm,
+} from '../engine/multilineLogicExport';
+import { SUPPORTED_LANGUAGES, type PrimaryLanguage } from '../types/studio';
 import type { VirtualSubmission } from '../engine/virtualFiles';
 
 interface MultilineBooleanCalculatorProps {
@@ -293,7 +297,6 @@ function HighlightedCodeEditor({
 
 export function MultilineBooleanCalculator({
   onSubmitArtifacts,
-  onDownloadFile,
   onNotify,
 }: MultilineBooleanCalculatorProps) {
   const [preInput, setPreInput] = useState('e=true');
@@ -302,7 +305,6 @@ export function MultilineBooleanCalculator({
   const [hoveredPointerTarget, setHoveredPointerTarget] = useState<number | null>(null);
   const [selectedBlock, setSelectedBlock] = useState<number | null>(null);
   const [dragActive, setDragActive] = useState(false);
-  const [showHtmlPreview, setShowHtmlPreview] = useState(true);
   const [showCondensedStream, setShowCondensedStream] = useState(false);
   const [truthTableScope, setTruthTableScope] = useState<'focused' | 'matrix'>('focused');
   const [traditionFilter, setTraditionFilter] = useState<'all' | 'formal' | 'informal'>('all');
@@ -311,6 +313,18 @@ export function MultilineBooleanCalculator({
     lambda_calculus: true,
     arithmetic: true,
   });
+  const [targetLang, setTargetLang] = useState<PrimaryLanguage>('typescript');
+  const [exportModal, setExportModal] = useState<{
+    kind: 'lang' | 'py' | 'wasm';
+    title: string;
+    badge: string;
+    filename: string;
+    mime: string;
+    status: string;
+    error: boolean;
+    code: string;
+    wasmBinary?: Uint8Array;
+  } | null>(null);
 
   const programRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -340,11 +354,6 @@ export function MultilineBooleanCalculator({
   const truthTables = useMemo(
     () => buildMultilineTruthTables(preInput, program, evalResult),
     [preInput, program, evalResult]
-  );
-
-  const standaloneHtml = useMemo(
-    () => generateStandaloneBooleanCalculatorHtml(preInput, program),
-    [preInput, program]
   );
 
   const visibleCategories = useMemo(
@@ -423,6 +432,106 @@ export function MultilineBooleanCalculator({
     onNotify('Submitted Formal Logic, Arithmetic & Lambda evaluation trace to Shared Files.');
   };
 
+  const downloadBinaryBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleExportPython = () => {
+    try {
+      const { code, statementCount } = compileMultilineLogicToPython(preInput, program);
+      setExportModal({
+        kind: 'py',
+        title: 'Export Python 3',
+        badge: 'logic_program.py',
+        filename: 'logic_program.py',
+        mime: 'text/x-python',
+        status: `Compiled ${statementCount} statement(s) to standalone Python 3.`,
+        error: false,
+        code,
+      });
+    } catch (err) {
+      setExportModal({
+        kind: 'py',
+        title: 'Export Python 3',
+        badge: 'error',
+        filename: 'logic_program.py',
+        mime: 'text/x-python',
+        status: `Python compilation failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: true,
+        code: '',
+      });
+    }
+  };
+
+  const handleExportWasm = async () => {
+    try {
+      const { binary, wat } = compileMultilineLogicToWasm(preInput, program);
+      const inst = await WebAssembly.instantiate(binary as BufferSource);
+      const mainFn = inst.instance.exports.main as (() => number) | undefined;
+      const mainRes = mainFn ? mainFn() : 0;
+      setExportModal({
+        kind: 'wasm',
+        title: 'Export WebAssembly',
+        badge: 'logic_program.wasm',
+        filename: 'logic_program.wat',
+        mime: 'text/plain',
+        status: `Valid WASM binary (${binary.length} bytes). Live WebAssembly.instantiate() -> main() = ${mainRes}`,
+        error: false,
+        code: wat,
+        wasmBinary: binary,
+      });
+    } catch (err) {
+      setExportModal({
+        kind: 'wasm',
+        title: 'Export WebAssembly',
+        badge: 'error',
+        filename: 'logic_program.wat',
+        mime: 'text/plain',
+        status: `WASM compilation failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: true,
+        code: '// Tip: WASM export supports named callables, non-curried lambdas, boolean logic, ternaries, and +, -, *, / arithmetic.',
+      });
+    }
+  };
+
+  const handleConvertToLanguage = async (lang: PrimaryLanguage = targetLang) => {
+    if (lang === 'wasm') {
+      await handleExportWasm();
+      return;
+    }
+    try {
+      const out = compileMultilineLogicToLanguage(lang, preInput, program);
+      setExportModal({
+        kind: 'lang',
+        title: `Convert Raw Logic -> ${out.label}`,
+        badge: out.filename,
+        filename: out.filename,
+        mime: out.mime,
+        status: `Converted ${out.statementCount} raw logic statement(s) to ${out.label}.`,
+        error: false,
+        code: out.code,
+      });
+    } catch (err) {
+      setExportModal({
+        kind: 'lang',
+        title: `Convert Raw Logic -> ${lang.toUpperCase()}`,
+        badge: 'error',
+        filename: `logic_program.${lang}`,
+        mime: 'text/plain',
+        status: `Conversion failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: true,
+        code: '',
+      });
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Header + 4 Presets */}
@@ -459,6 +568,54 @@ export function MultilineBooleanCalculator({
               {preset.label}
             </button>
           ))}
+          <button
+            type="button"
+            onClick={() => {
+              setPreInput('');
+              setProgram('');
+              setSelectedBlock(null);
+              setHoveredBlock(null);
+              setHoveredPointerTarget(null);
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:border-rose-400 hover:text-rose-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+          >
+            Clear
+          </button>
+          <div className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50/70 p-0.5 dark:border-blue-800 dark:bg-blue-950/30">
+            <select
+              aria-label="Convert raw logic target language"
+              value={targetLang}
+              onChange={(e) => setTargetLang(e.target.value as PrimaryLanguage)}
+              className="rounded-md bg-white px-2 py-1 font-mono text-xs font-medium text-slate-800 focus:outline-none dark:bg-slate-900 dark:text-slate-100"
+            >
+              {SUPPORTED_LANGUAGES.map((lang) => (
+                <option key={lang.id} value={lang.id}>
+                  {lang.shortLabel} ({lang.extension})
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleConvertToLanguage(targetLang)}
+              className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-blue-700"
+            >
+              <Download className="h-3.5 w-3.5" /> Convert
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleExportPython}
+            className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+          >
+            <Download className="h-3.5 w-3.5" /> .py
+          </button>
+          <button
+            type="button"
+            onClick={() => void handleExportWasm()}
+            className="inline-flex items-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1 text-xs font-semibold text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
+          >
+            <Download className="h-3.5 w-3.5" /> .wasm
+          </button>
           {onSubmitArtifacts && (
             <button
               type="button"
@@ -565,7 +722,7 @@ export function MultilineBooleanCalculator({
         </aside>
 
         {/* RIGHT MAIN AREA: TWO-COLUMN WORKSPACE */}
-        <div className="grid gap-4 lg:grid-cols-2 xl:col-span-8">
+        <div className="grid grid-cols-1 gap-4 xl:col-span-8">
           {/* COLUMN 1: PRE-INPUT & FORMULA/LAMBDA BUFFER */}
           <div
             data-tour-id="view.formal_logic.buffer"
@@ -964,63 +1121,101 @@ export function MultilineBooleanCalculator({
         </div>
       </div>
 
-      {/* Single HTML Export & Live Preview */}
-      <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3.5 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Standalone Single-HTML Export with Live Preview
-            </h4>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Self-contained <code className="font-mono">boolean-logic-calculator.html</code> file (zero external scripts/stylesheets).
-            </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setShowHtmlPreview((v) => !v)}
-              className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200"
-            >
-              {showHtmlPreview ? 'Hide Preview' : 'Show Preview'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void navigator.clipboard?.writeText(standaloneHtml);
-                onNotify('Copied self-contained single-file HTML calculator.');
-              }}
-              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200"
-            >
-              <Copy className="h-3.5 w-3.5" /> Copy Single HTML
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                onDownloadFile(standaloneHtml, 'boolean-logic-calculator.html', 'text/html;charset=utf-8')
-              }
-              className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
-            >
-              <Download className="h-3.5 w-3.5" /> Download Single HTML
-            </button>
-            <a
-              href={resolveAssetUrl('boolean-logic-calculator.html')}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
-            >
-              <ExternalLink className="h-3.5 w-3.5" /> Open Standalone Page
-            </a>
+      {exportModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setExportModal(null);
+          }}
+        >
+          <div className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-800 dark:bg-slate-950">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                <span>{exportModal.title}</span>
+                <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 font-mono text-[11px] text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+                  {exportModal.badge}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setExportModal(null)}
+                aria-label="Close export modal"
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-200/70 hover:text-slate-900 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-3 overflow-y-auto p-4">
+              <div
+                className={`rounded-lg border px-3 py-2 font-mono text-xs ${
+                  exportModal.error
+                    ? 'border-rose-300 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950/40 dark:text-rose-200'
+                    : 'border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-200'
+                }`}
+              >
+                {exportModal.status}
+              </div>
+              {exportModal.code && (
+                <pre className="max-h-96 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-xs text-slate-100 dark:border-slate-800">
+                  {exportModal.code}
+                </pre>
+              )}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-200 bg-slate-50 px-4 py-2.5 dark:border-slate-800 dark:bg-slate-950">
+              {!exportModal.error && exportModal.code && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(exportModal.code);
+                    onNotify(exportModal.kind === 'py' ? 'Copied Python 3 source.' : 'Copied WAT source.');
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <Copy className="h-3.5 w-3.5" /> {exportModal.kind === 'py' ? 'Copy Code' : 'Copy .wat'}
+                </button>
+              )}
+              {!exportModal.error && (exportModal.kind === 'py' || exportModal.kind === 'lang') && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    downloadBinaryBlob(new Blob([exportModal.code], { type: exportModal.mime }), exportModal.filename)
+                  }
+                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                >
+                  <Download className="h-3.5 w-3.5" /> Download {exportModal.filename}
+                </button>
+              )}
+              {!exportModal.error && exportModal.kind === 'wasm' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadBinaryBlob(new Blob([exportModal.code], { type: 'text/plain' }), 'logic_program.wat')
+                    }
+                    className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    <Download className="h-3.5 w-3.5" /> Download .wat
+                  </button>
+                  {exportModal.wasmBinary && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        downloadBinaryBlob(
+                          new Blob([exportModal.wasmBinary as BlobPart], { type: 'application/wasm' }),
+                          'logic_program.wasm'
+                        )
+                      }
+                      className="inline-flex items-center gap-1 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-700"
+                    >
+                      <Download className="h-3.5 w-3.5" /> Download logic_program.wasm
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
           </div>
         </div>
-        {showHtmlPreview && (
-          <iframe
-            title="Single HTML Formal Logic Arithmetic Lambda Calculator Live Preview"
-            sandbox="allow-scripts"
-            srcDoc={standaloneHtml}
-            className="h-[520px] w-full rounded-lg border border-slate-200 bg-slate-950 dark:border-slate-700"
-          />
-        )}
-      </div>
+      )}
     </div>
   );
 }

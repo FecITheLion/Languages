@@ -2,7 +2,16 @@
 
 The existing Node/Vite development and Express server are unchanged. Production builds can also be installed as a PWA on HTTPS (or localhost); browser support and installation prompts vary. The manifest uses the build's URL base. The worker is registered only in production builds.
 
-## Build and install
+## Zero-install PHP serving (default)
+
+No separate installation step (`install.php`) is required. Point Apache (or PHP's built-in server) directly at the project directory (at `/` or any subpath such as `/Application/Languages-main/`):
+
+- `index.php` automatically detects the URL base prefix from `SCRIPT_NAME`, serves the native PHP REST/HATEOAS/MCP API (`/api/*`, `/healthz`), and initializes a private SQLite state directory outside the webroot automatically when `GRAMMAR2JSON_STATE_DIR` is unset.
+- Static and PWA assets (`manifest.webmanifest`, `sw.js`, `icon.svg`, `icons/*`) are served automatically from `dist/` or `public/`.
+- If a built Vite SPA (`dist/index.html`) is present, `index.php` serves it and rewrites asset URLs for the active subpath.
+- If no `dist/index.html` is present (or when `?ui=php` is passed), `index.php` renders the built-in native PHP Studio workbench (`php/PhpStudioView.php`) directly against the PHP API — requiring neither `npm build` nor `install.php`.
+
+## Optional standalone build and install
 
 With the project's dependencies already available, build for the exact URL prefix (use `/` for the domain root):
 
