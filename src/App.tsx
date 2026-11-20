@@ -8,6 +8,7 @@ import {
   Eraser,
   FileCode2,
   FileDiff,
+  FolderTree,
   GitBranch,
   History,
   Layers,
@@ -87,7 +88,18 @@ import {
 import { buildDeepLinkUrl, parseDeepLinkFromLocation } from './engine/deepLinkEngine';
 import { analyzeStudioLint } from './engine/htmlOutputFormatter';
 import { LOGIC_CALCULATOR_PRESETS, type LogicLabelBinding } from './engine/logicLambdaEngine';
-import type { McpWorkspaceContext } from './engine/mcpServerEngine';
+import { VALID_MCP_SERVER_IDS, type McpWorkspaceContext } from './engine/mcpServerEngine';
+import {
+  createEmptyVfs,
+  loadVfs,
+  mirrorToPhp,
+  saveVfs,
+  submitToTree,
+  type VfsState,
+  type VfsSubmissionFile,
+} from './engine/virtualFsEngine';
+import { GuideBanner } from './components/WorkbenchGuide';
+import { SharedFileTree } from './components/SharedFileTree';
 import {
   BUILTIN_REFERENCED_MODULES,
   buildLiveScopeSuggestions,
@@ -242,6 +254,10 @@ export default function App() {
 
   // Top-level navigation & workflow step state
   const [topView, setTopView] = useState<TopView>(initialDeepLink?.topView ?? 'workbench');
+  const [vfs, setVfs] = useState<VfsState>(() => loadVfs());
+  useEffect(() => {
+    saveVfs(vfs);
+  }, [vfs]);
   const [specsSubTab, setSpecsSubTab] = useState<'openapi' | 'dsl' | 'bundle'>(() =>
     initialDeepLink?.topView === 'dsl'
       ? 'dsl'
@@ -2381,6 +2397,60 @@ export default function App() {
     setActivePage(flows[nextIdx].page);
   };
 
+  const buildWorkbenchFiles = (page: string): VfsSubmissionFile[] => {
+    const json = (v: unknown) => JSON.stringify(v, null, 2);
+    switch (page) {
+      case 'dialect':
+        return [
+          { path: 'src/data/grammar.g2j', content: grammarText },
+          { path: 'src/data/dialect.json', content: json(dialect) },
+        ];
+      case 'rule_props':
+        return [{ path: 'src/data/ruleConfigs.json', content: json(ruleConfigs) }];
+      case 'logic_calc':
+        return [
+          {
+            path: 'src/engine/logicLambdaEngine.ts',
+            content: `export const RULES = ${json(rules.map((r) => r.name))} as const;\n`,
+          },
+        ];
+      case 'schema':
+        return [{ path: 'src/data/schema.jsonld', content: jsonText }];
+      case 'mutations':
+        return [{ path: 'src/data/mutations.json', content: json(mutations) }];
+      case 'evaluator':
+        return [{ path: 'src/data/evaluation.json', content: json({ startRule: evalRule, payload: evalPayload }) }];
+      case 'payload_io':
+        return [{ path: 'src/data/payload.json', content: evalPayload }];
+      case 'gdrive':
+        return [{ path: 'module/vault.g2j.json', content: json(buildSnapshot()) }];
+      case 'python_ast':
+        return [{ path: 'src/engine/generated.py', content: pythonSource }];
+      case 'rust_ast':
+        return [{ path: 'src/engine/generated.rs', content: rustSource }];
+      case 'wasm_wabt':
+        return [{ path: 'src/engine/generated.wat', content: watSource }];
+      case 'mcp_servers':
+        return [{ path: 'module/mcp.manifest.json', content: json({ verifiedSteps, servers: Array.from(VALID_MCP_SERVER_IDS) }) }];
+      default:
+        return [];
+    }
+  };
+
+  const handleSubmitToTree = () => {
+    const files = buildWorkbenchFiles(currentFlow.page);
+    if (files.length === 0) return;
+    const { state, submission } = submitToTree(vfs, currentFlow.page, currentFlow.label, files);
+    setVfs(state);
+    void mirrorToPhp(currentFlow.page, files);
+    const changed = submission.changes.filter((c) => c.kind !== 'unchanged').length;
+    showNotice(
+      changed > 0
+        ? `Submitted ${currentFlow.label}: ${changed} file${changed === 1 ? '' : 's'} mutated in the shared tree.`
+        : `${currentFlow.label}: shared tree already up to date.`
+    );
+  };
+
   const handleVerifyAndAdvance = (advanceToNext: boolean) => {
     const gate = currentFlow.verify;
     let passed = true;
@@ -2409,7 +2479,13 @@ export default function App() {
     }
 
     setVerifiedSteps((prev) => (prev.includes(currentFlow.page) ? prev : [...prev, currentFlow.page]));
-
+    {
+      const files = buildWorkbenchFiles(currentFlow.page);
+      if (files.length > 0) {
+        setVfs(submitToTree(vfs, currentFlow.page, currentFlow.label, files).state);
+        void mirrorToPhp(currentFlow.page, files);
+      }
+    }
     if (advanceToNext) {
       const nextFlow = flows.find((f) => f.id === currentFlow.next) || flows[(currentStepIndex + 1) % flows.length];
       if (nextFlow) {
@@ -2631,7 +2707,7 @@ export default function App() {
     SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage) ?? SUPPORTED_LANGUAGES[0];
 
   const primaryNavItems: Array<{
-    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'specs';
+    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'files' | 'specs';
     fullLabel: string;
     compactLabel: string;
     icon: typeof Layers;
@@ -2671,6 +2747,14 @@ export default function App() {
       onClick: () => setTopView('api'),
     },
     {
+      id: 'files',
+      fullLabel: 'Shared Files',
+      compactLabel: 'Files',
+      icon: FolderTree,
+      active: topView === 'files',
+      onClick: () => setTopView('files'),
+    },
+    {
       id: 'specs',
       fullLabel: 'Specifications & Bundle',
       compactLabel: 'Specs',
@@ -2695,7 +2779,7 @@ export default function App() {
           </button>
 
           {/* Zone 2: 5 Clean Non-Redundant Single-Line Nav Links (abbreviate ONLY when narrow viewport demands it) */}
-          <nav className="hidden items-center gap-4 md:flex lg:gap-6" aria-label="Primary sections">
+          <nav data-tour="nav" className="hidden items-center gap-4 md:flex lg:gap-6" aria-label="Primary sections">
             {primaryNavItems.map((item) => (
               <button
                 key={item.id}
@@ -2730,7 +2814,9 @@ export default function App() {
 
       <main className="mx-auto max-w-[1440px] space-y-5 px-3 py-4 pb-20 sm:px-6 sm:py-6 md:pb-8">
         {/* WORKSPACE TOOLBAR: GLOBAL SEARCH, 22-LANGUAGE SWITCHER, AUTO-SAVE, UNDO/REDO, CLEAR/RESTORE, DEEP LINKS */}
-        <section className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900">
+        {topView === 'workbench' && <GuideBanner guideId="home" variant="hero" />}
+
+        <section data-tour="toolbar" className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* Search Box */}
             <div className="relative flex-1 lg:max-w-md">
@@ -3097,6 +3183,8 @@ export default function App() {
               void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
             }
           />
+        ) : topView === 'files' ? (
+          <SharedFileTree vfs={vfs} onReset={() => setVfs(createEmptyVfs())} />
         ) : topView === 'api' ? (
           <ApiStudioWorkbench
             onSyncWorkspaceToServer={handleSyncWorkspaceToServer}
@@ -3140,6 +3228,7 @@ export default function App() {
         ) : (
           <>
             {/* OPTIMIZED COMPILER PIPELINE GRID (Compact Grid / Stage Lanes / Rail) */}
+            <div data-tour="pipeline">
             <PipelineGrid
               flows={flows}
               stageSummaries={breadcrumbs.stageSummaries}
@@ -3161,6 +3250,7 @@ export default function App() {
               onSplitFlow={handleSplitFlow}
               onOpenMcpServer={handleOpenMcpServer}
             />
+            </div>
 
             {/* Mobile/Tablet Pane Switcher between Active Workbench & Live State Mirror */}
             <div className="flex items-center justify-between gap-2 xl:hidden">
@@ -3194,6 +3284,8 @@ export default function App() {
                 </span>
               )}
             </div>
+
+            <GuideBanner guideId={currentFlow.page} />
 
             {/* ACTIVE DSL-CONTROLLED SPLIT PAGE + BIDIRECTIONAL LIVE STATE MIRROR */}
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
@@ -3550,6 +3642,7 @@ export default function App() {
         onViewportChange={setModalViewport}
         onPrevStep={() => stepByOffset(-1)}
         onVerifyAndAdvance={() => handleVerifyAndAdvance(true)}
+        onSubmitToTree={handleSubmitToTree}
         onCopyModalLink={() => void handleCopyDeepLink({ includeFullState: false, forceModalOpen: true })}
         onClose={() => setModalOpen(false)}
       >
