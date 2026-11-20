@@ -1,23 +1,39 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowDownToLine,
+  ArrowRightLeft,
+  BookmarkCheck,
   Check,
   CheckCircle2,
   Copy,
   Download,
+  Globe,
+  Lock,
   Play,
   Plus,
+  Sparkles,
   Trash2,
   Upload,
   XCircle,
 } from 'lucide-react';
 import { executeWasmExport } from '../engine/bidirectionalEngine';
 import {
+  formatGlobalCallbackCallTemplate,
+  mergeGlobalCallbacksWithLabels,
+  type GlobalCallbackDef,
+} from '../engine/globalCallbacksEngine';
+import {
+  analyzeLabelSuggestions,
   evaluateLogicStatement,
   exportLogicStatement,
+  extractLambdaParamsAndBody,
   formatLogicAst,
+  formatNamedCallbackSignature,
   LOGIC_CALCULATOR_PRESETS,
   parseExportedLogicArtifact,
+  translateLambdaCallsToNamedCallbacks,
+  type LabelSuggestion,
+  type LabelSuggestionOption,
   type LogicCallbackHooks,
   type LogicExportTarget,
   type LogicLabelBinding,
@@ -31,6 +47,14 @@ interface LogicLambdaWorkbenchProps {
   mutationPolicy: MutationPolicy;
   initialStatement?: string;
   initialLabels?: LogicLabelBinding[];
+  globalCallbacks?: GlobalCallbackDef[];
+  onSaveGlobalCallback?: (input: {
+    name: string;
+    lambdaExpr: string;
+    description?: string;
+    source?: 'logic_calc' | 'rule_props' | 'manual';
+  }) => void;
+  onDeleteGlobalCallback?: (idOrName: string) => void;
   onLogicStateChange?: (statement: string, labels: LogicLabelBinding[]) => void;
   onExportTextFile: (content: string, filename: string, mime: string) => void;
   onSyncLogicToGrammar: (statement: string, labels: LogicLabelBinding[]) => void;
@@ -85,6 +109,9 @@ export function LogicLambdaWorkbench({
   mutationPolicy,
   initialStatement,
   initialLabels,
+  globalCallbacks = [],
+  onSaveGlobalCallback,
+  onDeleteGlobalCallback,
   onLogicStateChange,
   onExportTextFile,
   onSyncLogicToGrammar,
@@ -113,16 +140,38 @@ export function LogicLambdaWorkbench({
     onLogicStateChange?.(statement, labels);
   }, [statement, labels, onLogicStateChange]);
 
-  const lambdaLabels = useMemo(() => labels.filter((l) => l.kind === 'lambda' && l.name.trim()), [labels]);
+  const effectiveLabels = useMemo(
+    () => mergeGlobalCallbacksWithLabels(globalCallbacks, labels),
+    [globalCallbacks, labels]
+  );
+
+  const lambdaLabels = useMemo(
+    () => effectiveLabels.filter((l) => l.kind === 'lambda' && l.name.trim()),
+    [effectiveLabels]
+  );
 
   const evalRes = useMemo(
-    () => evaluateLogicStatement(statement, labels, callbackHooks),
-    [statement, labels, callbackHooks]
+    () => evaluateLogicStatement(statement, effectiveLabels, callbackHooks),
+    [statement, effectiveLabels, callbackHooks]
+  );
+
+  const suggestions = useMemo(
+    () =>
+      analyzeLabelSuggestions(statement, effectiveLabels, {
+        lockedNames: mutationPolicy.lockedRules,
+        allowMutation: mutationPolicy.allowImportMutation,
+      }),
+    [statement, effectiveLabels, mutationPolicy.lockedRules, mutationPolicy.allowImportMutation]
+  );
+
+  const namedTranslation = useMemo(
+    () => translateLambdaCallsToNamedCallbacks(statement, effectiveLabels),
+    [statement, effectiveLabels]
   );
 
   const exported = useMemo(
-    () => exportLogicStatement(exportTarget, statement, labels, evalRes),
-    [exportTarget, statement, labels, evalRes]
+    () => exportLogicStatement(exportTarget, statement, effectiveLabels, evalRes),
+    [exportTarget, statement, effectiveLabels, evalRes]
   );
 
   useEffect(() => {
@@ -181,6 +230,53 @@ export function LogicLambdaWorkbench({
 
   const handleRemoveLabel = (id: string) => {
     setLabels((prev) => prev.filter((l) => l.id !== id));
+  };
+
+  const handleApplySuggestion = (suggestion: LabelSuggestion, option: LabelSuggestionOption) => {
+    if (!suggestion.permitted) {
+      onNotify(suggestion.lockReason || 'Suggestion blocked by x-mutation-policy.');
+      return;
+    }
+    if (suggestion.existingLabelId) {
+      handleUpdateLabel(suggestion.existingLabelId, { value: option.value, kind: option.kind });
+      onNotify(`Updated "${suggestion.name}" to ${option.value}.`);
+    } else {
+      const next: LogicLabelBinding = {
+        id: `lbl_sug_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        name: suggestion.name,
+        kind: option.kind,
+        value: option.value,
+      };
+      setLabels((prev) => [...prev, next]);
+      onNotify(
+        option.signature
+          ? `Defined callback ${option.signature} := ${option.value}.`
+          : `Bound label "${suggestion.name}" = ${option.value} (${option.kind}).`
+      );
+    }
+    setIsEditingCode(false);
+  };
+
+  const handleApplyNamedTranslation = () => {
+    if (!namedTranslation.ok) return;
+    if (namedTranslation.liftedLabels.length > 0 && !mutationPolicy.allowImportMutation) {
+      onNotify('Lifting anonymous lambdas into labels is disabled by x-mutation-policy.');
+      return;
+    }
+    setStatement(namedTranslation.translatedStatement);
+    if (namedTranslation.liftedLabels.length > 0) {
+      setLabels((prev) => {
+        const existingNames = new Set(prev.map((l) => l.name.trim()));
+        const additions = namedTranslation.liftedLabels.filter((l) => !existingNames.has(l.name.trim()));
+        return [...prev, ...additions];
+      });
+    }
+    setIsEditingCode(false);
+    onNotify(
+      namedTranslation.liftedLabels.length > 0
+        ? `Translated calls to name (param1, param2) and lifted ${namedTranslation.liftedLabels.length} inline λ callback(s).`
+        : 'Translated lambda calls to named callback structure name (param1, param2).'
+    );
   };
 
   const handleExportDownload = () => {
@@ -416,6 +512,121 @@ export function LogicLambdaWorkbench({
           </span>
         </div>
 
+        {/* Smart Permitted Label & Callback Suggestions */}
+        {suggestions.length > 0 && (
+          <div className="space-y-2 rounded-lg border border-blue-200 bg-blue-50/50 p-3 dark:border-blue-900/50 dark:bg-blue-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-900 dark:text-slate-100">
+                <Sparkles className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                Permitted Label &amp; Callback Suggestions ({suggestions.length})
+              </div>
+              <span className="font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                {mutationPolicy.allowImportMutation ? 'policy: allowed' : 'policy: read-only'}
+              </span>
+            </div>
+            <div className="space-y-1.5">
+              {suggestions.map((sug) => (
+                <div
+                  key={sug.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-2 dark:border-slate-800 dark:bg-slate-900"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5 font-mono text-xs">
+                      <span className="font-semibold text-slate-900 dark:text-slate-100">{sug.name}</span>
+                      <span className="text-[10px] uppercase text-blue-600 dark:text-blue-400">
+                        {sug.inferredKind}
+                        {sug.expectedArity ? `/${sug.expectedArity}` : ''}
+                      </span>
+                      {!sug.permitted && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                          <Lock className="h-2.5 w-2.5" />
+                          locked
+                        </span>
+                      )}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                      {sug.permitted ? sug.reason : sug.lockReason || sug.reason}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1">
+                    {sug.options.map((opt) => (
+                      <button
+                        key={`${sug.id}-${opt.value}`}
+                        type="button"
+                        disabled={!sug.permitted}
+                        onClick={() => handleApplySuggestion(sug, opt)}
+                        title={
+                          sug.permitted
+                            ? `Apply ${sug.name} := ${opt.value}`
+                            : sug.lockReason || 'Locked by mutation policy'
+                        }
+                        className="rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-[11px] font-medium text-slate-800 transition-colors hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-45 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:border-blue-500 dark:hover:bg-blue-950/40 dark:hover:text-blue-300"
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Named Callback Translation Strip: name (param1, param2) */}
+        {(namedTranslation.callbacks.length > 0 || namedTranslation.callCount > 0) && (
+          <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/60">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                <ArrowRightLeft className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                Named Callbacks · <code className="font-mono text-[11px] font-normal text-slate-500 dark:text-slate-400">name (param1, param2)</code>
+              </div>
+              {namedTranslation.changed && (
+                <button
+                  type="button"
+                  onClick={handleApplyNamedTranslation}
+                  className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-700"
+                >
+                  Apply Named Calls
+                </button>
+              )}
+            </div>
+            <div className="rounded border border-slate-200 bg-white px-2.5 py-1.5 font-mono text-xs text-slate-800 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
+              <span className="mr-1.5 text-[10px] uppercase text-slate-400">Translated:</span>
+              {namedTranslation.translatedStatement}
+            </div>
+            {namedTranslation.callbacks.length > 0 && (
+              <div className="divide-y divide-slate-200/70 rounded border border-slate-200 bg-white font-mono text-[11px] dark:divide-slate-800/70 dark:border-slate-800 dark:bg-slate-900">
+                {namedTranslation.callbacks.map((cb) => (
+                  <div
+                    key={`${cb.source}-${cb.name}`}
+                    className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5"
+                  >
+                    <span className="text-slate-800 dark:text-slate-200">
+                      <span className="font-semibold text-blue-600 dark:text-blue-400">{cb.signature}</span>
+                      <span className="mx-1.5 text-slate-400">↦</span>
+                      <span>{cb.body}</span>
+                    </span>
+                    <div className="flex items-center gap-2">
+                      {cb.source === 'lifted' && (
+                        <span className="text-[10px] uppercase text-amber-600 dark:text-amber-400">
+                          lifted inline λ
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => insertSymbol(cb.signature)}
+                        className="text-[10px] font-medium text-blue-600 hover:underline dark:text-blue-400"
+                      >
+                        Insert call
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Labels & Lambda Callbacks Table */}
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-2">
@@ -450,58 +661,147 @@ export function LogicLambdaWorkbench({
             </div>
           </div>
 
-          <div className="max-h-48 space-y-1.5 overflow-auto pr-0.5">
-            {labels.map((lbl) => (
-              <div
-                key={lbl.id}
-                className="grid grid-cols-12 items-center gap-1.5 rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900"
-              >
-                <input
-                  type="text"
-                  value={lbl.name}
-                  onChange={(e) => handleUpdateLabel(lbl.id, { name: e.target.value })}
-                  aria-label="Label identifier"
-                  className="col-span-3 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-                />
-                <select
-                  value={lbl.kind}
-                  aria-label={`Kind for ${lbl.name}`}
-                  onChange={(e) =>
-                    handleUpdateLabel(lbl.id, { kind: e.target.value as LogicLabelBinding['kind'] })
-                  }
-                  className="col-span-3 rounded border border-slate-200 bg-slate-50 px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+          <div className="max-h-56 space-y-1.5 overflow-auto pr-0.5">
+            {labels.map((lbl) => {
+              const isLocked = mutationPolicy.lockedRules.includes(lbl.name.trim());
+              const unwrappedLambda =
+                lbl.kind === 'lambda' ? extractLambdaParamsAndBody(lbl.value) : null;
+              const lambdaSig = unwrappedLambda
+                ? formatNamedCallbackSignature(lbl.name.trim() || 'cb', unwrappedLambda.params)
+                : lbl.kind === 'lambda'
+                  ? `${lbl.name.trim() || 'cb'} (param1)`
+                  : null;
+              const normalizedBool = lbl.value.trim().toLowerCase();
+              const isBoolTrue = normalizedBool === 'true' || normalizedBool === '⊤' || normalizedBool === '1';
+              const isBoolFalse = normalizedBool === 'false' || normalizedBool === '⊥' || normalizedBool === '0';
+
+              return (
+                <div
+                  key={lbl.id}
+                  className="space-y-1 rounded-lg border border-slate-200 bg-white p-2 dark:border-slate-800 dark:bg-slate-900"
                 >
-                  <option value="number">Number</option>
-                  <option value="boolean">Boolean</option>
-                  <option value="lambda">λ Callback</option>
-                </select>
-                <input
-                  type="text"
-                  value={lbl.value}
-                  onChange={(e) => handleUpdateLabel(lbl.id, { value: e.target.value })}
-                  aria-label={`Value for ${lbl.name}`}
-                  className="col-span-4 rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-                />
-                <div className="col-span-2 flex items-center justify-end gap-1">
-                  <button
-                    type="button"
-                    title={`Insert ${lbl.name} into statement`}
-                    onClick={() => insertSymbol(lbl.kind === 'lambda' ? `${lbl.name}()` : lbl.name)}
-                    className="rounded border border-slate-200 px-1.5 py-1 font-mono text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:border-slate-700 dark:text-blue-400"
-                  >
-                    Use
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveLabel(lbl.id)}
-                    aria-label={`Delete ${lbl.name}`}
-                    className="rounded border border-slate-200 p-1 text-red-500 hover:bg-red-50 dark:border-slate-700"
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </button>
+                  <div className="grid grid-cols-1 items-center gap-1.5 sm:grid-cols-12">
+                    <input
+                      type="text"
+                      value={lbl.name}
+                      disabled={isLocked}
+                      onChange={(e) => handleUpdateLabel(lbl.id, { name: e.target.value })}
+                      aria-label="Label identifier"
+                      className="min-h-[36px] rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none disabled:opacity-60 sm:col-span-3 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    />
+                    <select
+                      value={lbl.kind}
+                      disabled={isLocked}
+                      aria-label={`Kind for ${lbl.name}`}
+                      onChange={(e) =>
+                        handleUpdateLabel(lbl.id, { kind: e.target.value as LogicLabelBinding['kind'] })
+                      }
+                      className="min-h-[36px] rounded border border-slate-200 bg-slate-50 px-1.5 py-1 text-[11px] text-slate-800 focus:border-blue-500 focus:outline-none disabled:opacity-60 sm:col-span-3 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                    >
+                      <option value="number">Number</option>
+                      <option value="boolean">Boolean</option>
+                      <option value="lambda">λ Callback</option>
+                    </select>
+                    <input
+                      type="text"
+                      value={lbl.value}
+                      disabled={isLocked}
+                      placeholder={
+                        lbl.kind === 'boolean'
+                          ? 'true | false | cb (x)'
+                          : lbl.kind === 'lambda'
+                            ? 'λparam1. λparam2. ...'
+                            : '0 or tax_fn (100)'
+                      }
+                      onChange={(e) => handleUpdateLabel(lbl.id, { value: e.target.value })}
+                      aria-label={`Value for ${lbl.name}`}
+                      className="min-h-[36px] rounded border border-slate-200 bg-slate-50 px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:bg-white focus:outline-none disabled:opacity-60 sm:col-span-4 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    />
+                    <div className="flex items-center justify-end gap-1 sm:col-span-2">
+                      {lbl.kind === 'lambda' && onSaveGlobalCallback && (
+                        <button
+                          type="button"
+                          title={`Save ${lbl.name} to Local Global Callbacks`}
+                          onClick={() =>
+                            onSaveGlobalCallback({
+                              name: lbl.name,
+                              lambdaExpr: lbl.value,
+                              source: 'logic_calc',
+                            })
+                          }
+                          className="inline-flex min-h-[32px] items-center gap-0.5 rounded border border-emerald-200 bg-emerald-50/70 px-1.5 py-1 text-[10px] font-medium text-emerald-700 hover:bg-emerald-100 sm:min-h-0 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300"
+                        >
+                          <BookmarkCheck className="h-3 w-3" />
+                          <span className="sm:hidden">Save Global</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        title={`Insert ${lambdaSig || lbl.name} into statement`}
+                        onClick={() => insertSymbol(lambdaSig || lbl.name)}
+                        className="min-h-[32px] rounded border border-slate-200 px-2 py-1 font-mono text-[10px] font-medium text-blue-600 hover:bg-blue-50 sm:min-h-0 sm:px-1.5 dark:border-slate-700 dark:text-blue-400"
+                      >
+                        Use
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isLocked}
+                        onClick={() => handleRemoveLabel(lbl.id)}
+                        aria-label={`Delete ${lbl.name}`}
+                        className="min-h-[32px] rounded border border-slate-200 p-1.5 text-red-500 hover:bg-red-50 disabled:opacity-40 sm:min-h-0 sm:p-1 dark:border-slate-700"
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </div>
+                  </div>
+                  {/* Inline permitted suggestions & callback signature */}
+                  {lbl.kind === 'boolean' && !isLocked && (
+                    <div className="flex items-center justify-between gap-2 pl-0.5 text-[10px]">
+                      <span className="text-slate-400">
+                        {!isBoolTrue && !isBoolFalse ? 'Undefined boolean — select value:' : 'Quick toggle:'}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateLabel(lbl.id, { value: 'true' })}
+                          className={`rounded border px-1.5 py-0.5 font-mono font-medium transition-colors ${
+                            isBoolTrue
+                              ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'
+                          }`}
+                        >
+                          true
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleUpdateLabel(lbl.id, { value: 'false' })}
+                          className={`rounded border px-1.5 py-0.5 font-mono font-medium transition-colors ${
+                            isBoolFalse
+                              ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+                              : 'border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'
+                          }`}
+                        >
+                          false
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {lbl.kind === 'lambda' && lambdaSig && (
+                    <div className="flex items-center justify-between gap-2 pl-0.5 font-mono text-[10px] text-slate-500 dark:text-slate-400">
+                      <span>
+                        Named callback: <strong className="text-slate-700 dark:text-slate-200">{lambdaSig}</strong>
+                      </span>
+                      {isLocked && (
+                        <span className="inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-400">
+                          <Lock className="h-2.5 w-2.5" />
+                          locked
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           {/* Lambda Callback Hooks (onFinalResult / onLogicTrue / onLogicFalse) */}

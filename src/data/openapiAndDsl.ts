@@ -8,7 +8,7 @@ import type {
   ParsedDsl,
   SearchHit,
   WorkflowSlug,
-} from '../types/studio';
+} from '../types/studio.ts';
 
 export const OPENAPI_SPEC: OpenApiSpec = {
   openapi: '3.1.0',
@@ -372,25 +372,52 @@ export function reorderDslFlows(
   ].join('\n');
 }
 
+export const DEFAULT_GRAMMAR_SYMBOLS = {
+  oneOrMore: '+',
+  zeroOrMore: '*',
+  optional: '?',
+  repeatBraces: '{}',
+  groupParens: '()',
+  charClassBrackets: '[]',
+  posLookahead: '&',
+  negLookahead: '!',
+  posLookbehind: '(?<=',
+  negLookbehind: '(?<!',
+  wildcard: '.',
+  regexDelimiter: '/',
+} as const;
+
 export const DIALECT_PRESETS: Record<
   DialectPresetId,
   { label: string; config: DialectConfig; sampleGrammar: string; sampleRule: string; samplePayload: string }
 > = {
   ebnf: {
     label: 'EBNF Standard (::= | //)',
-    config: { preset: 'ebnf', ruleOperator: '::=', choiceDelimiter: '|', commentPrefix: '//' },
+    config: {
+      preset: 'ebnf',
+      ruleOperator: '::=',
+      choiceDelimiter: '|',
+      commentPrefix: '//',
+      symbols: { ...DEFAULT_GRAMMAR_SYMBOLS },
+    },
     sampleGrammar: `// Schema.org Order Action EBNF Grammar
 order_expr ::= action_verb ' ' item_code ' ' quantity
 action_verb ::= 'BUY' | 'RESERVE' | 'SHIP'
 item_code ::= 'SKU-' digit digit digit
-quantity ::= digit | digit digit
+quantity ::= digit+
 digit ::= '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'`,
     sampleRule: 'order_expr',
     samplePayload: 'BUY SKU-402 12',
   },
   bnf: {
     label: 'Classic BNF (::= | #)',
-    config: { preset: 'bnf', ruleOperator: '::=', choiceDelimiter: '|', commentPrefix: '#' },
+    config: {
+      preset: 'bnf',
+      ruleOperator: '::=',
+      choiceDelimiter: '|',
+      commentPrefix: '#',
+      symbols: { ...DEFAULT_GRAMMAR_SYMBOLS },
+    },
     sampleGrammar: `# Classic BNF Routing Expression
 route ::= '/' segment '/' segment
 segment ::= 'api' | 'v1' | 'schemas' | 'ast' | 'rust' | 'wasm'`,
@@ -399,7 +426,13 @@ segment ::= 'api' | 'v1' | 'schemas' | 'ast' | 'rust' | 'wasm'`,
   },
   peg: {
     label: 'PEG / Assignment (= / #)',
-    config: { preset: 'peg', ruleOperator: '=', choiceDelimiter: '/', commentPrefix: '#' },
+    config: {
+      preset: 'peg',
+      ruleOperator: '=',
+      choiceDelimiter: '/',
+      commentPrefix: '#',
+      symbols: { ...DEFAULT_GRAMMAR_SYMBOLS, regexDelimiter: '' },
+    },
     sampleGrammar: `# Parsing Expression Grammar (Ordered Choice)
 kv_pair = key '=' value
 key = 'dialect' / 'schema' / 'target'
@@ -409,7 +442,13 @@ value = 'json' / 'python' / 'rust' / 'wasm'`,
   },
   python_peg: {
     label: 'Python Grammar (PEG : | #)',
-    config: { preset: 'python_peg', ruleOperator: ':', choiceDelimiter: '|', commentPrefix: '#' },
+    config: {
+      preset: 'python_peg',
+      ruleOperator: ':',
+      choiceDelimiter: '|',
+      commentPrefix: '#',
+      symbols: { ...DEFAULT_GRAMMAR_SYMBOLS },
+    },
     sampleGrammar: `# Python 3.12 Style PEG Subset
 stmt: assign_stmt | return_stmt
 assign_stmt: ident ' = ' literal
@@ -421,7 +460,13 @@ literal: '42' | '200' | 'ok'`,
   },
   rust_macro: {
     label: 'Rust Macro / syn Grammar (=> | //)',
-    config: { preset: 'rust_macro', ruleOperator: '=>', choiceDelimiter: '|', commentPrefix: '//' },
+    config: {
+      preset: 'rust_macro',
+      ruleOperator: '=>',
+      choiceDelimiter: '|',
+      commentPrefix: '//',
+      symbols: { ...DEFAULT_GRAMMAR_SYMBOLS },
+    },
     sampleGrammar: `// Rust syn / macro_rules! Declaration Grammar
 item_decl => visibility ' ' item_kind ' ' ident
 visibility => 'pub' | 'pub(crate)'
@@ -432,13 +477,20 @@ ident => 'OrderSchema' | 'AstNode' | 'WasmModule'`,
   },
   wat_sexpr: {
     label: 'WABT S-Expr Grammar (:= | ;;)',
-    config: { preset: 'wat_sexpr', ruleOperator: ':=', choiceDelimiter: '|', commentPrefix: ';;' },
+    config: {
+      preset: 'wat_sexpr',
+      ruleOperator: ':=',
+      choiceDelimiter: '|',
+      commentPrefix: ';;',
+      symbols: { ...DEFAULT_GRAMMAR_SYMBOLS },
+    },
     sampleGrammar: `;; WebAssembly S-Expression Instruction Grammar
 wasm_inst := '(' opcode ' ' operand ')'
 opcode := 'i32.const' | 'i32.add' | 'local.get'
-operand := '0' | '1' | '8' | '42'`,
+operand := digit+
+digit := '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9'`,
     sampleRule: 'wasm_inst',
-    samplePayload: '(i32.const 42)',
+    samplePayload: '(i32.const 201)',
   },
 };
 
@@ -561,6 +613,48 @@ export function searchStudio(
         method: 'WASM',
         targetPage: 'wasm_wabt',
         language: 'wasm',
+      });
+    }
+  }
+
+  const mcpSearchCatalog: Array<{ id: string; title: string; subtitle: string; page: WorkflowSlug }> = [
+    {
+      id: 'pipeline',
+      title: '/api/mcp/pipeline — Pipeline Grid & Breadcrumbs MCP Server',
+      subtitle: 'get_pipeline_grid · get_breadcrumbs · navigate_pipeline · reorder_pipeline_steps · verify_pipeline_step · run_full_pipeline',
+      page: 'mcp_servers',
+    },
+    {
+      id: 'grammar',
+      title: '/api/mcp/grammar — Grammar & DAG MCP Server',
+      subtitle: 'parse_and_analyze_dag · reorder_rules · merge_rules',
+      page: 'mcp_servers',
+    },
+    {
+      id: 'logic_calc',
+      title: '/api/mcp/logic_calc — Logic & Lambda Calculus MCP Server',
+      subtitle: 'evaluate_logic_lambda · export_logic_target · parse_logic_artifact',
+      page: 'mcp_servers',
+    },
+    {
+      id: 'jsonld',
+      title: '/api/mcp/jsonld — Schema.org JSON-LD MCP Server',
+      subtitle: 'compile_grammar_to_jsonld · decompile_jsonld_to_grammar · build_jsonld_package',
+      page: 'mcp_servers',
+    },
+  ];
+
+  for (const srv of mcpSearchCatalog) {
+    const hay = `${srv.id} ${srv.title} ${srv.subtitle} breadcrumb breadcrumbs pipeline mcp`.toLowerCase();
+    if (hay.includes(q)) {
+      hits.push({
+        id: `mcp-${srv.id}`,
+        kind: 'MCP Tool Server',
+        title: srv.title,
+        subtitle: srv.subtitle,
+        method: 'MCP',
+        targetPage: srv.page,
+        language: 'mcp',
       });
     }
   }

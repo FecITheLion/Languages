@@ -24,12 +24,17 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { User } from 'firebase/auth';
-import { DIALECT_PRESETS } from '../data/openapiAndDsl';
-import { executeWasmExport } from '../engine/bidirectionalEngine';
+import { DEFAULT_GRAMMAR_SYMBOLS, DIALECT_PRESETS } from '../data/openapiAndDsl';
+import {
+  executeWasmExport,
+  GRAMMAR_SYMBOL_SPECS,
+  resolveGrammarSymbols,
+} from '../engine/bidirectionalEngine';
+import type { GlobalCallbackDef } from '../engine/globalCallbacksEngine';
 import type { LogicLabelBinding } from '../engine/logicLambdaEngine';
 import type { McpWorkspaceContext } from '../engine/mcpServerEngine';
 import { LogicLambdaWorkbench } from './LogicLambdaWorkbench';
-import { McpServersWorkbench } from './McpServersWorkbench';
+import { McpServersWorkbench, type PipelineMcpUiEffect } from './McpServersWorkbench';
 import { RuleDependencyGraph } from './RuleDependencyGraph';
 import { RulePropertiesWorkbench } from './RulePropertiesWorkbench';
 import type {
@@ -38,6 +43,7 @@ import type {
   EvaluationResult,
   GrammarRule,
   LineMutation,
+  McpServerId,
   ModalStructure,
   MutationPolicy,
   PythonAstNode,
@@ -140,7 +146,17 @@ export interface StepViewsProps {
   ruleConfigs: Record<string, RuleOrderConfig>;
   logicStatement: string;
   logicLabels: LogicLabelBinding[];
+  globalCallbacks: GlobalCallbackDef[];
+  onSaveGlobalCallback: (input: {
+    name: string;
+    lambdaExpr: string;
+    description?: string;
+    source?: 'logic_calc' | 'rule_props' | 'manual';
+  }) => void;
+  onDeleteGlobalCallback: (idOrName: string) => void;
   mcpWorkspaceContext: McpWorkspaceContext;
+  selectedMcpServerId?: McpServerId;
+  onPipelineMcpEffect?: (effect: PipelineMcpUiEffect) => void;
   onUpdateRule: (
     originalName: string,
     patch: { name?: string; expression?: string; alternatives?: string[] }
@@ -402,12 +418,29 @@ export function StepViews(props: StepViewsProps) {
             </div>
 
             <div>
-              <label htmlFor="ruleOperator" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                Rule Operator
-              </label>
+              <div className="flex items-center justify-between gap-1">
+                <label htmlFor="ruleOperator" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
+                  Rule Operator
+                </label>
+                {props.dialect.ruleOperator.trim() === '' ? (
+                  <span className="font-mono text-[10px] text-blue-600 dark:text-blue-400">
+                    space-separated
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => props.onDialectChange({ ruleOperator: '' })}
+                    className="text-[10px] font-medium text-slate-400 hover:text-blue-600 dark:hover:text-blue-400"
+                    title="Clear operator to separate rule name and value with a single space"
+                  >
+                    Use space
+                  </button>
+                )}
+              </div>
               <input
                 id="ruleOperator"
                 type="text"
+                placeholder="(space)"
                 value={props.dialect.ruleOperator}
                 onChange={(e) => props.onDialectChange({ ruleOperator: e.target.value })}
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
@@ -463,6 +496,70 @@ export function StepViews(props: StepViewsProps) {
             >
               Rust Macro Sample
             </button>
+          </div>
+
+          {/* Extended DAG Symbol Definitions (Enabled when non-empty, Disabled when empty) */}
+          <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/70">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  Extended DAG Symbol Definitions
+                </div>
+                <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Set a symbol value to enable (e.g. <code className="font-mono">+</code> for repetitions) or leave empty to disable.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => props.onDialectChange({ symbols: { ...DEFAULT_GRAMMAR_SYMBOLS } })}
+                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              >
+                Reset Symbols
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {(() => {
+                const resolved = resolveGrammarSymbols(props.dialect);
+                return GRAMMAR_SYMBOL_SPECS.map((spec) => {
+                  const val = resolved[spec.key];
+                  const isEnabled = val.length > 0;
+                  return (
+                    <div key={spec.key} className="space-y-1">
+                      <label
+                        htmlFor={`sym-${spec.key}`}
+                        className="flex items-center justify-between gap-1 text-[11px] font-medium text-slate-600 dark:text-slate-400"
+                      >
+                        <span className="truncate">{spec.label}</span>
+                        <span
+                          className={`shrink-0 font-mono text-[10px] ${
+                            isEnabled
+                              ? 'text-emerald-600 dark:text-emerald-400'
+                              : 'text-amber-600 dark:text-amber-400'
+                          }`}
+                        >
+                          {isEnabled ? 'on' : 'off'}
+                        </span>
+                      </label>
+                      <input
+                        id={`sym-${spec.key}`}
+                        type="text"
+                        value={val}
+                        placeholder="Disabled"
+                        onChange={(e) =>
+                          props.onDialectChange({
+                            symbols: {
+                              ...resolved,
+                              [spec.key]: e.target.value,
+                            },
+                          })
+                        }
+                        className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                      />
+                    </div>
+                  );
+                });
+              })()}
+            </div>
           </div>
         </div>
 
@@ -543,7 +640,17 @@ export function StepViews(props: StepViewsProps) {
               <div className="max-h-72 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950">
                 {props.rules.length === 0 ? (
                   <div className="p-4 text-xs text-slate-500 dark:text-slate-400">
-                    No valid rules parsed with operator <code className="font-mono">{props.dialect.ruleOperator}</code>.
+                    {props.dialect.ruleOperator.trim() ? (
+                      <>
+                        No valid rules parsed with operator{' '}
+                        <code className="font-mono">{props.dialect.ruleOperator}</code>.
+                      </>
+                    ) : (
+                      <>
+                        No valid rules parsed with empty operator (space separating{' '}
+                        <code className="font-mono">name value</code>).
+                      </>
+                    )}
                   </div>
                 ) : (
                   <table className="w-full text-left text-xs">
@@ -633,6 +740,10 @@ export function StepViews(props: StepViewsProps) {
         mergeStrategy={props.mergeStrategy}
         canUndo={props.canUndo}
         onUndo={props.onUndo}
+        globalCallbacks={props.globalCallbacks}
+        logicLabels={props.logicLabels}
+        onSaveGlobalCallback={props.onSaveGlobalCallback}
+        onDeleteGlobalCallback={props.onDeleteGlobalCallback}
         onUpdateRule={props.onUpdateRule}
         onAddRule={props.onAddRule}
         onDeleteRule={props.onDeleteRule}
@@ -658,6 +769,9 @@ export function StepViews(props: StepViewsProps) {
         mutationPolicy={props.mutationPolicy}
         initialStatement={props.logicStatement}
         initialLabels={props.logicLabels}
+        globalCallbacks={props.globalCallbacks}
+        onSaveGlobalCallback={props.onSaveGlobalCallback}
+        onDeleteGlobalCallback={props.onDeleteGlobalCallback}
         onLogicStateChange={props.onLogicStateChange}
         onExportTextFile={props.onExportTextFile}
         onSyncLogicToGrammar={props.onSyncLogicToGrammar}
@@ -676,6 +790,8 @@ export function StepViews(props: StepViewsProps) {
         primarySpan={spans.primary}
         secondarySpan={spans.secondary}
         workspaceContext={props.mcpWorkspaceContext}
+        initialServerId={props.selectedMcpServerId}
+        onPipelineMcpEffect={props.onPipelineMcpEffect}
         onExportTextFile={props.onExportTextFile}
         onNotify={props.onNotify}
       />
@@ -1044,8 +1160,15 @@ export function StepViews(props: StepViewsProps) {
               06. Recursive Grammar Evaluator &amp; Trace
             </h3>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Validates payloads with backtracking longest-match resolution so multi-branch productions like <code className="font-mono text-xs">digit | digit digit</code> resolve full inputs cleanly.
+              Validates payloads with backtracking longest-match resolution across repetitions, inline choices, lookahead, lookbehind, character classes, and Workbench 5 schema mutations.
             </p>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-slate-200 bg-slate-50/80 px-2.5 py-1.5 font-mono text-[11px] text-slate-600 dark:border-slate-800 dark:bg-slate-950/60 dark:text-slate-400">
+              <span><strong className="text-slate-800 dark:text-slate-200">Repeat:</strong> + * ? {'{m,n}'} {'{e}'} [e]</span>
+              <span><strong className="text-slate-800 dark:text-slate-200">Choice:</strong> (a | b)</span>
+              <span><strong className="text-slate-800 dark:text-slate-200">Lookahead:</strong> (?=e) (?!e) &amp;e !e</span>
+              <span><strong className="text-slate-800 dark:text-slate-200">Lookbehind:</strong> (?&lt;=e) (?&lt;!e)</span>
+              <span><strong className="text-slate-800 dark:text-slate-200">Class/Regex:</strong> [0-9] [^a-z] . /re/ ^ $</span>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

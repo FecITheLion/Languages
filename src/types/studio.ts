@@ -2,7 +2,29 @@ export type DialectPresetId = 'ebnf' | 'bnf' | 'peg' | 'python_peg' | 'rust_macr
 
 export type SchemaPresetId = 'hybrid' | 'definedTermSet' | 'softwareSource';
 
-export type PrimaryLanguage = 'json' | 'python' | 'rust' | 'wasm';
+export type PrimaryLanguage =
+  | 'json'
+  | 'python'
+  | 'rust'
+  | 'wasm'
+  | 'typescript'
+  | 'javascript'
+  | 'go'
+  | 'java'
+  | 'cpp'
+  | 'csharp'
+  | 'php'
+  | 'sql'
+  | 'swift'
+  | 'kotlin'
+  | 'ruby'
+  | 'scala'
+  | 'haskell'
+  | 'elixir'
+  | 'lua'
+  | 'zig'
+  | 'dart'
+  | 'ocaml';
 
 export type ModalStructure = 'workbar' | 'calculator' | 'grid' | 'split';
 
@@ -24,13 +46,82 @@ export type WorkflowSlug =
 
 export type PipelineStage = 'frontend' | 'formal' | 'ir' | 'codegen' | 'storage';
 
-export type TopView = 'workbench' | 'graph' | 'openapi' | 'dsl' | 'bundle';
+export type TopView = 'workbench' | 'graph' | 'histolog' | 'api' | 'openapi' | 'dsl' | 'bundle';
 
 export type TransformTarget = 'jsonld' | 'python' | 'rust' | 'wasm';
 
 export type RuleMergeStrategy = 'choice' | 'sequence' | 'inline';
 
-export type ExportLanguage = 'grammar' | 'jsonld' | 'python' | 'rust' | 'wat' | 'typescript';
+export type ExportLanguage =
+  | 'grammar'
+  | 'jsonld'
+  | 'python'
+  | 'rust'
+  | 'wat'
+  | 'typescript'
+  | 'javascript'
+  | 'go'
+  | 'java'
+  | 'cpp'
+  | 'csharp'
+  | 'php'
+  | 'sql'
+  | 'swift'
+  | 'kotlin'
+  | 'ruby'
+  | 'scala'
+  | 'haskell'
+  | 'elixir'
+  | 'lua'
+  | 'zig'
+  | 'dart'
+  | 'ocaml';
+
+export interface SupportedLanguageSpec {
+  id: PrimaryLanguage;
+  exportId: ExportLanguage;
+  label: string;
+  shortLabel: string;
+  extension: string;
+}
+
+export const SUPPORTED_LANGUAGES: SupportedLanguageSpec[] = [
+  { id: 'json', exportId: 'jsonld', label: 'JSON-LD (Schema.org)', shortLabel: 'JSON-LD', extension: '.jsonld' },
+  { id: 'python', exportId: 'python', label: 'Python', shortLabel: 'Python', extension: '.py' },
+  { id: 'rust', exportId: 'rust', label: 'Rust', shortLabel: 'Rust', extension: '.rs' },
+  { id: 'wasm', exportId: 'wat', label: 'WASM / WABT', shortLabel: 'WASM', extension: '.wat' },
+  { id: 'typescript', exportId: 'typescript', label: 'TypeScript', shortLabel: 'TypeScript', extension: '.ts' },
+  { id: 'javascript', exportId: 'javascript', label: 'JavaScript (ESM)', shortLabel: 'JavaScript', extension: '.mjs' },
+  { id: 'go', exportId: 'go', label: 'Go', shortLabel: 'Go', extension: '.go' },
+  { id: 'java', exportId: 'java', label: 'Java', shortLabel: 'Java', extension: '.java' },
+  { id: 'cpp', exportId: 'cpp', label: 'C++ (C++20)', shortLabel: 'C++', extension: '.hpp' },
+  { id: 'csharp', exportId: 'csharp', label: 'C# (.NET)', shortLabel: 'C#', extension: '.cs' },
+  { id: 'php', exportId: 'php', label: 'PHP 8', shortLabel: 'PHP', extension: '.php' },
+  { id: 'sql', exportId: 'sql', label: 'SQL (DDL / Rules)', shortLabel: 'SQL', extension: '.sql' },
+  { id: 'swift', exportId: 'swift', label: 'Swift 6', shortLabel: 'Swift', extension: '.swift' },
+  { id: 'kotlin', exportId: 'kotlin', label: 'Kotlin', shortLabel: 'Kotlin', extension: '.kt' },
+  { id: 'ruby', exportId: 'ruby', label: 'Ruby 3', shortLabel: 'Ruby', extension: '.rb' },
+  { id: 'scala', exportId: 'scala', label: 'Scala 3', shortLabel: 'Scala', extension: '.scala' },
+  { id: 'haskell', exportId: 'haskell', label: 'Haskell', shortLabel: 'Haskell', extension: '.hs' },
+  { id: 'elixir', exportId: 'elixir', label: 'Elixir', shortLabel: 'Elixir', extension: '.ex' },
+  { id: 'lua', exportId: 'lua', label: 'Lua 5.4', shortLabel: 'Lua', extension: '.lua' },
+  { id: 'zig', exportId: 'zig', label: 'Zig', shortLabel: 'Zig', extension: '.zig' },
+  { id: 'dart', exportId: 'dart', label: 'Dart 3', shortLabel: 'Dart', extension: '.dart' },
+  { id: 'ocaml', exportId: 'ocaml', label: 'OCaml', shortLabel: 'OCaml', extension: '.ml' },
+];
+
+export type EngineSectionKey =
+  | 'all'
+  | 'grammar'
+  | 'mutations'
+  | 'jsonld'
+  | 'logic'
+  | 'evaluator'
+  | 'dsl'
+  | 'python'
+  | 'rust'
+  | 'wat'
+  | 'callbacks';
 
 export interface RulePropertyEntry {
   id: string;
@@ -51,11 +142,35 @@ export interface MutationPolicy {
   lockedRules: string[];
 }
 
+export interface GrammarSymbolDefinitions {
+  oneOrMore?: string;
+  zeroOrMore?: string;
+  optional?: string;
+  repeatBraces?: string;
+  groupParens?: string;
+  charClassBrackets?: string;
+  posLookahead?: string;
+  negLookahead?: string;
+  posLookbehind?: string;
+  negLookbehind?: string;
+  wildcard?: string;
+  regexDelimiter?: string;
+}
+
+export interface GrammarSymbolStatus {
+  key: keyof GrammarSymbolDefinitions;
+  label: string;
+  value: string;
+  enabled: boolean;
+  usageCount: number;
+}
+
 export interface DialectConfig {
   preset: DialectPresetId;
   ruleOperator: string;
   choiceDelimiter: string;
   commentPrefix: string;
+  symbols?: GrammarSymbolDefinitions;
 }
 
 export interface SchemaConfig {
@@ -90,7 +205,8 @@ export interface GrammarDiagnostic {
     | 'DUPLICATE_RULE'
     | 'UNDEFINED_REF'
     | 'CYCLE'
-    | 'UNREACHABLE';
+    | 'UNREACHABLE'
+    | 'DISABLED_SYMBOL';
   message: string;
 }
 
@@ -111,6 +227,7 @@ export interface RuleGraphNode {
   inCycle: boolean;
   isLocked: boolean;
   expression: string;
+  usedOperators?: string[];
 }
 
 export interface RuleGraphEdge {
@@ -131,6 +248,7 @@ export interface RuleDependencyGraphData {
   missingRules: string[];
   errorCount: number;
   warningCount: number;
+  symbolRegistry?: GrammarSymbolStatus[];
 }
 
 export interface LineMutation {
@@ -337,7 +455,48 @@ export interface VaultRecord {
   snapshot?: WorkspaceSnapshot;
 }
 
+export type PipelineGridMode = 'compact' | 'lanes' | 'rail';
+
+export interface BreadcrumbSibling {
+  id: string;
+  label: string;
+  sublabel?: string;
+  active: boolean;
+  verified?: boolean;
+  targetTopView?: TopView;
+  targetStage?: 'all' | PipelineStage;
+  targetPage?: WorkflowSlug;
+}
+
+export interface BreadcrumbItem {
+  id: string;
+  position: number;
+  label: string;
+  kind: 'root' | 'view' | 'stage' | 'step' | 'context';
+  href: string;
+  current: boolean;
+  targetTopView?: TopView;
+  targetStage?: 'all' | PipelineStage;
+  targetPage?: WorkflowSlug;
+  siblings?: BreadcrumbSibling[];
+}
+
+export interface SchemaOrgBreadcrumbList {
+  '@context': 'https://schema.org';
+  '@type': 'BreadcrumbList';
+  name: string;
+  numberOfItems: number;
+  itemListElement: Array<{
+    '@type': 'ListItem';
+    position: number;
+    name: string;
+    item: string;
+    identifier: string;
+  }>;
+}
+
 export type McpServerId =
+  | 'pipeline'
   | 'grammar'
   | 'rule_props'
   | 'logic_calc'

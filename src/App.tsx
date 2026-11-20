@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   Download,
-  GripVertical,
-  Maximize2,
   Moon,
   Search,
   Sun,
@@ -30,8 +26,10 @@ import {
   DEFAULT_MUTATION_POLICY,
   deleteGrammarRule,
   evaluateGrammarPayload,
+  extractLiteralAlternationFromRegex,
   extractRulesFromPythonAst,
   extractRulesFromRustAst,
+  formatGrammarRuleLine,
   formatPythonAstDump,
   formatRustAstDump,
   generatePythonFromWorkspace,
@@ -52,6 +50,7 @@ import {
 } from './engine/bidirectionalEngine';
 import { LOGIC_CALCULATOR_PRESETS, type LogicLabelBinding } from './engine/logicLambdaEngine';
 import type { McpWorkspaceContext } from './engine/mcpServerEngine';
+import { buildPipelineBreadcrumbs } from './engine/pipelineBreadcrumbs';
 import { downloadPhpProjectZip } from './engine/phpZipPackager';
 import {
   createDriveWorkspace,
@@ -66,6 +65,9 @@ import {
 } from './services/googleDriveAuth';
 import { ConfirmDialog } from './components/ConfirmDialog';
 import { BundleInspector, DslInspector, OpenApiInspector } from './components/InspectorViews';
+import type { PipelineMcpUiEffect } from './components/McpServersWorkbench';
+import { PipelineBreadcrumbs } from './components/PipelineBreadcrumbs';
+import { PipelineGrid } from './components/PipelineGrid';
 import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
@@ -74,8 +76,10 @@ import type {
   DialectPresetId,
   JsonLdSchemaPackage,
   LineMutation,
+  McpServerId,
   ModalStructure,
   MutationPolicy,
+  PipelineGridMode,
   PipelineStage,
   PrimaryLanguage,
   RuleMergeStrategy,
@@ -155,8 +159,6 @@ export default function App() {
   // Drag-and-drop reorder / merge strategy & undo stack
   const [mergeStrategy, setMergeStrategy] = useState<RuleMergeStrategy>('choice');
   const [undoStack, setUndoStack] = useState<Array<{ grammarText: string; dslSource: string; label: string }>>([]);
-  const [draggedFlowId, setDraggedFlowId] = useState<string | null>(null);
-  const [flowDropTarget, setFlowDropTarget] = useState<{ id: string; position: 'before' | 'after' } | null>(null);
 
   useEffect(() => {
     if (!notice) return;
@@ -178,6 +180,8 @@ export default function App() {
   );
 
   const [stageFilter, setStageFilter] = useState<'all' | PipelineStage>('all');
+  const [pipelineLayoutMode, setPipelineLayoutMode] = useState<PipelineGridMode>('compact');
+  const [selectedMcpServerId, setSelectedMcpServerId] = useState<McpServerId>('pipeline');
   const [mutations, setMutations] = useState<Record<string, LineMutation>>(() =>
     inferLineMutations(parseGrammar(initialPreset.sampleGrammar, initialPreset.config))
   );
@@ -209,8 +213,8 @@ export default function App() {
   const [evalRule, setEvalRule] = useState(initialPreset.sampleRule);
   const [evalPayload, setEvalPayload] = useState(initialPreset.samplePayload);
   const evalResult = useMemo(
-    () => evaluateGrammarPayload(rules, evalRule, evalPayload),
-    [rules, evalRule, evalPayload]
+    () => evaluateGrammarPayload(rules, evalRule, evalPayload, mutations),
+    [rules, evalRule, evalPayload, mutations]
   );
 
   // Python AST state
@@ -309,7 +313,7 @@ export default function App() {
     ) => {
       const policy = nextPolicy ?? mutationPolicy;
       const nextRules = parseGrammar(nextGrammar, nextDialect);
-      const mergedMuts = inferLineMutations(nextRules, nextMutations ?? mutations);
+      const mergedMuts = inferLineMutations(nextRules, nextMutations ?? mutations, rules);
       const mergedCfgs = inferRuleOrderConfigs(nextRules, nextRuleConfigs ?? ruleConfigs);
       setMutations(mergedMuts);
       setRuleConfigs(mergedCfgs);
@@ -330,12 +334,12 @@ export default function App() {
       if (nextRules.length > 0 && !nextRules.some((r) => r.name === evalRule)) {
         setEvalRule(nextRules[0].name);
       }
-      setSyncDirection('Grammar → JSON-LD → Python / Rust / WASM / MCP');
+      setSyncDirection('Grammar → JSON-LD → Mutations / Evaluator / Python / Rust / WASM / MCP');
     },
-    [mutations, mutationPolicy, ruleConfigs, evalRule]
+    [rules, mutations, mutationPolicy, ruleConfigs, evalRule]
   );
 
-  // Sync active Studio workspace snapshot into lazy HTTP MCP server registry (debounced)
+  // Sync active Studio workspace + pipeline/breadcrumb state into lazy HTTP MCP server registry (debounced)
   const mcpWorkspaceContext: McpWorkspaceContext = useMemo(
     () => ({
       dialect,
@@ -352,6 +356,12 @@ export default function App() {
       watSource,
       logicStatement,
       logicLabels,
+      dslSource,
+      topView,
+      activePage,
+      stageFilter,
+      verifiedSteps,
+      pipelineLayoutMode,
     }),
     [
       dialect,
@@ -368,6 +378,12 @@ export default function App() {
       watSource,
       logicStatement,
       logicLabels,
+      dslSource,
+      topView,
+      activePage,
+      stageFilter,
+      verifiedSteps,
+      pipelineLayoutMode,
     ]
   );
 
@@ -469,8 +485,10 @@ export default function App() {
     );
     setJsonText(nextJson);
     setJsonValid(true);
+    setPythonSource(generatePythonFromWorkspace(rules, schemaConfig));
+    setRustSource(generateRustFromWorkspace(rules, schemaConfig, mutations, mutationPolicy));
     setWatSource(generateWatFromWorkspace(rules, schemaConfig.schemaName, nextJson));
-    setSyncDirection('Rule Properties → JSON-LD / WASM / MCP');
+    setSyncDirection('Rule Properties → JSON-LD / Python / Rust / WASM / MCP');
   };
 
   const handleApplyPrecedenceOrder = () => {
@@ -493,13 +511,17 @@ export default function App() {
       ...prev.slice(-14),
       { grammarText, dslSource, label: 'Sync logic statement to grammar' },
     ]);
-    const op = dialect.ruleOperator || '::=';
+    const op = dialect.ruleOperator ?? '';
     const c = dialect.commentPrefix || '//';
     const lines = [
       `${c} Synced from Logic & Lambda Calculus Calculator`,
-      `logic_expr ${op} '${statement.replace(/'/g, '"')}'`,
-      ...labels.map(
-        (l) => `${l.name.replace(/[^A-Za-z0-9_]/g, '_') || 'lbl'} ${op} '${l.value.replace(/'/g, '"')}'`
+      formatGrammarRuleLine('logic_expr', `'${statement.replace(/'/g, '"')}'`, op),
+      ...labels.map((l) =>
+        formatGrammarRuleLine(
+          l.name.replace(/[^A-Za-z0-9_]/g, '_') || 'lbl',
+          `'${l.value.replace(/'/g, '"')}'`,
+          op
+        )
       ),
     ];
     const nextGrammar = lines.join('\n');
@@ -518,7 +540,9 @@ export default function App() {
   const handleAutoStubMissingRules = (missingNames: string[]) => {
     if (missingNames.length === 0) return;
     setUndoStack((prev) => [...prev.slice(-14), { grammarText, dslSource, label: 'Auto-stub missing rules' }]);
-    const stubs = missingNames.map((name) => `${name} ${dialect.ruleOperator} '${name}'`).join('\n');
+    const stubs = missingNames
+      .map((name) => formatGrammarRuleLine(name, `'${name}'`, dialect.ruleOperator))
+      .join('\n');
     const nextGrammar = `${grammarText.trimEnd()}\n${stubs}\n`;
     setGrammarText(nextGrammar);
     recompileFromGrammar(nextGrammar, dialect, schemaConfig);
@@ -620,13 +644,18 @@ export default function App() {
         schemaOrgType: reverse.schemaType || schemaConfig.schemaOrgType,
       };
       setSchemaConfig(nextSchema);
-      const nextMuts = inferLineMutations(nextRules, mutations);
+      const nextMuts = inferLineMutations(nextRules, reverse.mutations ?? mutations, rules);
+      const nextCfgs = inferRuleOrderConfigs(nextRules, ruleConfigs);
       setMutations(nextMuts);
+      setRuleConfigs(nextCfgs);
       setPythonSource(generatePythonFromWorkspace(nextRules, nextSchema));
       setRustSource(generateRustFromWorkspace(nextRules, nextSchema, nextMuts, activePolicy));
       setWatSource(generateWatFromWorkspace(nextRules, nextSchema.schemaName, nextJson));
+      if (nextRules.length > 0 && !nextRules.some((r) => r.name === evalRule)) {
+        setEvalRule(nextRules[0].name);
+      }
     }
-    setSyncDirection('JSON-LD → Grammar → Python / Rust / WASM');
+    setSyncDirection('JSON-LD → Grammar → Mutations / Evaluator / Python / Rust / WASM');
   };
 
   const handleApplyDialectPreset = (presetId: DialectPresetId) => {
@@ -697,23 +726,69 @@ export default function App() {
       description: '',
       enabled: true,
     };
-    const nextMuts = { ...mutations, [ruleName]: { ...current, ...patch } };
+    const nextMut: LineMutation = { ...current, ...patch };
+    const nextMuts = { ...mutations, [ruleName]: nextMut };
+
+    // If Workbench 5 updates a leaf rule's patternOverride to a clean literal alternation
+    // (e.g. /^(0|1|2|3|4|5|6|7|8|9)$/), sync the Grammar rule branches as well so all workbenches align.
+    let activeGrammar = grammarText;
+    let activeRules = rules;
+    if (patch.patternOverride !== undefined && nextMut.enabled) {
+      const targetRule = rules.find((r) => r.name === ruleName);
+      if (targetRule && targetRule.referencedRules.length === 0) {
+        const extractedAlts = extractLiteralAlternationFromRegex(patch.patternOverride);
+        if (extractedAlts && extractedAlts.length > 0) {
+          const delim = dialect.choiceDelimiter || '|';
+          const nextExpr = extractedAlts
+            .map((lit) => (!lit.includes("'") ? `'${lit}'` : JSON.stringify(lit)))
+            .join(` ${delim} `);
+          if (nextExpr !== targetRule.expression) {
+            const updated = updateGrammarRule(
+              grammarText,
+              rules,
+              ruleName,
+              { expression: nextExpr },
+              dialect
+            );
+            if (updated.ok) {
+              activeGrammar = updated.grammar;
+              activeRules = parseGrammar(activeGrammar, dialect);
+              setGrammarText(activeGrammar);
+            }
+          }
+        }
+      }
+    }
+
     setMutations(nextMuts);
-    const nextJson = grammarToSchemaJson(rules, dialect, schemaConfig, nextMuts, mutationPolicy);
+    const nextJson = grammarToSchemaJson(
+      activeRules,
+      dialect,
+      schemaConfig,
+      nextMuts,
+      mutationPolicy,
+      ruleConfigs
+    );
     setJsonText(nextJson);
     setJsonValid(true);
-    setRustSource(generateRustFromWorkspace(rules, schemaConfig, nextMuts, mutationPolicy));
-    setWatSource(generateWatFromWorkspace(rules, schemaConfig.schemaName, nextJson));
-    setSyncDirection('Line Mutations → JSON-LD / Rust / WASM');
+    setJsonError(null);
+    setPythonSource(generatePythonFromWorkspace(activeRules, schemaConfig));
+    setRustSource(generateRustFromWorkspace(activeRules, schemaConfig, nextMuts, mutationPolicy));
+    setWatSource(generateWatFromWorkspace(activeRules, schemaConfig.schemaName, nextJson));
+    setSyncDirection('Line Mutations → Grammar / Evaluator / JSON-LD / Python / Rust / WASM');
   };
 
   const handleAutoInferMutations = () => {
     const inferred = inferLineMutations(rules, {});
     setMutations(inferred);
-    const nextJson = grammarToSchemaJson(rules, dialect, schemaConfig, inferred, mutationPolicy);
+    const nextJson = grammarToSchemaJson(rules, dialect, schemaConfig, inferred, mutationPolicy, ruleConfigs);
     setJsonText(nextJson);
     setJsonValid(true);
+    setJsonError(null);
+    setPythonSource(generatePythonFromWorkspace(rules, schemaConfig));
     setRustSource(generateRustFromWorkspace(rules, schemaConfig, inferred, mutationPolicy));
+    setWatSource(generateWatFromWorkspace(rules, schemaConfig.schemaName, nextJson));
+    setSyncDirection('Line Mutations → Evaluator / JSON-LD / Python / Rust / WASM');
     showNotice(`Auto-inferred schema mutations for ${rules.length} rule(s).`);
   };
 
@@ -730,10 +805,14 @@ export default function App() {
       };
     }
     setMutations(cleared);
-    const nextJson = grammarToSchemaJson(rules, dialect, schemaConfig, cleared, mutationPolicy);
+    const nextJson = grammarToSchemaJson(rules, dialect, schemaConfig, cleared, mutationPolicy, ruleConfigs);
     setJsonText(nextJson);
     setJsonValid(true);
+    setJsonError(null);
+    setPythonSource(generatePythonFromWorkspace(rules, schemaConfig));
     setRustSource(generateRustFromWorkspace(rules, schemaConfig, cleared, mutationPolicy));
+    setWatSource(generateWatFromWorkspace(rules, schemaConfig.schemaName, nextJson));
+    setSyncDirection('Line Mutations → Evaluator / JSON-LD / Python / Rust / WASM');
     showNotice('Reset line mutations to defaults.');
   };
 
@@ -1318,9 +1397,58 @@ export default function App() {
     label: '1. Grammar & DAG',
   };
 
-  const visibleFlows = useMemo(
-    () => (stageFilter === 'all' ? flows : flows.filter((f) => f.stage === stageFilter)),
-    [flows, stageFilter]
+  const breadcrumbs = useMemo(
+    () =>
+      buildPipelineBreadcrumbs({
+        flows,
+        topView,
+        activePage,
+        stageFilter,
+        verifiedSteps,
+        contextLabel:
+          topView === 'workbench'
+            ? activePage === 'mcp_servers'
+              ? `/api/mcp/${selectedMcpServerId}`
+              : schemaConfig.schemaName
+            : schemaConfig.schemaName,
+        origin: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000',
+      }),
+    [flows, topView, activePage, stageFilter, verifiedSteps, selectedMcpServerId, schemaConfig.schemaName]
+  );
+
+  const handleBreadcrumbNavigate = useCallback(
+    (target: { topView?: TopView; stageFilter?: 'all' | PipelineStage; page?: WorkflowSlug }) => {
+      if (target.topView) setTopView(target.topView);
+      if (target.stageFilter !== undefined) setStageFilter(target.stageFilter);
+      if (target.page) setActivePage(target.page);
+    },
+    []
+  );
+
+  const handleOpenMcpServer = useCallback((serverId: McpServerId) => {
+    setSelectedMcpServerId(serverId);
+    setTopView('workbench');
+    setActivePage('mcp_servers');
+  }, []);
+
+  const handlePipelineMcpEffect = useCallback(
+    (effect: PipelineMcpUiEffect) => {
+      if (effect.topView) setTopView(effect.topView);
+      if (effect.stageFilter !== undefined) setStageFilter(effect.stageFilter);
+      if (effect.activePage) setActivePage(effect.activePage);
+      if (effect.verifiedSteps) setVerifiedSteps(effect.verifiedSteps);
+      if (effect.pipelineLayoutMode) setPipelineLayoutMode(effect.pipelineLayoutMode);
+      if (effect.dslSource && effect.dslSource !== dslSource) {
+        setUndoStack((prev) => [
+          ...prev.slice(-14),
+          { grammarText, dslSource, label: 'MCP pipeline reorder' },
+        ]);
+        setDslSource(effect.dslSource);
+      }
+      setSyncDirection('MCP /api/mcp/pipeline → Pipeline Grid & Breadcrumbs');
+      showNotice('Applied live Pipeline MCP update to Studio Grid & Breadcrumbs.');
+    },
+    [dslSource, grammarText, showNotice]
   );
 
   const stepByOffset = (delta: number) => {
@@ -1539,6 +1667,8 @@ export default function App() {
     logicStatement,
     logicLabels,
     mcpWorkspaceContext,
+    selectedMcpServerId,
+    onPipelineMcpEffect: handlePipelineMcpEffect,
     onUpdateRule: handleUpdateRule,
     onAddRule: handleAddRule,
     onDeleteRule: handleDeleteRule,
@@ -1816,6 +1946,14 @@ export default function App() {
           </div>
         </section>
 
+        {/* WELL-DEFINED WAI-ARIA + SCHEMA.ORG BREADCRUMB NAVIGATION */}
+        <PipelineBreadcrumbs
+          breadcrumbs={breadcrumbs}
+          onNavigate={handleBreadcrumbNavigate}
+          onOpenPipelineMcp={() => handleOpenMcpServer('pipeline')}
+          onExportJsonLd={triggerTextDownload}
+        />
+
         {/* TOP VIEW ROUTER */}
         {topView === 'graph' ? (
           <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
@@ -1868,197 +2006,26 @@ export default function App() {
           />
         ) : (
           <>
-            {/* WORKBENCH CAROUSEL STARTING FROM INDUSTRY 5-STAGE COMPILER GRID */}
-            <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
-              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h1 className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                    Workbench Grid Carousel
-                  </h1>
-                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                    5-stage compiler &amp; formal methods pipeline · Drag cards to reorder · Verify to advance to{' '}
-                    <code className="font-mono">{currentFlow.next}</code>
-                  </p>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => stepByOffset(-1)}
-                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => stepByOffset(1)}
-                    className="inline-flex items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-                  >
-                    Next
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
-                  >
-                    <Maximize2 className="h-3.5 w-3.5" />
-                    Open Modal Workbench
-                  </button>
-                </div>
-              </div>
-
-              {/* Industry Compiler Pipeline Stage Filter */}
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-                <div
-                  className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
-                  role="group"
-                  aria-label="Filter workbench by compiler stage"
-                >
-                  {(
-                    [
-                      ['all', `All (${flows.length})`],
-                      ['frontend', 'Frontend'],
-                      ['formal', 'Formal Logic'],
-                      ['ir', 'IR & Schema'],
-                      ['codegen', 'Codegen & MCP'],
-                      ['storage', 'Storage'],
-                    ] as const
-                  ).map(([id, label]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setStageFilter(id)}
-                      className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
-                        stageFilter === id
-                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
-                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-                      }`}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setActivePage('mcp_servers')}
-                  className="whitespace-nowrap text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
-                >
-                  Inspect 10 Lazy MCP Endpoints →
-                </button>
-              </div>
-
-              {/* Balanced 4x3 Labeled Workbench Grid Cards (Draggable to Reorder DSL Sequence) */}
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                {visibleFlows.map((flow) => {
-                  const isActive = flow.page === activePage;
-                  const isVerified = verifiedSteps.includes(flow.page);
-                  const isDraggingCard = draggedFlowId === flow.id;
-                  const dropPos = flowDropTarget?.id === flow.id ? flowDropTarget.position : null;
-                  return (
-                    <div
-                      key={flow.id}
-                      draggable
-                      onDragStart={(e) => {
-                        e.dataTransfer.effectAllowed = 'move';
-                        e.dataTransfer.setData('text/plain', flow.id);
-                        setDraggedFlowId(flow.id);
-                      }}
-                      onDragOver={(e) => {
-                        e.preventDefault();
-                        if (!draggedFlowId || draggedFlowId === flow.id) {
-                          if (flowDropTarget) setFlowDropTarget(null);
-                          return;
-                        }
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const position: 'before' | 'after' =
-                          e.clientX - rect.left < rect.width / 2 ? 'before' : 'after';
-                        if (!flowDropTarget || flowDropTarget.id !== flow.id || flowDropTarget.position !== position) {
-                          setFlowDropTarget({ id: flow.id, position });
-                        }
-                      }}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        const sourceId = draggedFlowId || e.dataTransfer.getData('text/plain');
-                        const pos = flowDropTarget?.id === flow.id ? flowDropTarget.position : 'before';
-                        setDraggedFlowId(null);
-                        setFlowDropTarget(null);
-                        if (sourceId && sourceId !== flow.id) {
-                          handleReorderFlows(sourceId, flow.id, pos);
-                        }
-                      }}
-                      onDragEnd={() => {
-                        setDraggedFlowId(null);
-                        setFlowDropTarget(null);
-                      }}
-                      className={`flex flex-col justify-between rounded-lg border p-3.5 transition-all ${
-                        isDraggingCard
-                          ? 'opacity-40'
-                          : isActive
-                            ? 'border-blue-600 bg-blue-50/40 ring-2 ring-blue-600/20 dark:border-blue-500 dark:bg-blue-950/30 dark:ring-blue-500/25'
-                            : 'border-slate-200 bg-white hover:border-slate-300 dark:border-slate-800 dark:bg-slate-900 dark:hover:border-slate-700'
-                      } ${
-                        dropPos === 'before'
-                          ? 'border-l-4 border-l-blue-600'
-                          : dropPos === 'after'
-                            ? 'border-r-4 border-r-blue-600'
-                            : ''
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center justify-between gap-2 text-[11px]">
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <span
-                              title="Drag to reorder workflow step"
-                              className="cursor-grab text-slate-400 hover:text-slate-600 active:cursor-grabbing dark:hover:text-slate-300"
-                            >
-                              <GripVertical className="h-3.5 w-3.5" />
-                            </span>
-                            <span className="truncate font-mono text-slate-500 dark:text-slate-400">
-                              {flow.stage} · {flow.lang}
-                            </span>
-                          </div>
-                          {isVerified && (
-                            <span className="inline-flex shrink-0 items-center gap-1 font-medium text-emerald-600 dark:text-emerald-400">
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              Verified
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-1.5 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                          {flow.label}
-                        </div>
-                      </div>
-
-                      <div className="mt-3 flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setActivePage(flow.page)}
-                          className={`flex-1 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                            isActive
-                              ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
-                              : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800'
-                          }`}
-                        >
-                          Page
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActivePage(flow.page);
-                            setModalOpen(true);
-                          }}
-                          className="flex-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-blue-600 transition-colors hover:bg-blue-50 dark:border-slate-700 dark:bg-slate-950 dark:text-blue-400 dark:hover:bg-blue-950/40"
-                        >
-                          Modal
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
+            {/* OPTIMIZED COMPILER PIPELINE GRID (Compact Grid / Stage Lanes / Rail) */}
+            <PipelineGrid
+              flows={flows}
+              stageSummaries={breadcrumbs.stageSummaries}
+              activePage={activePage}
+              currentFlow={currentFlow}
+              verifiedSteps={verifiedSteps}
+              stageFilter={stageFilter}
+              layoutMode={pipelineLayoutMode}
+              onSelectPage={setActivePage}
+              onOpenModalForPage={(page) => {
+                setActivePage(page);
+                setModalOpen(true);
+              }}
+              onStageFilterChange={setStageFilter}
+              onLayoutModeChange={setPipelineLayoutMode}
+              onStepOffset={stepByOffset}
+              onReorderFlows={handleReorderFlows}
+              onOpenMcpServer={handleOpenMcpServer}
+            />
 
             {/* ACTIVE DSL-CONTROLLED SPLIT PAGE + BIDIRECTIONAL LIVE STATE MIRROR */}
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">

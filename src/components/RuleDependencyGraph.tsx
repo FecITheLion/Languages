@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useId, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   AlertTriangle,
@@ -6,10 +6,13 @@ import {
   GitBranch,
   GitMerge,
   Lock,
+  Maximize2,
   Play,
   PlusCircle,
   Undo2,
   Unlock,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type { RuleDependencyGraphData, RuleGraphNode, RuleMergeStrategy } from '../types/studio';
 
@@ -40,12 +43,151 @@ type SvgDropIntent =
   | { targetId: string; kind: 'merge' }
   | { targetId: string; kind: 'before' | 'after' };
 
-const NODE_W = 168;
-const NODE_H = 60;
+const NODE_W = 208;
+const BASE_NODE_H = 62;
+const TITLE_LINE_H = 15;
+const META_LINE_H = 14;
+const TITLE_MAX_CHARS = 19;
+const META_MAX_CHARS = 19;
 const COL_GAP = 72;
 const ROW_GAP = 28;
 const PAD_X = 28;
 const PAD_Y = 38;
+
+interface NodeLayoutBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  roleLabel: string;
+  titleLines: string[];
+  metaLines: string[];
+}
+
+function getNodeRoleLabel(node: RuleGraphNode): string {
+  return node.isMissing
+    ? 'missing'
+    : node.inCycle
+      ? 'cycle'
+      : node.isUnreachable
+        ? 'unreachable'
+        : node.isRoot
+          ? 'entry'
+          : node.isLeaf
+            ? 'terminal'
+            : 'rule';
+}
+
+/**
+ * Wraps words to fit within maxChars per line without overflowing an SVG box.
+ */
+function wrapWords(text: string, maxChars: number, maxLines = 3): string[] {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [''];
+  const lines: string[] = [];
+  let current = '';
+
+  for (const word of words) {
+    if (!current) {
+      current = word;
+    } else if (current.length + 1 + word.length <= maxChars) {
+      current = `${current} ${word}`;
+    } else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  if (current) lines.push(current);
+
+  if (lines.length <= maxLines) return lines;
+  const trimmed = lines.slice(0, maxLines);
+  const last = trimmed[maxLines - 1];
+  trimmed[maxLines - 1] =
+    last.length >= maxChars ? `${last.slice(0, Math.max(1, maxChars - 1))}…` : `${last}…`;
+  return trimmed;
+}
+
+/**
+ * Wraps dot-separated list points so line breaks always occur cleanly at list separators
+ * instead of overflowing the node border.
+ */
+function wrapListPoints(items: string[], maxChars: number, separator = ' · '): string[] {
+  const lines: string[] = [];
+  let current = '';
+
+  for (const rawItem of items) {
+    const item = rawItem.trim();
+    if (!item) continue;
+
+    if (!current) {
+      if (item.length <= maxChars) {
+        current = item;
+      } else {
+        const subLines = wrapWords(item, maxChars, 3);
+        lines.push(...subLines.slice(0, -1));
+        current = subLines[subLines.length - 1] || '';
+      }
+      continue;
+    }
+
+    if (current.length + separator.length + item.length <= maxChars) {
+      current = `${current}${separator}${item}`;
+    } else {
+      lines.push(current);
+      if (item.length <= maxChars) {
+        current = item;
+      } else {
+        const subLines = wrapWords(item, maxChars, 3);
+        lines.push(...subLines.slice(0, -1));
+        current = subLines[subLines.length - 1] || '';
+      }
+    }
+  }
+
+  if (current) lines.push(current);
+  return lines.length > 0 ? lines : [''];
+}
+
+/**
+ * Wraps long rule names at underscore/hyphen boundaries so titles never spill past the box.
+ */
+function wrapRuleName(name: string, maxChars: number, maxLines = 2): string[] {
+  if (name.length <= maxChars) return [name];
+
+  const tokens = name.split(/(?<=[_-])/);
+  const lines: string[] = [];
+  let current = '';
+
+  for (const token of tokens) {
+    if (!current) {
+      current = token;
+    } else if (current.length + token.length <= maxChars) {
+      current += token;
+    } else {
+      lines.push(current);
+      current = token;
+    }
+  }
+  if (current) lines.push(current);
+
+  const normalized: string[] = [];
+  for (const line of lines) {
+    if (line.length <= maxChars) {
+      normalized.push(line);
+    } else {
+      for (let i = 0; i < line.length; i += maxChars) {
+        normalized.push(line.slice(i, i + maxChars));
+      }
+    }
+  }
+
+  if (normalized.length <= maxLines) return normalized;
+  const capped = normalized.slice(0, maxLines);
+  const last = capped[maxLines - 1];
+  capped[maxLines - 1] =
+    last.length >= maxChars ? `${last.slice(0, Math.max(1, maxChars - 1))}…` : `${last}…`;
+  return capped;
+}
 
 const MERGE_STRATEGIES: Array<{ id: RuleMergeStrategy; label: string }> = [
   { id: 'choice', label: 'Choice (|)' },
@@ -68,7 +210,12 @@ export function RuleDependencyGraph({
 }: RuleDependencyGraphProps) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [dragState, setDragState] = useState<SvgDragState | null>(null);
+  const [zoomMode, setZoomMode] = useState<'fit' | 'scale'>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 'fit' : 'scale'
+  );
+  const [zoomScale, setZoomScale] = useState<number>(1);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const graphUid = useId().replace(/:/g, '');
 
   const canDragNodes = Boolean(onReorderRules || onMergeRules);
 
@@ -80,28 +227,73 @@ export function RuleDependencyGraph({
     return graph.nodes[0] || null;
   }, [graph.nodes, selectedNodeId]);
 
-  // Compute node coordinates by topological layer
+  // Compute node coordinates and dynamic wrapped text heights by topological layer
   const layout = useMemo(() => {
-    const positions = new Map<string, { x: number; y: number }>();
-    const levelCounts = new Map<number, number>();
+    const positions = new Map<string, NodeLayoutBox>();
+    const columns = new Map<
+      number,
+      Array<{
+        node: RuleGraphNode;
+        roleLabel: string;
+        titleLines: string[];
+        metaLines: string[];
+        height: number;
+      }>
+    >();
     let maxLevel = 0;
 
     for (const node of graph.nodes) {
       maxLevel = Math.max(maxLevel, node.level);
-      levelCounts.set(node.level, (levelCounts.get(node.level) || 0) + 1);
+      const roleLabel = getNodeRoleLabel(node);
+      const titleLines = wrapRuleName(node.name, TITLE_MAX_CHARS, 2);
+      const metaItems = [
+        roleLabel,
+        `${node.branchesCount} alt`,
+        `in:${node.inDegree}`,
+        `out:${node.outDegree}`,
+      ];
+      const metaLines = wrapListPoints(metaItems, META_MAX_CHARS, ' · ');
+      const computedHeight = Math.max(
+        BASE_NODE_H,
+        14 + titleLines.length * TITLE_LINE_H + 10 + metaLines.length * META_LINE_H + 10
+      );
+
+      const list = columns.get(node.level) || [];
+      list.push({ node, roleLabel, titleLines, metaLines, height: computedHeight });
+      columns.set(node.level, list);
     }
 
-    const maxRows = Math.max(1, ...Array.from(levelCounts.values()));
-    const svgWidth = Math.max(540, PAD_X * 2 + (maxLevel + 1) * NODE_W + maxLevel * COL_GAP);
-    const svgHeight = Math.max(230, PAD_Y * 2 + maxRows * NODE_H + (maxRows - 1) * ROW_GAP);
+    let maxColHeight = 0;
+    for (const colItems of columns.values()) {
+      colItems.sort((a, b) => a.node.orderInLevel - b.node.orderInLevel);
+      const colHeight =
+        colItems.reduce((sum, item) => sum + item.height, 0) +
+        Math.max(0, colItems.length - 1) * ROW_GAP;
+      maxColHeight = Math.max(maxColHeight, colHeight);
+    }
 
-    for (const node of graph.nodes) {
-      const countInCol = levelCounts.get(node.level) || 1;
-      const colHeight = countInCol * NODE_H + (countInCol - 1) * ROW_GAP;
-      const startY = (svgHeight - colHeight) / 2;
-      const x = PAD_X + node.level * (NODE_W + COL_GAP);
-      const y = startY + node.orderInLevel * (NODE_H + ROW_GAP);
-      positions.set(node.id, { x, y });
+    const svgWidth = Math.max(560, PAD_X * 2 + (maxLevel + 1) * NODE_W + maxLevel * COL_GAP);
+    const svgHeight = Math.max(240, PAD_Y * 2 + maxColHeight);
+
+    for (const [level, colItems] of columns.entries()) {
+      const colHeight =
+        colItems.reduce((sum, item) => sum + item.height, 0) +
+        Math.max(0, colItems.length - 1) * ROW_GAP;
+      let cursorY = (svgHeight - colHeight) / 2;
+      const x = PAD_X + level * (NODE_W + COL_GAP);
+
+      for (const item of colItems) {
+        positions.set(item.node.id, {
+          x,
+          y: cursorY,
+          width: NODE_W,
+          height: item.height,
+          roleLabel: item.roleLabel,
+          titleLines: item.titleLines,
+          metaLines: item.metaLines,
+        });
+        cursorY += item.height + ROW_GAP;
+      }
     }
 
     return { positions, svgWidth, svgHeight };
@@ -128,11 +320,11 @@ export function RuleDependencyGraph({
       const pos = layout.positions.get(node.id);
       if (!pos) continue;
 
-      const withinX = currentX >= pos.x - 10 && currentX <= pos.x + NODE_W + 10;
-      const withinY = currentY >= pos.y - 12 && currentY <= pos.y + NODE_H + 12;
+      const withinX = currentX >= pos.x - 10 && currentX <= pos.x + pos.width + 10;
+      const withinY = currentY >= pos.y - 12 && currentY <= pos.y + pos.height + 12;
       if (!withinX || !withinY) continue;
 
-      const relY = (currentY - pos.y) / NODE_H;
+      const relY = (currentY - pos.y) / pos.height;
       if (relY < 0.25 && onReorderRules) {
         return { targetId: node.id, kind: 'before' };
       }
@@ -314,17 +506,77 @@ export function RuleDependencyGraph({
       <div className={`grid grid-cols-1 gap-4 ${compact ? '' : 'lg:grid-cols-12'}`}>
         {/* Interactive SVG Directed Graph Canvas */}
         <div
-          className={`${compact ? '' : 'lg:col-span-8'} overflow-auto rounded-xl border border-slate-200 bg-slate-50/70 p-2 dark:border-slate-800 dark:bg-slate-950`}
+          className={`${compact ? '' : 'lg:col-span-8'} flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-slate-50/70 dark:border-slate-800 dark:bg-slate-950`}
         >
+          {/* Mobile & Desktop Zoom / Fit Strip */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/80 bg-white/80 px-3 py-1.5 text-[11px] dark:border-slate-800 dark:bg-slate-900/80">
+            <span className="text-slate-500 dark:text-slate-400">
+              Tap a node to inspect · {zoomMode === 'fit' ? 'Fit to width' : `${Math.round(zoomScale * 100)}%`}
+            </span>
+            <div className="inline-flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setZoomMode('fit')}
+                className={`inline-flex items-center gap-1 rounded border px-2 py-0.5 font-medium transition-colors ${
+                  zoomMode === 'fit'
+                    ? 'border-blue-600 bg-blue-600 text-white'
+                    : 'border-slate-200 bg-white text-slate-600 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'
+                }`}
+              >
+                <Maximize2 className="h-3 w-3" />
+                Fit
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setZoomMode('scale');
+                  setZoomScale((s) => Math.max(0.6, Number((s - 0.15).toFixed(2))));
+                }}
+                aria-label="Zoom out graph"
+                className="rounded border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+              >
+                <ZoomOut className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setZoomMode('scale');
+                  setZoomScale(1);
+                }}
+                className={`rounded border px-2 py-0.5 font-mono tabular-nums transition-colors ${
+                  zoomMode === 'scale' && zoomScale === 1
+                    ? 'border-blue-600 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-950/60 dark:text-blue-300'
+                    : 'border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'
+                }`}
+              >
+                100%
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setZoomMode('scale');
+                  setZoomScale((s) => Math.min(1.6, Number((s + 0.15).toFixed(2))));
+                }}
+                aria-label="Zoom in graph"
+                className="rounded border border-slate-200 bg-white p-1 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+              >
+                <ZoomIn className="h-3 w-3" />
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-auto p-2">
           <svg
             ref={svgRef}
-            width={layout.svgWidth}
-            height={layout.svgHeight}
+            width={zoomMode === 'fit' ? undefined : Math.round(layout.svgWidth * zoomScale)}
+            height={zoomMode === 'fit' ? undefined : Math.round(layout.svgHeight * zoomScale)}
             viewBox={`0 0 ${layout.svgWidth} ${layout.svgHeight}`}
             onPointerMove={handleSvgPointerMove}
             onPointerUp={handleSvgPointerUp}
             onPointerCancel={() => setDragState(null)}
-            className="mx-auto block touch-none select-none"
+            className={`mx-auto block select-none ${
+              zoomMode === 'fit' ? 'h-auto w-full max-w-full' : ''
+            } ${dragState?.isDragging ? 'touch-none' : 'touch-pan-x touch-pan-y'}`}
             role="img"
             aria-label="Directed grammar rule dependency graph with drag-and-drop reorder and merge"
           >
@@ -354,21 +606,21 @@ export function RuleDependencyGraph({
 
               let d: string;
               if (edge.from === edge.to) {
-                const cx = fromPos.x + NODE_W / 2;
+                const cx = fromPos.x + fromPos.width / 2;
                 const ty = fromPos.y;
                 d = `M ${cx - 18} ${ty} C ${cx - 34} ${ty - 36}, ${cx + 34} ${ty - 36}, ${cx + 18} ${ty - 2}`;
               } else if (edge.isCycleEdge || toPos.x <= fromPos.x) {
-                const x1 = fromPos.x + NODE_W / 2;
+                const x1 = fromPos.x + fromPos.width / 2;
                 const y1 = fromPos.y;
-                const x2 = toPos.x + NODE_W / 2;
+                const x2 = toPos.x + toPos.width / 2;
                 const y2 = toPos.y;
                 const arcY = Math.min(y1, y2) - 34;
                 d = `M ${x1} ${y1} C ${x1} ${arcY}, ${x2} ${arcY}, ${x2} ${y2 - 2}`;
               } else {
-                const x1 = fromPos.x + NODE_W;
-                const y1 = fromPos.y + NODE_H / 2;
+                const x1 = fromPos.x + fromPos.width;
+                const y1 = fromPos.y + fromPos.height / 2;
                 const x2 = toPos.x - 2;
-                const y2 = toPos.y + NODE_H / 2;
+                const y2 = toPos.y + toPos.height / 2;
                 const dx = Math.max(28, (x2 - x1) * 0.45);
                 d = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
               }
@@ -404,7 +656,7 @@ export function RuleDependencyGraph({
             })}
 
             {/* Nodes */}
-            {graph.nodes.map((node) => {
+            {graph.nodes.map((node, nodeIdx) => {
               const pos = layout.positions.get(node.id);
               if (!pos) return null;
               const isSelected = activeNode?.id === node.id;
@@ -435,17 +687,12 @@ export function RuleDependencyGraph({
                       ? 'fill-blue-50 dark:fill-blue-950/60'
                       : 'fill-white dark:fill-slate-900';
 
-              const roleLabel = node.isMissing
-                ? 'missing'
-                : node.inCycle
-                  ? 'cycle'
-                  : node.isUnreachable
-                    ? 'unreachable'
-                    : node.isRoot
-                      ? 'entry'
-                      : node.isLeaf
-                        ? 'terminal'
-                        : 'rule';
+              const displayMetaLines = isMergeTarget
+                ? wrapWords(`Drop to merge (${mergeStrategy})`, META_MAX_CHARS + 2, 2)
+                : pos.metaLines;
+              const titleStartY = 22;
+              const metaStartY = 14 + pos.titleLines.length * TITLE_LINE_H + 13;
+              const clipId = `rule-node-clip-${graphUid}-${nodeIdx}`;
 
               return (
                 <g
@@ -455,101 +702,133 @@ export function RuleDependencyGraph({
                   className={canDragNodes && !node.isMissing ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}
                   opacity={isDragSource ? 0.4 : 1}
                 >
+                  <clipPath id={clipId}>
+                    <rect x={8} y={3} width={pos.width - 16} height={pos.height - 6} rx={5} />
+                  </clipPath>
+
                   {/* Reorder top / bottom insertion indicator */}
                   {isReorderBefore && (
                     <g>
-                      <line x1={-4} y1={-6} x2={NODE_W + 4} y2={-6} stroke="#2563eb" strokeWidth={3} strokeLinecap="round" />
+                      <line x1={-4} y1={-6} x2={pos.width + 4} y2={-6} stroke="#2563eb" strokeWidth={3} strokeLinecap="round" />
                       <circle cx={-4} cy={-6} r={3.5} fill="#2563eb" />
-                      <text x={NODE_W / 2} y={-11} textAnchor="middle" className="fill-blue-600 font-sans text-[10px] font-semibold">
+                      <text x={pos.width / 2} y={-11} textAnchor="middle" fontSize={10} className="fill-blue-600 font-sans font-semibold">
                         Reorder before {node.name}
                       </text>
                     </g>
                   )}
                   {isReorderAfter && (
                     <g>
-                      <line x1={-4} y1={NODE_H + 6} x2={NODE_W + 4} y2={NODE_H + 6} stroke="#2563eb" strokeWidth={3} strokeLinecap="round" />
-                      <circle cx={-4} cy={NODE_H + 6} r={3.5} fill="#2563eb" />
-                      <text x={NODE_W / 2} y={NODE_H + 19} textAnchor="middle" className="fill-blue-600 font-sans text-[10px] font-semibold">
+                      <line x1={-4} y1={pos.height + 6} x2={pos.width + 4} y2={pos.height + 6} stroke="#2563eb" strokeWidth={3} strokeLinecap="round" />
+                      <circle cx={-4} cy={pos.height + 6} r={3.5} fill="#2563eb" />
+                      <text x={pos.width / 2} y={pos.height + 19} textAnchor="middle" fontSize={10} className="fill-blue-600 font-sans font-semibold">
                         Reorder after {node.name}
                       </text>
                     </g>
                   )}
 
                   <rect
-                    width={NODE_W}
-                    height={NODE_H}
+                    width={pos.width}
+                    height={pos.height}
                     rx={8}
                     className={fillClass}
                     stroke={strokeColor}
                     strokeWidth={isMergeTarget ? 2.5 : isSelected ? 2 : 1.25}
                     strokeDasharray={isMergeTarget ? '5 3' : node.isMissing ? '4 3' : undefined}
                   />
-                  <text
-                    x={12}
-                    y={24}
-                    className="fill-slate-900 font-mono text-[12px] font-semibold dark:fill-slate-100"
-                  >
-                    {node.name.length > 18 ? `${node.name.slice(0, 17)}…` : node.name}
-                  </text>
-                  <text
-                    x={12}
-                    y={44}
-                    className={
-                      isMergeTarget
-                        ? 'fill-emerald-700 font-sans text-[10px] font-semibold dark:fill-emerald-300'
-                        : 'fill-slate-500 font-mono text-[10px] dark:fill-slate-400'
-                    }
-                  >
-                    {isMergeTarget
-                      ? `Drop to merge (${mergeStrategy})`
-                      : `${roleLabel} · ${node.branchesCount} alt · in:${node.inDegree} out:${node.outDegree}`}
-                  </text>
+                  <g clipPath={`url(#${clipId})`}>
+                    <text
+                      x={12}
+                      y={titleStartY}
+                      fontSize={12}
+                      className="fill-slate-900 font-mono font-semibold dark:fill-slate-100"
+                    >
+                      {pos.titleLines.map((line, lineIdx) => (
+                        <tspan key={lineIdx} x={12} dy={lineIdx === 0 ? 0 : TITLE_LINE_H}>
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                    <text
+                      x={12}
+                      y={metaStartY}
+                      fontSize={10}
+                      className={
+                        isMergeTarget
+                          ? 'fill-emerald-700 font-sans font-semibold dark:fill-emerald-300'
+                          : 'fill-slate-500 font-mono dark:fill-slate-400'
+                      }
+                    >
+                      {displayMetaLines.map((line, lineIdx) => (
+                        <tspan key={lineIdx} x={12} dy={lineIdx === 0 ? 0 : META_LINE_H}>
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                  </g>
                 </g>
               );
             })}
 
             {/* Live Drag Connector & Ghost Preview */}
-            {dragState?.isDragging && (
-              <g pointerEvents="none">
-                {(() => {
-                  const srcPos = layout.positions.get(dragState.sourceId);
-                  if (!srcPos) return null;
-                  return (
+            {dragState?.isDragging && (() => {
+              const srcPos = layout.positions.get(dragState.sourceId);
+              const ghostTitleLines = wrapRuleName(dragState.sourceId, TITLE_MAX_CHARS, 2);
+              const ghostHintText =
+                dropIntent?.kind === 'merge'
+                  ? `Merge → ${dropIntent.targetId} (${mergeStrategy})`
+                  : dropIntent
+                    ? `Move ${dropIntent.kind} ${dropIntent.targetId}`
+                    : 'Drag onto a rule node';
+              const ghostHintLines = wrapWords(ghostHintText, META_MAX_CHARS + 2, 2);
+              const ghostH = Math.max(
+                BASE_NODE_H,
+                14 + ghostTitleLines.length * TITLE_LINE_H + 10 + ghostHintLines.length * META_LINE_H + 10
+              );
+              const ghostMetaY = 14 + ghostTitleLines.length * TITLE_LINE_H + 13;
+
+              return (
+                <g pointerEvents="none">
+                  {srcPos && (
                     <line
-                      x1={srcPos.x + NODE_W / 2}
-                      y1={srcPos.y + NODE_H / 2}
+                      x1={srcPos.x + srcPos.width / 2}
+                      y1={srcPos.y + srcPos.height / 2}
                       x2={dragState.currentX}
                       y2={dragState.currentY}
                       stroke={dropIntent?.kind === 'merge' ? '#059669' : '#2563eb'}
                       strokeWidth={2}
                       strokeDasharray="5 4"
                     />
-                  );
-                })()}
-                <g transform={`translate(${dragState.currentX - NODE_W / 2}, ${dragState.currentY - NODE_H / 2})`}>
-                  <rect
-                    width={NODE_W}
-                    height={NODE_H}
-                    rx={8}
-                    fill={dropIntent?.kind === 'merge' ? '#ecfdf5' : '#eff6ff'}
-                    stroke={dropIntent?.kind === 'merge' ? '#059669' : '#2563eb'}
-                    strokeWidth={2}
-                    opacity={0.92}
-                  />
-                  <text x={12} y={25} className="fill-slate-900 font-mono text-[12px] font-semibold">
-                    {dragState.sourceId}
-                  </text>
-                  <text x={12} y={44} className="fill-slate-600 font-sans text-[10px] font-medium">
-                    {dropIntent?.kind === 'merge'
-                      ? `Merge → ${dropIntent.targetId} (${mergeStrategy})`
-                      : dropIntent
-                        ? `Move ${dropIntent.kind} ${dropIntent.targetId}`
-                        : 'Drag onto a rule node'}
-                  </text>
+                  )}
+                  <g transform={`translate(${dragState.currentX - NODE_W / 2}, ${dragState.currentY - ghostH / 2})`}>
+                    <rect
+                      width={NODE_W}
+                      height={ghostH}
+                      rx={8}
+                      fill={dropIntent?.kind === 'merge' ? '#ecfdf5' : '#eff6ff'}
+                      stroke={dropIntent?.kind === 'merge' ? '#059669' : '#2563eb'}
+                      strokeWidth={2}
+                      opacity={0.92}
+                    />
+                    <text x={12} y={22} className="fill-slate-900 font-mono text-[12px] font-semibold">
+                      {ghostTitleLines.map((line, lineIdx) => (
+                        <tspan key={lineIdx} x={12} dy={lineIdx === 0 ? 0 : TITLE_LINE_H}>
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                    <text x={12} y={ghostMetaY} className="fill-slate-600 font-sans text-[10px] font-medium">
+                      {ghostHintLines.map((line, lineIdx) => (
+                        <tspan key={lineIdx} x={12} dy={lineIdx === 0 ? 0 : META_LINE_H}>
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                  </g>
                 </g>
-              </g>
-            )}
+              );
+            })()}
           </svg>
+          </div>
         </div>
 
         {/* Selected Node Inspector & Topological Order */}
@@ -582,6 +861,20 @@ export function RuleDependencyGraph({
               <pre className="mt-3 overflow-auto rounded-lg bg-slate-950 p-2.5 font-mono text-[11px] text-slate-200">
                 {activeNode.expression}
               </pre>
+
+              {activeNode.usedOperators && activeNode.usedOperators.length > 0 && (
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  <span className="font-medium text-slate-700 dark:text-slate-300">DAG Symbols:</span>
+                  {activeNode.usedOperators.map((op) => (
+                    <span
+                      key={op}
+                      className="font-mono text-blue-700 dark:text-blue-400"
+                    >
+                      {op}
+                    </span>
+                  ))}
+                </div>
+              )}
 
               <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 text-xs dark:border-slate-800">
                 <div>
@@ -644,6 +937,36 @@ export function RuleDependencyGraph({
                 {graph.topologicalOrder.join(' → ')}
               </div>
             </div>
+
+            {graph.symbolRegistry && graph.symbolRegistry.length > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                <div className="mb-2 flex items-center justify-between text-xs">
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">
+                    Extended DAG Symbol Definitions
+                  </span>
+                  <span className="font-mono text-[11px] tabular-nums text-slate-500 dark:text-slate-400">
+                    {graph.symbolRegistry.filter((s) => s.enabled).length}/{graph.symbolRegistry.length} enabled
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+                  {graph.symbolRegistry.map((sym) => (
+                    <div
+                      key={sym.key}
+                      className={`flex items-center justify-between gap-1 rounded border px-2 py-1 ${
+                        sym.enabled
+                          ? 'border-slate-200 bg-slate-50/70 text-slate-700 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-300'
+                          : 'border-amber-200/80 bg-amber-50/50 text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300'
+                      }`}
+                    >
+                      <span className="truncate">{sym.key}</span>
+                      <span className="shrink-0 font-mono tabular-nums">
+                        {sym.enabled ? `${sym.value}${sym.usageCount > 0 ? ` (${sym.usageCount})` : ''}` : 'off'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

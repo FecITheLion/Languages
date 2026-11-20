@@ -4,6 +4,14 @@
 @layer base {
   :root {
     font-family: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  html,
+  body {
+    overflow-x: clip;
+    overscroll-behavior-y: contain;
   }
 
   code, pre, textarea.font-mono, input.font-mono, .font-mono {
@@ -13,6 +21,19 @@
 
 .tabular-nums {
   font-variant-numeric: tabular-nums;
+}
+
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 
 /* Official Sign in with Google button styling */

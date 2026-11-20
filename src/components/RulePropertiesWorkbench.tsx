@@ -7,6 +7,7 @@ import {
   Check,
   Copy,
   Download,
+  Globe,
   GripVertical,
   Lock,
   Plus,
@@ -18,17 +19,27 @@ import {
   exportWorkspaceInLanguage,
   tokenizeAlternativeTokens,
 } from '../engine/bidirectionalEngine';
-import type {
-  DialectConfig,
-  ExportLanguage,
-  GrammarRule,
-  LineMutation,
-  MutationPolicy,
-  RuleMergeStrategy,
-  RuleOrderConfig,
-  RulePropertyEntry,
-  SchemaConfig,
+import {
+  evaluatePropertyValueWithCallbacks,
+  formatGlobalCallbackCallTemplate,
+  type GlobalCallbackDef,
+} from '../engine/globalCallbacksEngine';
+import type { LogicLabelBinding } from '../engine/logicLambdaEngine';
+import {
+  SUPPORTED_LANGUAGES,
+  type DialectConfig,
+  type ExportLanguage,
+  type GrammarRule,
+  type LineMutation,
+  type MutationPolicy,
+  type PrimaryLanguage,
+  type RuleMergeStrategy,
+  type RuleOrderConfig,
+  type RulePropertyEntry,
+  type SchemaConfig,
 } from '../types/studio';
+import { DocTooltip } from './DocTooltip';
+import { HtmlCodeOutput } from './HtmlCodeOutput';
 
 interface RulePropertiesWorkbenchProps {
   gridClass: string;
@@ -46,6 +57,15 @@ interface RulePropertiesWorkbenchProps {
   mergeStrategy: RuleMergeStrategy;
   canUndo: boolean;
   onUndo: () => void;
+  globalCallbacks?: GlobalCallbackDef[];
+  logicLabels?: LogicLabelBinding[];
+  onSaveGlobalCallback?: (input: {
+    name: string;
+    lambdaExpr: string;
+    description?: string;
+    source?: 'logic_calc' | 'rule_props' | 'manual';
+  }) => void;
+  onDeleteGlobalCallback?: (idOrName: string) => void;
   onUpdateRule: (
     originalName: string,
     patch: { name?: string; expression?: string; alternatives?: string[] }
@@ -57,16 +77,13 @@ interface RulePropertiesWorkbenchProps {
   onReorderRules: (sourceName: string, targetName: string, position: 'before' | 'after') => void;
   onMergeRules: (sourceName: string, targetName: string, strategy?: RuleMergeStrategy) => void;
   onToggleRuleLock: (ruleName: string) => void;
+  primaryLanguage?: PrimaryLanguage;
   onExportTextFile: (content: string, filename: string, mime: string) => void;
 }
 
 const EXPORT_LANGUAGES: Array<{ id: ExportLanguage; label: string }> = [
   { id: 'grammar', label: 'Grammar' },
-  { id: 'jsonld', label: 'JSON-LD' },
-  { id: 'python', label: 'Python' },
-  { id: 'rust', label: 'Rust' },
-  { id: 'wat', label: 'WABT / WAT' },
-  { id: 'typescript', label: 'TypeScript' },
+  ...SUPPORTED_LANGUAGES.map((l) => ({ id: l.exportId, label: l.shortLabel })),
 ];
 
 export function RulePropertiesWorkbench({
@@ -85,6 +102,10 @@ export function RulePropertiesWorkbench({
   mergeStrategy,
   canUndo,
   onUndo,
+  globalCallbacks = [],
+  logicLabels = [],
+  onSaveGlobalCallback,
+  onDeleteGlobalCallback,
   onUpdateRule,
   onAddRule,
   onDeleteRule,
@@ -93,6 +114,7 @@ export function RulePropertiesWorkbench({
   onReorderRules,
   onMergeRules,
   onToggleRuleLock,
+  primaryLanguage,
   onExportTextFile,
 }: RulePropertiesWorkbenchProps) {
   const [selectedRuleName, setSelectedRuleName] = useState<string>(rules[0]?.name || '');
@@ -101,9 +123,19 @@ export function RulePropertiesWorkbench({
   const [newRuleName, setNewRuleName] = useState('');
   const [newRuleExpr, setNewRuleExpr] = useState('');
   const [showAddRule, setShowAddRule] = useState(false);
+  const [showNewGlobalCb, setShowNewGlobalCb] = useState(false);
+  const [newCbName, setNewCbName] = useState('');
+  const [newCbExpr, setNewCbExpr] = useState('λx. x * 2');
+  const [focusedPropId, setFocusedPropId] = useState<string | null>(null);
 
   const [exportLang, setExportLang] = useState<ExportLanguage>('python');
   const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!primaryLanguage) return;
+    const spec = SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage);
+    if (spec) setExportLang(spec.exportId);
+  }, [primaryLanguage]);
 
   // Drag-and-drop state for rule list reorder / merge
   const [draggedRule, setDraggedRule] = useState<string | null>(null);
@@ -646,60 +678,196 @@ export function RulePropertiesWorkbench({
               </div>
             </div>
 
-            {/* Custom Rule Properties (Name / Value Pairs) */}
-            <div className="space-y-2 border-t border-slate-200/80 pt-3 dark:border-slate-800">
-              <div className="flex items-center justify-between">
+            {/* Custom Rule Properties (Name / Value Pairs with Global Callback Execution) */}
+            <div className="space-y-2.5 border-t border-slate-200/80 pt-3 dark:border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  Custom Rule Properties (Name / Value)
+                  Custom Rule Properties (Name / Value · Global Callbacks Enabled)
                 </span>
-                <button
-                  type="button"
-                  disabled={isLocked}
-                  onClick={handleAddProperty}
-                  className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:underline disabled:opacity-40 dark:text-blue-400"
-                >
-                  <Plus className="h-3 w-3" />
-                  Add Property
-                </button>
+                <div className="flex items-center gap-2">
+                  {onSaveGlobalCallback && (
+                    <button
+                      type="button"
+                      onClick={() => setShowNewGlobalCb((v) => !v)}
+                      className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:underline dark:text-emerald-400"
+                    >
+                      <Globe className="h-3 w-3" />
+                      {showNewGlobalCb ? 'Close Global CB' : '+ Global Callback'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isLocked}
+                    onClick={handleAddProperty}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-600 hover:underline disabled:opacity-40 dark:text-blue-400"
+                  >
+                    <Plus className="h-3 w-3" />
+                    Add Property
+                  </button>
+                </div>
               </div>
+
+              {/* Quick Create Local Global Callback */}
+              {showNewGlobalCb && onSaveGlobalCallback && (
+                <div className="grid grid-cols-1 gap-2 rounded-lg border border-emerald-200 bg-emerald-50/50 p-2.5 sm:grid-cols-12 dark:border-emerald-900/60 dark:bg-emerald-950/30">
+                  <input
+                    type="text"
+                    value={newCbName}
+                    onChange={(e) => setNewCbName(e.target.value)}
+                    placeholder="callback_name"
+                    aria-label="Global callback name"
+                    className="rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-emerald-500 focus:outline-none sm:col-span-4 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  />
+                  <input
+                    type="text"
+                    value={newCbExpr}
+                    onChange={(e) => setNewCbExpr(e.target.value)}
+                    placeholder="λx. x * 1.08"
+                    aria-label="Global callback lambda expression"
+                    className="rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-emerald-500 focus:outline-none sm:col-span-6 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!newCbName.trim() || !newCbExpr.trim()) return;
+                      onSaveGlobalCallback({
+                        name: newCbName.trim(),
+                        lambdaExpr: newCbExpr.trim(),
+                        source: 'rule_props',
+                      });
+                      setNewCbName('');
+                      setShowNewGlobalCb(false);
+                    }}
+                    className="rounded bg-emerald-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-emerald-700 sm:col-span-2"
+                  >
+                    Save
+                  </button>
+                </div>
+              )}
+
+              {/* Click-to-Call Local Global Callbacks Strip */}
+              {globalCallbacks.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white p-2 text-[11px] dark:border-slate-800 dark:bg-slate-900">
+                  <span className="inline-flex items-center gap-1 font-medium text-slate-500 dark:text-slate-400">
+                    <Globe className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                    Call in property:
+                  </span>
+                  {globalCallbacks.map((cb) => {
+                    const callSnippet = formatGlobalCallbackCallTemplate(cb);
+                    return (
+                      <span key={cb.id} className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={isLocked}
+                          onClick={() => {
+                            const targetProp =
+                              activeConfig.properties.find((p) => p.id === focusedPropId) ||
+                              activeConfig.properties[activeConfig.properties.length - 1];
+                            if (targetProp) {
+                              handleUpdateProperty(targetProp.id, {
+                                value: targetProp.value.trim()
+                                  ? `${targetProp.value} ${callSnippet}`
+                                  : callSnippet,
+                              });
+                            } else {
+                              onUpdateRuleConfig(activeRule.name, {
+                                properties: [
+                                  {
+                                    id: `prop_${Date.now()}`,
+                                    name: `${cb.name}_value`,
+                                    value: callSnippet,
+                                  },
+                                ],
+                              });
+                            }
+                          }}
+                          title={`Insert ${callSnippet} (${cb.lambdaExpr})`}
+                          className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[11px] text-blue-600 hover:border-blue-400 hover:bg-blue-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-950 dark:text-blue-400"
+                        >
+                          {callSnippet}
+                        </button>
+                        {onDeleteGlobalCallback && (
+                          <button
+                            type="button"
+                            onClick={() => onDeleteGlobalCallback(cb.id)}
+                            aria-label={`Delete global callback ${cb.name}`}
+                            className="text-slate-400 hover:text-red-500"
+                          >
+                            <Trash2 className="h-2.5 w-2.5" />
+                          </button>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
 
               {activeConfig.properties.length === 0 ? (
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  No custom properties attached to <code className="font-mono">{activeRule.name}</code>. Add key/value properties to emit them in JSON-LD and language exports.
+                  No custom properties attached to <code className="font-mono">{activeRule.name}</code>. Add key/value properties or click any saved global callback above (e.g. <code className="font-mono">tax_fn (100)</code> or <code className="font-mono">{'Total: {{tax_fn (100)}}'}</code>).
                 </div>
               ) : (
-                <div className="space-y-1.5">
-                  {activeConfig.properties.map((prop) => (
-                    <div key={prop.id} className="grid grid-cols-12 items-center gap-1.5">
-                      <input
-                        type="text"
-                        disabled={isLocked}
-                        value={prop.name}
-                        onChange={(e) => handleUpdateProperty(prop.id, { name: e.target.value })}
-                        placeholder="Property name"
-                        aria-label="Custom property name"
-                        className="col-span-5 rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:outline-none disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                      />
-                      <input
-                        type="text"
-                        disabled={isLocked}
-                        value={prop.value}
-                        onChange={(e) => handleUpdateProperty(prop.id, { value: e.target.value })}
-                        placeholder="Property value"
-                        aria-label="Custom property value"
-                        className="col-span-6 rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:outline-none disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
-                      />
-                      <button
-                        type="button"
-                        disabled={isLocked}
-                        onClick={() => handleRemoveProperty(prop.id)}
-                        aria-label="Remove property"
-                        className="col-span-1 flex justify-center rounded border border-slate-200 bg-white p-1 text-red-500 hover:bg-red-50 disabled:opacity-30 dark:border-slate-700 dark:bg-slate-900"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
+                <div className="space-y-2">
+                  {activeConfig.properties.map((prop) => {
+                    const resolved = evaluatePropertyValueWithCallbacks(
+                      prop.value,
+                      globalCallbacks,
+                      logicLabels
+                    );
+                    return (
+                      <div key={prop.id} className="space-y-1">
+                        <div className="grid grid-cols-1 items-center gap-1.5 sm:grid-cols-12">
+                          <input
+                            type="text"
+                            disabled={isLocked}
+                            value={prop.name}
+                            onFocus={() => setFocusedPropId(prop.id)}
+                            onChange={(e) => handleUpdateProperty(prop.id, { name: e.target.value })}
+                            placeholder="Property name"
+                            aria-label="Custom property name"
+                            className="min-h-[36px] rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:outline-none disabled:opacity-50 sm:col-span-4 sm:min-h-0 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                          />
+                          <input
+                            type="text"
+                            disabled={isLocked}
+                            value={prop.value}
+                            onFocus={() => setFocusedPropId(prop.id)}
+                            onChange={(e) => handleUpdateProperty(prop.id, { value: e.target.value })}
+                            placeholder="Value or callback e.g. tax_fn (100)"
+                            aria-label="Custom property value"
+                            className="min-h-[36px] rounded border border-slate-200 bg-white px-2 py-1 font-mono text-xs text-slate-900 focus:border-blue-500 focus:outline-none disabled:opacity-50 sm:col-span-7 sm:min-h-0 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                          />
+                          <button
+                            type="button"
+                            disabled={isLocked}
+                            onClick={() => handleRemoveProperty(prop.id)}
+                            aria-label="Remove property"
+                            className="flex min-h-[36px] items-center justify-center rounded border border-slate-200 bg-white p-1 text-red-500 hover:bg-red-50 disabled:opacity-30 sm:col-span-1 sm:min-h-0 dark:border-slate-700 dark:bg-slate-900"
+                          >
+                            <Trash2 className="h-3.5 w-3.5 sm:h-3 sm:w-3" />
+                          </button>
+                        </div>
+                        {resolved.hasCallbackCall && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 px-1 font-mono text-[11px]">
+                            {resolved.ok ? (
+                              <span className="text-emerald-700 dark:text-emerald-400">
+                                → Resolved ({resolved.valueType}): <strong>{resolved.resolvedValue}</strong>
+                                {resolved.usedCallbacks.length > 0 && (
+                                  <span className="ml-1.5 text-slate-400">
+                                    via {resolved.usedCallbacks.join(', ')}
+                                  </span>
+                                )}
+                              </span>
+                            ) : (
+                              <span className="text-red-600 dark:text-red-400">
+                                Callback error: {resolved.error}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -741,31 +909,46 @@ export function RulePropertiesWorkbench({
           </div>
         </div>
 
-        {/* Language Selector Group */}
-        <div
-          className="flex flex-wrap gap-1 rounded-lg border border-slate-200 bg-slate-100 p-1 dark:border-slate-800 dark:bg-slate-950"
-          role="group"
-          aria-label="Export target language"
-        >
-          {EXPORT_LANGUAGES.map((lang) => (
-            <button
-              key={lang.id}
-              type="button"
-              onClick={() => setExportLang(lang.id)}
-              className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                exportLang === lang.id
-                  ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
-                  : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-              }`}
-            >
-              {lang.label}
-            </button>
-          ))}
+        {/* Language Selector Dropdown + Quick Tabs (All 13 Formats) */}
+        <div className="flex flex-wrap items-center gap-2">
+          <select
+            value={exportLang}
+            onChange={(e) => setExportLang(e.target.value as ExportLanguage)}
+            aria-label="Export target language"
+            className="min-h-[36px] rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none sm:min-h-0 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          >
+            {EXPORT_LANGUAGES.map((lang) => (
+              <option key={lang.id} value={lang.id}>
+                {lang.label}
+              </option>
+            ))}
+          </select>
+          <DocTooltip docKey="languageSelection" align="right" />
+          <div className="no-scrollbar flex flex-1 items-center gap-1 overflow-x-auto">
+            {EXPORT_LANGUAGES.slice(0, 7).map((lang) => (
+              <button
+                key={lang.id}
+                type="button"
+                onClick={() => setExportLang(lang.id)}
+                className={`shrink-0 whitespace-nowrap rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
+                  exportLang === lang.id
+                    ? 'bg-blue-600 text-white'
+                    : 'border border-slate-200 bg-white text-slate-600 hover:text-slate-900 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400'
+                }`}
+              >
+                {lang.label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <pre className="max-h-[440px] flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800">
-          {exportedArtifact.content}
-        </pre>
+        <HtmlCodeOutput
+          title={exportedArtifact.filename}
+          language={exportedArtifact.label}
+          code={exportedArtifact.content}
+          maxHeightClass="max-h-[420px]"
+          onDownloadHtml={onExportTextFile}
+        />
       </div>
     </div>
   );

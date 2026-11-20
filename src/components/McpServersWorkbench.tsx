@@ -9,19 +9,42 @@ import {
   Trash2,
 } from 'lucide-react';
 import {
-  generateMcpClientConfig,
+  generateMcpExportForClient,
   generateStandaloneMcpScript,
+  MCP_CLIENT_EXPORT_TARGETS,
   MCP_SERVER_DESCRIPTORS,
   McpLazyServerRegistry,
+  type McpClientExportTarget,
   type McpWorkspaceContext,
 } from '../engine/mcpServerEngine';
-import type { McpJsonRpcResponse, McpServerId, McpServerStatus } from '../types/studio';
+import { DocTooltip } from './DocTooltip';
+import { HtmlCodeOutput } from './HtmlCodeOutput';
+import type {
+  McpJsonRpcResponse,
+  McpServerId,
+  McpServerStatus,
+  PipelineGridMode,
+  PipelineStage,
+  TopView,
+  WorkflowSlug,
+} from '../types/studio';
+
+export interface PipelineMcpUiEffect {
+  topView?: TopView;
+  activePage?: WorkflowSlug;
+  stageFilter?: 'all' | PipelineStage;
+  verifiedSteps?: WorkflowSlug[];
+  dslSource?: string;
+  pipelineLayoutMode?: PipelineGridMode;
+}
 
 interface McpServersWorkbenchProps {
   gridClass: string;
   primarySpan: string;
   secondarySpan: string;
   workspaceContext: McpWorkspaceContext;
+  initialServerId?: McpServerId;
+  onPipelineMcpEffect?: (effect: PipelineMcpUiEffect) => void;
   onExportTextFile: (content: string, filename: string, mime: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -31,6 +54,8 @@ export function McpServersWorkbench({
   primarySpan,
   secondarySpan,
   workspaceContext,
+  initialServerId = 'pipeline',
+  onPipelineMcpEffect,
   onExportTextFile,
   onNotify,
 }: McpServersWorkbenchProps) {
@@ -40,16 +65,17 @@ export function McpServersWorkbench({
     fallbackRegistryRef.current = new McpLazyServerRegistry(workspaceContext);
   }
 
+  const initialDesc =
+    MCP_SERVER_DESCRIPTORS.find((d) => d.id === initialServerId) || MCP_SERVER_DESCRIPTORS[0];
+
   const [transportMode, setTransportMode] = useState<'http' | 'local'>('http');
   const [servers, setServers] = useState<McpServerStatus[]>(() =>
     fallbackRegistryRef.current!.getServerStatuses()
   );
-  const [selectedServerId, setSelectedServerId] = useState<McpServerId>('grammar');
-  const [selectedToolName, setSelectedToolName] = useState<string>(
-    MCP_SERVER_DESCRIPTORS[0].tools[0].name
-  );
+  const [selectedServerId, setSelectedServerId] = useState<McpServerId>(initialDesc.id);
+  const [selectedToolName, setSelectedToolName] = useState<string>(initialDesc.tools[0].name);
   const [argsJson, setArgsJson] = useState<string>(
-    JSON.stringify(MCP_SERVER_DESCRIPTORS[0].tools[0].sampleArgs, null, 2)
+    JSON.stringify(initialDesc.tools[0].sampleArgs, null, 2)
   );
   const [bypassCache, setBypassCache] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -100,6 +126,18 @@ export function McpServersWorkbench({
     void refreshStatuses();
   }, [refreshStatuses]);
 
+  // Sync external server selection (e.g. clicking /api/mcp/pipeline from Breadcrumbs or Pipeline Grid)
+  useEffect(() => {
+    const desc = MCP_SERVER_DESCRIPTORS.find((d) => d.id === initialServerId);
+    if (!desc) return;
+    setSelectedServerId(desc.id);
+    const firstTool = desc.tools[0];
+    if (firstTool) {
+      setSelectedToolName(firstTool.name);
+      setArgsJson(JSON.stringify(firstTool.sampleArgs, null, 2));
+    }
+  }, [initialServerId]);
+
   const handleSelectServer = (id: McpServerId) => {
     setSelectedServerId(id);
     const desc = MCP_SERVER_DESCRIPTORS.find((d) => d.id === id);
@@ -121,7 +159,7 @@ export function McpServersWorkbench({
   };
 
   const sendJsonRpc = async (
-    method: 'initialize' | 'tools/list' | 'tools/call',
+    method: 'initialize' | 'tools/list' | 'tools/call' | 'resources/list' | 'resources/read',
     params?: Record<string, unknown>
   ) => {
     setBusy(true);
@@ -158,6 +196,18 @@ export function McpServersWorkbench({
         durationMs: Number(meta.durationMs ?? meta.buildDurationMs ?? 0),
         cacheKey: typeof meta.cacheKey === 'string' ? meta.cacheKey : undefined,
       });
+
+      // Apply live UI effects when mutating tools are invoked on /api/mcp/pipeline
+      const structured = resultObj.structuredContent as Record<string, unknown> | undefined;
+      if (
+        selectedServerId === 'pipeline' &&
+        structured &&
+        structured.uiEffect &&
+        typeof structured.uiEffect === 'object' &&
+        onPipelineMcpEffect
+      ) {
+        onPipelineMcpEffect(structured.uiEffect as PipelineMcpUiEffect);
+      }
 
       await refreshStatuses();
     } catch (err) {
@@ -212,7 +262,7 @@ export function McpServersWorkbench({
       onNotify(
         serverId
           ? `Cleared cache for /api/mcp/${serverId} (reset to cold build-on-call).`
-          : 'Cleared all MCP server caches (all 10 servers reset to cold).'
+          : `Cleared all MCP server caches (all ${servers.length} servers reset to cold).`
       );
     } finally {
       setBusy(false);
@@ -222,13 +272,16 @@ export function McpServersWorkbench({
   const origin =
     typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
 
-  const mcpClientConfigText = useMemo(
+  const [clientExportTarget, setClientExportTarget] = useState<McpClientExportTarget>('vscode');
+
+  const mcpClientExport = useMemo(
     () =>
-      generateMcpClientConfig(
+      generateMcpExportForClient(
+        clientExportTarget,
         origin,
         configScope === 'single' ? selectedServerId : undefined
       ),
-    [origin, configScope, selectedServerId]
+    [clientExportTarget, origin, configScope, selectedServerId]
   );
 
   const standaloneScript = useMemo(
@@ -503,6 +556,21 @@ export function McpServersWorkbench({
               <button
                 type="button"
                 disabled={busy}
+                onClick={() =>
+                  void sendJsonRpc(
+                    'resources/read',
+                    selectedServerId === 'pipeline'
+                      ? { uri: 'grammar2json://pipeline/breadcrumbs.jsonld' }
+                      : { uri: `grammar2json://${selectedServerId}/artifact` }
+                  )
+                }
+                className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              >
+                resources/read
+              </button>
+              <button
+                type="button"
+                disabled={busy}
                 onClick={() => void handleClearCache(selectedServerId)}
                 className="rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
               >
@@ -566,13 +634,27 @@ export function McpServersWorkbench({
                       : 'text-slate-500'
                   }`}
                 >
-                  All 10 Servers
+                  All {servers.length} Servers
                 </button>
               </div>
-              <div className="flex items-center gap-1.5">
+
+              <div className="flex flex-wrap items-center gap-1.5">
+                <select
+                  value={clientExportTarget}
+                  onChange={(e) => setClientExportTarget(e.target.value as McpClientExportTarget)}
+                  aria-label="MCP client export target"
+                  className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  {MCP_CLIENT_EXPORT_TARGETS.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+                <DocTooltip docKey="mcpClientExport" align="right" />
                 <button
                   type="button"
-                  onClick={() => void copyText('mcp_json', mcpClientConfigText)}
+                  onClick={() => void copyText('mcp_json', mcpClientExport.content)}
                   className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                 >
                   {copiedKey === 'mcp_json' ? (
@@ -585,18 +667,29 @@ export function McpServersWorkbench({
                 <button
                   type="button"
                   onClick={() =>
-                    onExportTextFile(mcpClientConfigText, 'mcp.json', 'application/json')
+                    onExportTextFile(
+                      mcpClientExport.content,
+                      mcpClientExport.filename,
+                      mcpClientExport.mime
+                    )
                   }
                   className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-700"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  Export mcp.json
+                  Export {mcpClientExport.filename}
                 </button>
               </div>
             </div>
-            <pre className="max-h-80 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 font-mono text-[11px] leading-relaxed text-slate-200 dark:border-slate-800">
-              {mcpClientConfigText}
-            </pre>
+            <div className="text-[11px] text-slate-500 dark:text-slate-400">
+              {mcpClientExport.installHint}
+            </div>
+            <HtmlCodeOutput
+              title={mcpClientExport.filename}
+              language={clientExportTarget.toUpperCase()}
+              code={mcpClientExport.content}
+              maxHeightClass="max-h-72"
+              onDownloadHtml={onExportTextFile}
+            />
           </div>
         ) : (
           <div className="flex flex-1 flex-col gap-2.5">

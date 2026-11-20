@@ -5,6 +5,8 @@ import type {
   ExportLanguage,
   GrammarDiagnostic,
   GrammarRule,
+  GrammarSymbolDefinitions,
+  GrammarSymbolStatus,
   JsonLdSchemaPackage,
   LineMutation,
   MutationPolicy,
@@ -21,7 +23,7 @@ import type {
   WasmCompilationResult,
   WasmExportEntry,
   WasmParamSpec,
-} from '../types/studio';
+} from '../types/studio.ts';
 
 export const DEFAULT_MUTATION_POLICY: MutationPolicy = {
   allowImportMutation: true,
@@ -29,6 +31,80 @@ export const DEFAULT_MUTATION_POLICY: MutationPolicy = {
   allowedTargets: ['jsonld', 'python', 'rust', 'wasm'],
   lockedRules: [],
 };
+
+export interface ResolvedGrammarSymbols {
+  oneOrMore: string;
+  zeroOrMore: string;
+  optional: string;
+  repeatBraces: string;
+  groupParens: string;
+  charClassBrackets: string;
+  posLookahead: string;
+  negLookahead: string;
+  posLookbehind: string;
+  negLookbehind: string;
+  wildcard: string;
+  regexDelimiter: string;
+}
+
+export const GRAMMAR_SYMBOL_SPECS: Array<{
+  key: keyof GrammarSymbolDefinitions;
+  label: string;
+  defaultValue: string;
+  description: string;
+}> = [
+  { key: 'oneOrMore', label: 'One or More (+)', defaultValue: '+', description: '1..∞ repetition postfix (e.g. digit+)' },
+  { key: 'zeroOrMore', label: 'Zero or More (*)', defaultValue: '*', description: '0..∞ repetition postfix (e.g. digit*)' },
+  { key: 'optional', label: 'Optional (?)', defaultValue: '?', description: '0..1 optional postfix (e.g. sign?)' },
+  { key: 'repeatBraces', label: 'Bounded / EBNF Braces', defaultValue: '{}', description: 'Quantifier {m,n} or EBNF {expr}' },
+  { key: 'groupParens', label: 'Group Parens', defaultValue: '()', description: 'Inline grouping & choice (a | b)' },
+  { key: 'charClassBrackets', label: 'Char Class / Opt Brackets', defaultValue: '[]', description: 'Char class [0-9] or EBNF [opt]' },
+  { key: 'posLookahead', label: 'Pos Lookahead', defaultValue: '&', description: 'Positive lookahead &expr / (?=expr)' },
+  { key: 'negLookahead', label: 'Neg Lookahead', defaultValue: '!', description: 'Negative lookahead !expr / (?!expr)' },
+  { key: 'posLookbehind', label: 'Pos Lookbehind', defaultValue: '(?<=', description: 'Positive lookbehind (?<=expr)' },
+  { key: 'negLookbehind', label: 'Neg Lookbehind', defaultValue: '(?<!', description: 'Negative lookbehind (?<!expr)' },
+  { key: 'wildcard', label: 'Wildcard', defaultValue: '.', description: 'Single-character wildcard' },
+  { key: 'regexDelimiter', label: 'Inline Regex', defaultValue: '/', description: 'Inline /pattern/ terminal' },
+];
+
+/**
+ * Resolves Extended DAG symbol definitions.
+ * When `dialect.symbols` is supplied, each symbol is enabled iff its trimmed string value is non-empty,
+ * and disabled when empty or missing. When `dialect.symbols` is omitted, defaults are enabled.
+ */
+export function resolveGrammarSymbols(dialect?: DialectConfig): ResolvedGrammarSymbols {
+  const hasExplicit = Boolean(dialect && dialect.symbols !== undefined);
+  const src = dialect?.symbols;
+  const pick = (key: keyof GrammarSymbolDefinitions, fallback: string): string => {
+    if (!hasExplicit) return fallback;
+    const raw = src?.[key];
+    return typeof raw === 'string' ? raw.trim() : '';
+  };
+  return {
+    oneOrMore: pick('oneOrMore', '+'),
+    zeroOrMore: pick('zeroOrMore', '*'),
+    optional: pick('optional', '?'),
+    repeatBraces: pick('repeatBraces', '{}'),
+    groupParens: pick('groupParens', '()'),
+    charClassBrackets: pick('charClassBrackets', '[]'),
+    posLookahead: pick('posLookahead', '&'),
+    negLookahead: pick('negLookahead', '!'),
+    posLookbehind: pick('posLookbehind', '(?<='),
+    negLookbehind: pick('negLookbehind', '(?<!'),
+    wildcard: pick('wildcard', '.'),
+    regexDelimiter: pick('regexDelimiter', '/'),
+  };
+}
+
+function stripQuotedSegments(expr: string): string {
+  return expr.replace(/"([^"\\]*(?:\\.[^"\\]*)*)"|'([^'\\]*(?:\\.[^'\\]*)*)'/g, ' ');
+}
+
+function pairDelimiters(pair: string): [string, string] | null {
+  const trimmed = pair.trim();
+  if (trimmed.length < 2) return null;
+  return [trimmed[0], trimmed[trimmed.length - 1]];
+}
 
 /* ============================================================================
  * 1. GRAMMAR PARSER (EBNF, BNF, PEG, Python PEG, Rust Macro, WABT S-Expr)
@@ -39,6 +115,9 @@ function splitOutsideQuotes(input: string, delimiter: string): string[] {
   const result: string[] = [];
   let current = '';
   let quote: '"' | "'" | null = null;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  let braceDepth = 0;
   let i = 0;
 
   while (i < input.length) {
@@ -57,7 +136,41 @@ function splitOutsideQuotes(input: string, delimiter: string): string[] {
       i += 1;
       continue;
     }
-    if (input.startsWith(delimiter, i)) {
+    // Skip inline /regex/ when delimiter is not '/'
+    if (ch === '/' && delimiter !== '/') {
+      let j = i + 1;
+      let closed = false;
+      while (j < input.length) {
+        if (input[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (input[j] === '/') {
+          closed = true;
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      if (closed) {
+        current += input.slice(i, j);
+        i = j;
+        continue;
+      }
+    }
+    if (ch === '(') parenDepth += 1;
+    else if (ch === ')' && parenDepth > 0) parenDepth -= 1;
+    else if (ch === '[') bracketDepth += 1;
+    else if (ch === ']' && bracketDepth > 0) bracketDepth -= 1;
+    else if (ch === '{') braceDepth += 1;
+    else if (ch === '}' && braceDepth > 0) braceDepth -= 1;
+
+    if (
+      parenDepth === 0 &&
+      bracketDepth === 0 &&
+      braceDepth === 0 &&
+      input.startsWith(delimiter, i)
+    ) {
       result.push(current.trim());
       current = '';
       i += delimiter.length;
@@ -72,8 +185,57 @@ function splitOutsideQuotes(input: string, delimiter: string): string[] {
   return result.filter(Boolean);
 }
 
+export function formatGrammarRuleLine(
+  name: string,
+  expression: string,
+  ruleOperator: string
+): string {
+  const op = (ruleOperator ?? '').trim();
+  return op ? `${name} ${op} ${expression}` : `${name} ${expression}`;
+}
+
+export function splitGrammarRuleLine(
+  codePart: string,
+  ruleOperator: string
+):
+  | { ok: true; name: string; expression: string }
+  | { ok: false; reason: 'missing_operator' | 'empty_rhs' } {
+  const op = (ruleOperator ?? '').trim();
+  if (!op) {
+    // Empty rule operator: a single (or more) space separates rule name and value
+    const wsIdx = codePart.search(/\s/);
+    if (wsIdx <= 0) {
+      return { ok: false, reason: 'missing_operator' };
+    }
+    const rawName = codePart.slice(0, wsIdx).trim();
+    const name = rawName.replace(/^<|>$/g, '');
+    if (!name || !/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(name)) {
+      return { ok: false, reason: 'missing_operator' };
+    }
+    const expression = codePart.slice(wsIdx).trim();
+    if (!expression) {
+      return { ok: false, reason: 'empty_rhs' };
+    }
+    return { ok: true, name, expression };
+  }
+
+  const opIdx = codePart.indexOf(op);
+  if (opIdx <= 0) {
+    return { ok: false, reason: 'missing_operator' };
+  }
+  const name = codePart.slice(0, opIdx).trim().replace(/^<|>$/g, '');
+  if (!name) {
+    return { ok: false, reason: 'missing_operator' };
+  }
+  const expression = codePart.slice(opIdx + op.length).trim();
+  if (!expression) {
+    return { ok: false, reason: 'empty_rhs' };
+  }
+  return { ok: true, name, expression };
+}
+
 export function parseGrammar(text: string, dialect: DialectConfig): GrammarRule[] {
-  const op = dialect.ruleOperator || '::=';
+  const op = dialect.ruleOperator ?? '';
   const delim = dialect.choiceDelimiter || '|';
   const comment = dialect.commentPrefix || '//';
   const lines = text.split(/\r?\n/);
@@ -98,17 +260,13 @@ export function parseGrammar(text: string, dialect: DialectConfig): GrammarRule[
         }
       }
     }
-    const opIdx = cleaned.indexOf(op);
-    if (opIdx <= 0) return;
-
-    const name = cleaned.slice(0, opIdx).trim().replace(/^<|>$/g, '');
-    const expression = cleaned.slice(opIdx + op.length).trim();
-    if (!name || !expression) return;
+    const split = splitGrammarRuleLine(cleaned, op);
+    if (!split.ok) return;
 
     rawRules.push({
       lineNumber: index + 1,
-      name,
-      expression,
+      name: split.name,
+      expression: split.expression,
       rawLine: cleaned,
     });
   });
@@ -124,7 +282,19 @@ export function parseGrammar(text: string, dialect: DialectConfig): GrammarRule[
       literals.push(m[1] ?? m[2] ?? '');
     }
 
-    const stripped = r.expression.replace(literalRegex, ' ');
+    // Strip string literals, inline /regex/ terminals (when delim != '/'), and character classes like [a-z0-9]
+    let stripped = r.expression.replace(literalRegex, ' ');
+    if (delim !== '/') {
+      stripped = stripped.replace(/\/(?:\\.|[^/\\])+\//g, ' ');
+    }
+    stripped = stripped.replace(/\[[^\]]*\]/g, (bracketed) => {
+      const inner = bracketed.slice(1, -1).trim();
+      // Preserve EBNF optional brackets like [sign] or [digit] when inner references a defined rule
+      const innerWords = inner.match(/[A-Za-z_][A-Za-z0-9_-]*/g) || [];
+      const hasDefinedRule = innerWords.some((w) => definedNames.has(w));
+      return hasDefinedRule ? ` ${inner} ` : ' ';
+    });
+
     const tokens = stripped.match(/[A-Za-z_][A-Za-z0-9_-]*/g) || [];
     const uniqueTokens = Array.from(new Set(tokens));
     const referencedRules = uniqueTokens.filter((t) => definedNames.has(t));
@@ -170,7 +340,8 @@ export function analyzeRuleDependencies(
   lockedRules: string[] = []
 ): RuleDependencyGraphData {
   const diagnostics: GrammarDiagnostic[] = [];
-  const op = dialect.ruleOperator || '::=';
+  const op = dialect.ruleOperator ?? '';
+  const opTrimmed = op.trim();
   const comment = dialect.commentPrefix || '//';
 
   // 1. Line-level syntax diagnostics
@@ -208,23 +379,29 @@ export function analyzeRuleDependencies(
       });
     }
 
-    const opIdx = codePart.indexOf(op);
-    if (opIdx <= 0) {
-      diagnostics.push({
-        id: `diag-op-${lineNumber}`,
-        severity: 'error',
-        lineNumber,
-        code: 'SYNTAX_OPERATOR',
-        message: `Line ${lineNumber}: Missing rule operator "${op}" or rule identifier.`,
-      });
-    } else if (!codePart.slice(opIdx + op.length).trim()) {
-      diagnostics.push({
-        id: `diag-empty-rhs-${lineNumber}`,
-        severity: 'error',
-        lineNumber,
-        code: 'SYNTAX_OPERATOR',
-        message: `Line ${lineNumber}: Rule expression after "${op}" cannot be empty.`,
-      });
+    const split = splitGrammarRuleLine(codePart, op);
+    if (!split.ok) {
+      if (split.reason === 'missing_operator') {
+        diagnostics.push({
+          id: `diag-op-${lineNumber}`,
+          severity: 'error',
+          lineNumber,
+          code: 'SYNTAX_OPERATOR',
+          message: opTrimmed
+            ? `Line ${lineNumber}: Missing rule operator "${opTrimmed}" or rule identifier.`
+            : `Line ${lineNumber}: Missing space separator between rule name and value.`,
+        });
+      } else {
+        diagnostics.push({
+          id: `diag-empty-rhs-${lineNumber}`,
+          severity: 'error',
+          lineNumber,
+          code: 'SYNTAX_OPERATOR',
+          message: opTrimmed
+            ? `Line ${lineNumber}: Rule expression after "${opTrimmed}" cannot be empty.`
+            : `Line ${lineNumber}: Rule value after rule name cannot be empty.`,
+        });
+      }
     }
   });
 
@@ -397,12 +574,90 @@ export function analyzeRuleDependencies(
     levelBuckets.get(lvl)!.push(name);
   }
 
+  const resolvedSymbols = resolveGrammarSymbols(dialect);
+  const symbolUsageCounts: Record<keyof GrammarSymbolDefinitions, number> = {
+    oneOrMore: 0,
+    zeroOrMore: 0,
+    optional: 0,
+    repeatBraces: 0,
+    groupParens: 0,
+    charClassBrackets: 0,
+    posLookahead: 0,
+    negLookahead: 0,
+    posLookbehind: 0,
+    negLookbehind: 0,
+    wildcard: 0,
+    regexDelimiter: 0,
+  };
+
+  const detectNodeOperators = (rule?: GrammarRule): string[] => {
+    if (!rule) return [];
+    const stripped = stripQuotedSegments(rule.expression);
+    const ops: string[] = [];
+
+    const checkSymbol = (
+      key: keyof GrammarSymbolDefinitions,
+      fallbackToken: string,
+      matcher: (tok: string) => boolean
+    ) => {
+      const configured = resolvedSymbols[key];
+      if (configured) {
+        if (matcher(configured)) {
+          ops.push(`${key}:${configured}`);
+          symbolUsageCounts[key] += 1;
+        }
+      } else if (fallbackToken && matcher(fallbackToken)) {
+        diagnostics.push({
+          id: `diag-disabled-sym-${rule.name}-${key}`,
+          severity: 'warning',
+          lineNumber: rule.lineNumber,
+          ruleName: rule.name,
+          code: 'DISABLED_SYMBOL',
+          message: `Line ${rule.lineNumber}: Rule "${rule.name}" uses "${fallbackToken}", but symbol "${key}" is currently disabled in Dialect Symbol Definitions.`,
+        });
+      }
+    };
+
+    checkSymbol('oneOrMore', '+', (tok) => stripped.includes(tok));
+    checkSymbol('zeroOrMore', '*', (tok) => stripped.includes(tok));
+    checkSymbol('optional', '?', (tok) => {
+      const cleaned = stripped.replace(/\(\?[=!<:]/g, ' ');
+      return cleaned.includes(tok);
+    });
+    checkSymbol('repeatBraces', '{}', (tok) => {
+      const pair = pairDelimiters(tok);
+      return Boolean(pair && stripped.includes(pair[0]) && stripped.includes(pair[1]));
+    });
+    checkSymbol('groupParens', '()', (tok) => {
+      const pair = pairDelimiters(tok);
+      return Boolean(pair && stripped.includes(pair[0]) && stripped.includes(pair[1]));
+    });
+    checkSymbol('charClassBrackets', '[]', (tok) => {
+      const pair = pairDelimiters(tok);
+      return Boolean(pair && stripped.includes(pair[0]) && stripped.includes(pair[1]));
+    });
+    checkSymbol('posLookahead', '&', (tok) => stripped.includes(tok) || stripped.includes('(?='));
+    checkSymbol('negLookahead', '!', (tok) => {
+      const cleaned = stripped.replace(/\(\?<!/g, ' ');
+      return cleaned.includes(tok) || cleaned.includes('(?!');
+    });
+    checkSymbol('posLookbehind', '(?<=', (tok) => stripped.includes(tok));
+    checkSymbol('negLookbehind', '(?<!', (tok) => stripped.includes(tok));
+    checkSymbol('wildcard', '.', (tok) => stripped.includes(tok));
+    if (dialect.choiceDelimiter !== '/') {
+      checkSymbol('regexDelimiter', '/', (tok) => stripped.includes(tok));
+    }
+
+    return ops;
+  };
+
   const nodes: RuleGraphNode[] = allNames.map((name) => {
     const rule = ruleByName.get(name);
     const lvl = levelMap.get(name) || 0;
     const orderInLevel = levelBuckets.get(lvl)?.indexOf(name) ?? 0;
     const outList = adj.get(name) || [];
     const inDeg = inDegree.get(name) || 0;
+    const usedOperators = detectNodeOperators(rule);
 
     return {
       id: name,
@@ -421,6 +676,18 @@ export function analyzeRuleDependencies(
       inCycle: cycleNodeSet.has(name),
       isLocked: lockedRules.includes(name),
       expression: rule ? rule.expression : '(undefined reference)',
+      usedOperators,
+    };
+  });
+
+  const symbolRegistry: GrammarSymbolStatus[] = GRAMMAR_SYMBOL_SPECS.map((spec) => {
+    const val = resolvedSymbols[spec.key];
+    return {
+      key: spec.key,
+      label: spec.label,
+      value: val,
+      enabled: val.length > 0,
+      usageCount: symbolUsageCounts[spec.key],
     };
   });
 
@@ -450,6 +717,7 @@ export function analyzeRuleDependencies(
     missingRules: Array.from(missingSet),
     errorCount,
     warningCount,
+    symbolRegistry,
   };
 }
 
@@ -561,8 +829,7 @@ function serializeRulesWithHeader(
   dialect: DialectConfig
 ): string {
   const header = extractLeadingCommentBlock(rawGrammarText, dialect);
-  const op = dialect.ruleOperator || '::=';
-  const body = orderedRules.map((r) => `${r.name} ${op} ${r.expression}`);
+  const body = orderedRules.map((r) => formatGrammarRuleLine(r.name, r.expression, dialect.ruleOperator));
   return [...header, ...body].join('\n');
 }
 
@@ -843,6 +1110,247 @@ export function sortRulesByPrecedence(
   return serializeRulesWithHeader(rawGrammarText, sorted, dialect);
 }
 
+/**
+ * Replaces unquoted occurrences of `prevDelim` with `nextDelim` inside a grammar expression,
+ * preserving single-quoted strings, double-quoted strings, character classes `[...]`, and `/regex/`.
+ */
+function replaceUnquotedDelimiter(expr: string, prevDelim: string, nextDelim: string): string {
+  if (!prevDelim || prevDelim === nextDelim || !nextDelim) return expr;
+  let out = '';
+  let i = 0;
+  let inSingle = false;
+  let inDouble = false;
+  let inBracket = false;
+  let inRegex = false;
+
+  while (i < expr.length) {
+    const ch = expr[i];
+    if (inSingle) {
+      out += ch;
+      if (ch === '\\' && i + 1 < expr.length) {
+        out += expr[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === "'") inSingle = false;
+      i += 1;
+      continue;
+    }
+    if (inDouble) {
+      out += ch;
+      if (ch === '\\' && i + 1 < expr.length) {
+        out += expr[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '"') inDouble = false;
+      i += 1;
+      continue;
+    }
+    if (inBracket) {
+      out += ch;
+      if (ch === '\\' && i + 1 < expr.length) {
+        out += expr[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === ']') inBracket = false;
+      i += 1;
+      continue;
+    }
+    if (inRegex) {
+      out += ch;
+      if (ch === '\\' && i + 1 < expr.length) {
+        out += expr[i + 1];
+        i += 2;
+        continue;
+      }
+      if (ch === '/') inRegex = false;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "'") {
+      inSingle = true;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '"') {
+      inDouble = true;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '[') {
+      inBracket = true;
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && prevDelim !== '/') {
+      inRegex = true;
+      out += ch;
+      i += 1;
+      continue;
+    }
+
+    if (expr.startsWith(prevDelim, i)) {
+      out += nextDelim;
+      i += prevDelim.length;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * Live-rewrites every existing Rule Operator, Choice Delimiter, and Comment Prefix in `rawGrammarText`
+ * when the user edits dialect syntax fields in Workbench 01.
+ */
+export function rewriteGrammarDialectTokens(
+  rawGrammarText: string,
+  prevDialect: DialectConfig,
+  nextDialect: DialectConfig
+): string {
+  const prevOp = prevDialect.ruleOperator.trim();
+  const nextOp = nextDialect.ruleOperator.trim();
+  const prevChoice = prevDialect.choiceDelimiter.trim();
+  const nextChoice = nextDialect.choiceDelimiter.trim();
+  const prevComment = prevDialect.commentPrefix.trim();
+  const nextComment = nextDialect.commentPrefix.trim();
+
+  if (prevOp === nextOp && prevChoice === nextChoice && prevComment === nextComment) {
+    return rawGrammarText;
+  }
+
+  const lines = rawGrammarText.split(/\r?\n/);
+  const rewritten = lines.map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return line;
+    const indent = line.slice(0, line.indexOf(trimmed));
+
+    // Rewrite leading comment prefix
+    if (prevComment && trimmed.startsWith(prevComment)) {
+      if (!nextComment) return line;
+      const body = trimmed.slice(prevComment.length);
+      return `${indent}${nextComment}${body}`;
+    }
+
+    // Match rule line using prevDialect's ruleOperator (supports empty space-separated operator)
+    let lhs = '';
+    let rhs = '';
+    if (!prevOp) {
+      const m = trimmed.match(/^<?([A-Za-z_][A-Za-z0-9_-]*)>?\s+(.+)$/);
+      if (!m) return line;
+      lhs = m[1];
+      rhs = m[2].trim();
+    } else {
+      const idx = trimmed.indexOf(prevOp);
+      if (idx <= 0) return line;
+      const rawLhs = trimmed.slice(0, idx).trim();
+      const lhsClean = rawLhs.replace(/^<|>$/g, '').trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(lhsClean)) return line;
+      lhs = rawLhs;
+      rhs = trimmed.slice(idx + prevOp.length).trim();
+    }
+
+    const updatedRhs =
+      prevChoice && nextChoice && prevChoice !== nextChoice
+        ? replaceUnquotedDelimiter(rhs, prevChoice, nextChoice)
+        : rhs;
+
+    return `${indent}${formatGrammarRuleLine(lhs, updatedRhs, nextDialect.ruleOperator)}`;
+  });
+
+  return rewritten.join('\n');
+}
+
+/**
+ * Biject / Split a grammar rule into two reversible rules (either splitting alternatives at `splitIndex`
+ * or bisecting a sequence into left/right halves), rewriting the parent rule to reference both halves.
+ */
+export function splitGrammarRule(
+  rawGrammarText: string,
+  rules: GrammarRule[],
+  ruleName: string,
+  dialect: DialectConfig,
+  splitIndex?: number
+):
+  | { ok: true; grammar: string; leftRule: string; rightRule: string; summary: string }
+  | { ok: false; error: string } {
+  const target = rules.find((r) => r.name === ruleName);
+  if (!target) {
+    return { ok: false, error: `Rule "${ruleName}" not found.` };
+  }
+
+  const delim = dialect.choiceDelimiter.trim() || '|';
+  const usedNames = new Set(rules.map((r) => r.name));
+  const pickUnique = (base: string): string => {
+    if (!usedNames.has(base)) {
+      usedNames.add(base);
+      return base;
+    }
+    let idx = 2;
+    while (usedNames.has(`${base}_${idx}`)) idx += 1;
+    const candidate = `${base}_${idx}`;
+    usedNames.add(candidate);
+    return candidate;
+  };
+
+  let leftExpr = '';
+  let rightExpr = '';
+  let parentRecombined = '';
+  const leftName = pickUnique(`${ruleName}_left`);
+  const rightName = pickUnique(`${ruleName}_right`);
+
+  if (target.alternatives.length >= 2) {
+    const cut =
+      typeof splitIndex === 'number' && splitIndex > 0 && splitIndex < target.alternatives.length
+        ? splitIndex
+        : Math.ceil(target.alternatives.length / 2);
+    leftExpr = target.alternatives.slice(0, cut).join(` ${delim} `);
+    rightExpr = target.alternatives.slice(cut).join(` ${delim} `);
+    parentRecombined = `${leftName} ${delim} ${rightName}`;
+  } else {
+    const tokens = target.expression.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length < 2) {
+      return {
+        ok: false,
+        error: `Rule "${ruleName}" is atomic and needs at least 2 alternatives or sequence tokens to split.`,
+      };
+    }
+    const cut =
+      typeof splitIndex === 'number' && splitIndex > 0 && splitIndex < tokens.length
+        ? splitIndex
+        : Math.ceil(tokens.length / 2);
+    leftExpr = tokens.slice(0, cut).join(' ');
+    rightExpr = tokens.slice(cut).join(' ');
+    parentRecombined = `${leftName} ${rightName}`;
+  }
+
+  const nextRules: Array<{ name: string; expression: string }> = [];
+  for (const r of rules) {
+    if (r.name === ruleName) {
+      nextRules.push({ name: r.name, expression: parentRecombined });
+      nextRules.push({ name: leftName, expression: leftExpr });
+      nextRules.push({ name: rightName, expression: rightExpr });
+    } else {
+      nextRules.push({ name: r.name, expression: r.expression });
+    }
+  }
+
+  return {
+    ok: true,
+    grammar: serializeRulesWithHeader(rawGrammarText, nextRules, dialect),
+    leftRule: leftName,
+    rightRule: rightName,
+    summary: `Bijected <${ruleName}> → <${leftName}> + <${rightName}>`,
+  };
+}
+
 export function exportWorkspaceInLanguage(
   language: ExportLanguage,
   params: {
@@ -885,7 +1393,9 @@ export function exportWorkspaceInLanguage(
       lines.push(
         `${c} [op #${cfg?.precedence ?? r.lineNumber} | assoc=${cfg?.associativity ?? 'left'}${propsNote}]`
       );
-      lines.push(`${r.name} ${params.dialect.ruleOperator} ${normalizeExpressionQuotes(r.expression)}`);
+      lines.push(
+        formatGrammarRuleLine(r.name, normalizeExpressionQuotes(r.expression), params.dialect.ruleOperator)
+      );
     }
     return {
       content: lines.join('\n') + '\n',
@@ -987,8 +1497,7 @@ ${propTuples.join('\n') || '    // Add custom rule properties in the Rule Proper
     };
   }
 
-  // TypeScript typed grammar & order-of-operations export
-  const tsRules = orderedRules.map((r, idx) => {
+  const compiledRules = orderedRules.map((r, idx) => {
     const cfg = params.ruleConfigs[r.name];
     const propsObj: Record<string, string> = {};
     for (const p of cfg?.properties || []) {
@@ -1004,6 +1513,539 @@ ${propTuples.join('\n') || '    // Add custom rule properties in the Rule Proper
     };
   });
 
+  if (language === 'javascript') {
+    const jsContent = `// Auto-generated JavaScript (ESM) Grammar & Order-of-Operations Module (${slug})
+export const SCHEMA_NAME = ${JSON.stringify(slug)};
+export const DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)};
+
+export const GRAMMAR_RULES = ${JSON.stringify(compiledRules, null, 2)};
+
+export function getRuleOrderOfOperations() {
+  return [...GRAMMAR_RULES]
+    .sort((a, b) => a.precedence - b.precedence)
+    .map((rule) => rule.name);
+}
+`;
+    return {
+      content: jsContent,
+      filename: `${slug}.mjs`,
+      mime: 'text/javascript',
+      label: 'JavaScript (.mjs)',
+    };
+  }
+
+  if (language === 'go') {
+    const goEntries = compiledRules.map((r) => {
+      const propPairs = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)
+        .join(', ');
+      return `\t{Name: ${JSON.stringify(r.name)}, Precedence: ${r.precedence}, Associativity: ${JSON.stringify(r.associativity)}, Expression: ${JSON.stringify(r.expression)}, Properties: map[string]string{${propPairs}}},`;
+    });
+    const goContent = `// Auto-generated Go Grammar & Order-of-Operations Package (${slug})
+package grammar
+
+type CompiledGrammarRule struct {
+	Name          string
+	Precedence    int
+	Associativity string
+	Expression    string
+	Properties    map[string]string
+}
+
+const SchemaName = ${JSON.stringify(slug)}
+const DialectPreset = ${JSON.stringify(params.dialect.preset)}
+
+var GrammarRules = []CompiledGrammarRule{
+${goEntries.join('\n')}
+}
+`;
+    return {
+      content: goContent,
+      filename: `${slug}.go`,
+      mime: 'text/plain',
+      label: 'Go (.go)',
+    };
+  }
+
+  if (language === 'java') {
+    const className = slug.replace(/[^A-Za-z0-9]/g, '') || 'GrammarSchema';
+    const javaEntries = compiledRules.map((r) => {
+      const propPairs = Object.entries(r.properties)
+        .map(([k, v]) => `Map.entry(${JSON.stringify(k)}, ${JSON.stringify(v)})`)
+        .join(', ');
+      return `        new CompiledRule(${JSON.stringify(r.name)}, ${r.precedence}, ${JSON.stringify(r.associativity)}, ${JSON.stringify(r.expression)}, Map.ofEntries(${propPairs}))`;
+    });
+    const javaContent = `// Auto-generated Java Grammar & Order-of-Operations Class (${slug})
+import java.util.List;
+import java.util.Map;
+
+public final class ${className}Grammar {
+    public record CompiledRule(
+        String name,
+        int precedence,
+        String associativity,
+        String expression,
+        Map<String, String> properties
+    ) {}
+
+    public static final String SCHEMA_NAME = ${JSON.stringify(slug)};
+    public static final String DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)};
+
+    public static final List<CompiledRule> GRAMMAR_RULES = List.of(
+${javaEntries.join(',\n')}
+    );
+}
+`;
+    return {
+      content: javaContent,
+      filename: `${className}Grammar.java`,
+      mime: 'text/plain',
+      label: 'Java (.java)',
+    };
+  }
+
+  if (language === 'cpp') {
+    const cppEntries = compiledRules.map((r) => {
+      const propPairs = Object.entries(r.properties)
+        .map(([k, v]) => `{${JSON.stringify(k)}, ${JSON.stringify(v)}}`)
+        .join(', ');
+      return `    {${JSON.stringify(r.name)}, ${r.precedence}, ${JSON.stringify(r.associativity)}, ${JSON.stringify(r.expression)}, {${propPairs}}},`;
+    });
+    const cppContent = `// Auto-generated C++20 Grammar & Order-of-Operations Header (${slug})
+#pragma once
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace grammar_studio {
+
+struct CompiledGrammarRule {
+    std::string name;
+    int precedence;
+    std::string associativity;
+    std::string expression;
+    std::unordered_map<std::string, std::string> properties;
+};
+
+inline const std::string SCHEMA_NAME = ${JSON.stringify(slug)};
+inline const std::string DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)};
+
+inline const std::vector<CompiledGrammarRule> GRAMMAR_RULES = {
+${cppEntries.join('\n')}
+};
+
+} // namespace grammar_studio
+`;
+    return {
+      content: cppContent,
+      filename: `${slug}.hpp`,
+      mime: 'text/plain',
+      label: 'C++ (.hpp)',
+    };
+  }
+
+  if (language === 'csharp') {
+    const className = slug.replace(/[^A-Za-z0-9]/g, '') || 'GrammarSchema';
+    const csEntries = compiledRules.map((r) => {
+      const propPairs = Object.entries(r.properties)
+        .map(([k, v]) => `[${JSON.stringify(k)}] = ${JSON.stringify(v)}`)
+        .join(', ');
+      return `        new(${JSON.stringify(r.name)}, ${r.precedence}, ${JSON.stringify(r.associativity)}, ${JSON.stringify(r.expression)}, new Dictionary<string, string> { ${propPairs} }),`;
+    });
+    const csContent = `// Auto-generated C# (.NET) Grammar & Order-of-Operations Module (${slug})
+using System.Collections.Generic;
+
+namespace GrammarStudio;
+
+public sealed record CompiledGrammarRule(
+    string Name,
+    int Precedence,
+    string Associativity,
+    string Expression,
+    IReadOnlyDictionary<string, string> Properties
+);
+
+public static class ${className}Grammar
+{
+    public const string SchemaName = ${JSON.stringify(slug)};
+    public const string DialectPreset = ${JSON.stringify(params.dialect.preset)};
+
+    public static readonly IReadOnlyList<CompiledGrammarRule> Rules = new List<CompiledGrammarRule>
+    {
+${csEntries.join('\n')}
+    };
+}
+`;
+    return {
+      content: csContent,
+      filename: `${className}Grammar.cs`,
+      mime: 'text/plain',
+      label: 'C# (.cs)',
+    };
+  }
+
+  if (language === 'php') {
+    const phpEntries = compiledRules.map((r) => {
+      const propPairs = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)} => ${JSON.stringify(v)}`)
+        .join(', ');
+      return `    [\n        'name' => ${JSON.stringify(r.name)},\n        'precedence' => ${r.precedence},\n        'associativity' => ${JSON.stringify(r.associativity)},\n        'expression' => ${JSON.stringify(r.expression)},\n        'properties' => [${propPairs}],\n    ],`;
+    });
+    const phpContent = `<?php
+// Auto-generated PHP 8 Grammar & Order-of-Operations Registry (${slug})
+declare(strict_types=1);
+
+const SCHEMA_NAME = ${JSON.stringify(slug)};
+const DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)};
+
+const GRAMMAR_RULES = [
+${phpEntries.join('\n')}
+];
+`;
+    return {
+      content: phpContent,
+      filename: `${slug}.php`,
+      mime: 'application/x-httpd-php',
+      label: 'PHP (.php)',
+    };
+  }
+
+  if (language === 'sql') {
+    const sqlEsc = (s: string) => `'${s.replace(/'/g, "''")}'`;
+    const inserts = compiledRules.map(
+      (r) =>
+        `INSERT INTO grammar_rules (schema_name, dialect_preset, rule_name, precedence, associativity, expression, properties_json)\nVALUES (${sqlEsc(slug)}, ${sqlEsc(params.dialect.preset)}, ${sqlEsc(r.name)}, ${r.precedence}, ${sqlEsc(r.associativity)}, ${sqlEsc(r.expression)}, ${sqlEsc(JSON.stringify(r.properties))});`
+    );
+    const sqlContent = `-- Auto-generated SQL Grammar & Order-of-Operations Schema (${slug})
+CREATE TABLE IF NOT EXISTS grammar_rules (
+  schema_name VARCHAR(128) NOT NULL,
+  dialect_preset VARCHAR(64) NOT NULL,
+  rule_name VARCHAR(128) NOT NULL,
+  precedence INTEGER NOT NULL,
+  associativity VARCHAR(16) NOT NULL,
+  expression TEXT NOT NULL,
+  properties_json JSONB NOT NULL,
+  PRIMARY KEY (schema_name, rule_name)
+);
+
+${inserts.join('\n\n')}
+`;
+    return {
+      content: sqlContent,
+      filename: `${slug}.sql`,
+      mime: 'application/sql',
+      label: 'SQL (.sql)',
+    };
+  }
+
+  if (language === 'swift') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)
+        .join(', ');
+      return `    CompiledGrammarRule(name: ${JSON.stringify(r.name)}, precedence: ${r.precedence}, associativity: ${JSON.stringify(r.associativity)}, expression: ${JSON.stringify(r.expression)}, properties: [${props || ':'}])`;
+    });
+    return {
+      content: `// Auto-generated Swift 6 Grammar & Order-of-Operations Module (${slug})
+import Foundation
+
+public struct CompiledGrammarRule: Sendable, Codable {
+    public let name: String
+    public let precedence: Int
+    public let associativity: String
+    public let expression: String
+    public let properties: [String: String]
+}
+
+public enum ${slug.replace(/[^A-Za-z0-9]/g, '') || 'Grammar'}Schema {
+    public static let schemaName = ${JSON.stringify(slug)}
+    public static let dialectPreset = ${JSON.stringify(params.dialect.preset)}
+    public static let rules: [CompiledGrammarRule] = [
+${entries.join(',\n')}
+    ]
+}
+`,
+      filename: `${slug}.swift`,
+      mime: 'text/plain',
+      label: 'Swift (.swift)',
+    };
+  }
+
+  if (language === 'kotlin') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)} to ${JSON.stringify(v)}`)
+        .join(', ');
+      return `    CompiledGrammarRule(${JSON.stringify(r.name)}, ${r.precedence}, ${JSON.stringify(r.associativity)}, ${JSON.stringify(r.expression)}, mapOf(${props}))`;
+    });
+    return {
+      content: `// Auto-generated Kotlin Grammar & Order-of-Operations Module (${slug})
+package grammar.studio
+
+data class CompiledGrammarRule(
+    val name: String,
+    val precedence: Int,
+    val associativity: String,
+    val expression: String,
+    val properties: Map<String, String>
+)
+
+object ${slug.replace(/[^A-Za-z0-9]/g, '') || 'Grammar'}Schema {
+    const val SCHEMA_NAME = ${JSON.stringify(slug)}
+    const val DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)}
+    val RULES: List<CompiledGrammarRule> = listOf(
+${entries.join(',\n')}
+    )
+}
+`,
+      filename: `${slug}.kt`,
+      mime: 'text/plain',
+      label: 'Kotlin (.kt)',
+    };
+  }
+
+  if (language === 'ruby') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)} => ${JSON.stringify(v)}`)
+        .join(', ');
+      return `    { name: ${JSON.stringify(r.name)}, precedence: ${r.precedence}, associativity: ${JSON.stringify(r.associativity)}, expression: ${JSON.stringify(r.expression)}, properties: { ${props} } }`;
+    });
+    return {
+      content: `# frozen_string_literal: true
+# Auto-generated Ruby 3 Grammar & Order-of-Operations Module (${slug})
+module GrammarStudio
+  SCHEMA_NAME = ${JSON.stringify(slug)}
+  DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)}
+
+  GRAMMAR_RULES = [
+${entries.join(',\n')}
+  ].freeze
+end
+`,
+      filename: `${slug}.rb`,
+      mime: 'text/plain',
+      label: 'Ruby (.rb)',
+    };
+  }
+
+  if (language === 'scala') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)} -> ${JSON.stringify(v)}`)
+        .join(', ');
+      return `    CompiledGrammarRule(${JSON.stringify(r.name)}, ${r.precedence}, ${JSON.stringify(r.associativity)}, ${JSON.stringify(r.expression)}, Map(${props}))`;
+    });
+    return {
+      content: `// Auto-generated Scala 3 Grammar & Order-of-Operations Module (${slug})
+package grammar.studio
+
+final case class CompiledGrammarRule(
+  name: String,
+  precedence: Int,
+  associativity: String,
+  expression: String,
+  properties: Map[String, String]
+)
+
+object ${slug.replace(/[^A-Za-z0-9]/g, '') || 'Grammar'}Schema:
+  val schemaName: String = ${JSON.stringify(slug)}
+  val dialectPreset: String = ${JSON.stringify(params.dialect.preset)}
+  val rules: List[CompiledGrammarRule] = List(
+${entries.join(',\n')}
+  )
+`,
+      filename: `${slug}.scala`,
+      mime: 'text/plain',
+      label: 'Scala (.scala)',
+    };
+  }
+
+  if (language === 'haskell') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `(${JSON.stringify(k)}, ${JSON.stringify(v)})`)
+        .join(', ');
+      return `  CompiledRule ${JSON.stringify(r.name)} ${r.precedence} ${JSON.stringify(r.associativity)} ${JSON.stringify(r.expression)} [${props}]`;
+    });
+    return {
+      content: `-- Auto-generated Haskell Grammar & Order-of-Operations Module (${slug})
+module GrammarStudio where
+
+data CompiledRule = CompiledRule
+  { ruleName :: String
+  , rulePrecedence :: Int
+  , ruleAssociativity :: String
+  , ruleExpression :: String
+  , ruleProperties :: [(String, String)]
+  } deriving (Show, Eq)
+
+schemaName :: String
+schemaName = ${JSON.stringify(slug)}
+
+dialectPreset :: String
+dialectPreset = ${JSON.stringify(params.dialect.preset)}
+
+grammarRules :: [CompiledRule]
+grammarRules =
+  [
+${entries.join('\n  , ')}
+  ]
+`,
+      filename: `${slug}.hs`,
+      mime: 'text/plain',
+      label: 'Haskell (.hs)',
+    };
+  }
+
+  if (language === 'elixir') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)} => ${JSON.stringify(v)}`)
+        .join(', ');
+      return `    %{name: ${JSON.stringify(r.name)}, precedence: ${r.precedence}, associativity: ${JSON.stringify(r.associativity)}, expression: ${JSON.stringify(r.expression)}, properties: %{${props}}}`;
+    });
+    return {
+      content: `# Auto-generated Elixir Grammar & Order-of-Operations Module (${slug})
+defmodule GrammarStudio.Schema do
+  @schema_name ${JSON.stringify(slug)}
+  @dialect_preset ${JSON.stringify(params.dialect.preset)}
+
+  def schema_name, do: @schema_name
+  def dialect_preset, do: @dialect_preset
+
+  def grammar_rules do
+    [
+${entries.join(',\n')}
+    ]
+  end
+end
+`,
+      filename: `${slug}.ex`,
+      mime: 'text/plain',
+      label: 'Elixir (.ex)',
+    };
+  }
+
+  if (language === 'lua') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `[${JSON.stringify(k)}] = ${JSON.stringify(v)}`)
+        .join(', ');
+      return `  { name = ${JSON.stringify(r.name)}, precedence = ${r.precedence}, associativity = ${JSON.stringify(r.associativity)}, expression = ${JSON.stringify(r.expression)}, properties = { ${props} } }`;
+    });
+    return {
+      content: `-- Auto-generated Lua 5.4 Grammar & Order-of-Operations Module (${slug})
+local M = {}
+
+M.SCHEMA_NAME = ${JSON.stringify(slug)}
+M.DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)}
+M.GRAMMAR_RULES = {
+${entries.join(',\n')}
+}
+
+return M
+`,
+      filename: `${slug}.lua`,
+      mime: 'text/plain',
+      label: 'Lua (.lua)',
+    };
+  }
+
+  if (language === 'zig') {
+    const entries = compiledRules.map(
+      (r) =>
+        `    .{ .name = ${JSON.stringify(r.name)}, .precedence = ${r.precedence}, .associativity = ${JSON.stringify(r.associativity)}, .expression = ${JSON.stringify(r.expression)} },`
+    );
+    return {
+      content: `// Auto-generated Zig Grammar & Order-of-Operations Module (${slug})
+pub const CompiledGrammarRule = struct {
+    name: []const u8,
+    precedence: u32,
+    associativity: []const u8,
+    expression: []const u8,
+};
+
+pub const SCHEMA_NAME: []const u8 = ${JSON.stringify(slug)};
+pub const DIALECT_PRESET: []const u8 = ${JSON.stringify(params.dialect.preset)};
+
+pub const GRAMMAR_RULES = [_]CompiledGrammarRule{
+${entries.join('\n')}
+};
+`,
+      filename: `${slug}.zig`,
+      mime: 'text/plain',
+      label: 'Zig (.zig)',
+    };
+  }
+
+  if (language === 'dart') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`)
+        .join(', ');
+      return `  CompiledGrammarRule(name: ${JSON.stringify(r.name)}, precedence: ${r.precedence}, associativity: ${JSON.stringify(r.associativity)}, expression: ${JSON.stringify(r.expression)}, properties: {${props}}),`;
+    });
+    return {
+      content: `// Auto-generated Dart 3 Grammar & Order-of-Operations Module (${slug})
+class CompiledGrammarRule {
+  final String name;
+  final int precedence;
+  final String associativity;
+  final String expression;
+  final Map<String, String> properties;
+  const CompiledGrammarRule({
+    required this.name,
+    required this.precedence,
+    required this.associativity,
+    required this.expression,
+    required this.properties,
+  });
+}
+
+const String schemaName = ${JSON.stringify(slug)};
+const String dialectPreset = ${JSON.stringify(params.dialect.preset)};
+
+const List<CompiledGrammarRule> grammarRules = [
+${entries.join('\n')}
+];
+`,
+      filename: `${slug}.dart`,
+      mime: 'text/plain',
+      label: 'Dart (.dart)',
+    };
+  }
+
+  if (language === 'ocaml') {
+    const entries = compiledRules.map((r) => {
+      const props = Object.entries(r.properties)
+        .map(([k, v]) => `(${JSON.stringify(k)}, ${JSON.stringify(v)})`)
+        .join('; ');
+      return `  { name = ${JSON.stringify(r.name)}; precedence = ${r.precedence}; associativity = ${JSON.stringify(r.associativity)}; expression = ${JSON.stringify(r.expression)}; properties = [${props}] }`;
+    });
+    return {
+      content: `(* Auto-generated OCaml Grammar & Order-of-Operations Module (${slug}) *)
+type compiled_rule = {
+  name : string;
+  precedence : int;
+  associativity : string;
+  expression : string;
+  properties : (string * string) list;
+}
+
+let schema_name = ${JSON.stringify(slug)}
+let dialect_preset = ${JSON.stringify(params.dialect.preset)}
+
+let grammar_rules : compiled_rule list = [
+${entries.join(';\n')}
+]
+`,
+      filename: `${slug}.ml`,
+      mime: 'text/plain',
+      label: 'OCaml (.ml)',
+    };
+  }
+
   const tsContent = `// Auto-generated TypeScript Grammar & Order-of-Operations Module (${slug})
 export interface CompiledGrammarRule {
   name: string;
@@ -1017,7 +2059,7 @@ export interface CompiledGrammarRule {
 export const SCHEMA_NAME = '${slug}';
 export const DIALECT_PRESET = '${params.dialect.preset}';
 
-export const GRAMMAR_RULES: CompiledGrammarRule[] = ${JSON.stringify(tsRules, null, 2)};
+export const GRAMMAR_RULES: CompiledGrammarRule[] = ${JSON.stringify(compiledRules, null, 2)};
 
 export function getRuleOrderOfOperations(): string[] {
   return [...GRAMMAR_RULES]
@@ -1041,11 +2083,57 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+export function extractLiteralAlternationFromRegex(pattern: string): string[] | null {
+  let raw = pattern.trim();
+  if (!raw) return null;
+  if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+    raw = raw.slice(1, raw.lastIndexOf('/'));
+  }
+  if (!raw.startsWith('^') || !raw.endsWith('$')) return null;
+  let inner = raw.slice(1, -1);
+  if (inner.startsWith('(') && inner.endsWith(')')) {
+    inner = inner.slice(1, -1);
+  }
+  if (!inner) return null;
+
+  const branches: string[] = [];
+  let current = '';
+  for (let i = 0; i < inner.length; i += 1) {
+    const ch = inner[i];
+    if (ch === '\\') {
+      if (i + 1 >= inner.length) return null;
+      const next = inner[i + 1];
+      // Reject regex shorthand character classes (\d, \w, \s, \D, \W, \S, \b, \B)
+      if (/[dwsDWSbB]/.test(next)) return null;
+      current += next;
+      i += 1;
+      continue;
+    }
+    if (ch === '|') {
+      if (!current) return null;
+      branches.push(current);
+      current = '';
+      continue;
+    }
+    // Reject unescaped regex metacharacters
+    if (/[.*+?()[\]{}^$]/.test(ch)) return null;
+    current += ch;
+  }
+  if (!current) return null;
+  branches.push(current);
+  return branches.length > 0 ? branches : null;
+}
+
 export function inferLineMutations(
   rules: GrammarRule[],
-  existing: Record<string, LineMutation> = {}
+  existing: Record<string, LineMutation> = {},
+  prevRules?: GrammarRule[]
 ): Record<string, LineMutation> {
   const next: Record<string, LineMutation> = {};
+  const prevRuleMap = new Map<string, GrammarRule>();
+  if (prevRules) {
+    for (const pr of prevRules) prevRuleMap.set(pr.name, pr);
+  }
 
   for (const rule of rules) {
     const prev = existing[rule.name];
@@ -1059,16 +2147,33 @@ export function inferLineMutations(
         ? `^(${rule.literals.map(escapeRegex).join('|')})$`
         : '';
 
-    next[rule.name] = prev
-      ? { ...prev, ruleName: rule.name }
-      : {
-          ruleName: rule.name,
-          targetProperty: rule.name,
-          jsonType: allNumericLiterals ? 'number' : 'string',
-          patternOverride: inferredPattern,
-          description: `Compiled from grammar rule '${rule.name}' (${rule.alternatives.length} branch${rule.alternatives.length === 1 ? '' : 'es'})`,
-          enabled: true,
-        };
+    if (prev) {
+      const prevRule = prevRuleMap.get(rule.name);
+      const prevInferredPattern =
+        prevRule && prevRule.literals.length > 0 && prevRule.referencedRules.length === 0
+          ? `^(${prevRule.literals.map(escapeRegex).join('|')})$`
+          : '';
+      const expressionChanged = Boolean(prevRule && prevRule.expression !== rule.expression);
+      const wasAutoPattern =
+        !prev.patternOverride.trim() || prev.patternOverride.trim() === prevInferredPattern;
+
+      next[rule.name] = {
+        ...prev,
+        ruleName: rule.name,
+        patternOverride: expressionChanged && wasAutoPattern ? inferredPattern : prev.patternOverride,
+        jsonType: expressionChanged && wasAutoPattern && allNumericLiterals ? 'number' : prev.jsonType,
+        description: `Compiled from grammar rule '${rule.name}' (${rule.alternatives.length} branch${rule.alternatives.length === 1 ? '' : 'es'})`,
+      };
+    } else {
+      next[rule.name] = {
+        ruleName: rule.name,
+        targetProperty: rule.name,
+        jsonType: allNumericLiterals ? 'number' : 'string',
+        patternOverride: inferredPattern,
+        description: `Compiled from grammar rule '${rule.name}' (${rule.alternatives.length} branch${rule.alternatives.length === 1 ? '' : 'es'})`,
+        enabled: true,
+      };
+    }
   }
 
   return next;
@@ -1209,6 +2314,7 @@ export function schemaJsonToGrammar(
       schemaName?: string;
       schemaType?: string;
       mutationPolicy?: MutationPolicy;
+      mutations?: Record<string, LineMutation>;
     }
   | { ok: false; error: string } {
   try {
@@ -1223,7 +2329,10 @@ export function schemaJsonToGrammar(
     const rawDialect = (sourceDoc['x-dialect'] || parsed['x-source-dialect'] || {}) as Partial<DialectConfig>;
     const dialect: DialectConfig = {
       preset: rawDialect.preset || fallbackDialect.preset,
-      ruleOperator: rawDialect.ruleOperator || fallbackDialect.ruleOperator,
+      ruleOperator:
+        rawDialect.ruleOperator !== undefined
+          ? String(rawDialect.ruleOperator)
+          : fallbackDialect.ruleOperator,
       choiceDelimiter: rawDialect.choiceDelimiter || fallbackDialect.choiceDelimiter,
       commentPrefix: rawDialect.commentPrefix || fallbackDialect.commentPrefix,
     };
@@ -1272,7 +2381,7 @@ export function schemaJsonToGrammar(
           }
         }
         if (name && expression) {
-          lines.push(`${name} ${dialect.ruleOperator} ${expression}`);
+          lines.push(formatGrammarRuleLine(name, expression, dialect.ruleOperator));
         }
       }
     } else if (sourceDoc.$defs && typeof sourceDoc.$defs === 'object') {
@@ -1280,7 +2389,13 @@ export function schemaJsonToGrammar(
         if (!val || typeof val !== 'object') continue;
         const def = val as Record<string, unknown>;
         if (typeof def['x-grammar-expression'] === 'string') {
-          lines.push(`${key} ${dialect.ruleOperator} ${normalizeExpressionQuotes(def['x-grammar-expression'])}`);
+          lines.push(
+            formatGrammarRuleLine(
+              key,
+              normalizeExpressionQuotes(def['x-grammar-expression']),
+              dialect.ruleOperator
+            )
+          );
         } else if (Array.isArray(def.enum)) {
           const alts = def.enum
             .map((v) => {
@@ -1288,8 +2403,39 @@ export function schemaJsonToGrammar(
               return !s.includes("'") ? `'${s}'` : JSON.stringify(s);
             })
             .join(` ${dialect.choiceDelimiter} `);
-          lines.push(`${key} ${dialect.ruleOperator} ${alts}`);
+          lines.push(formatGrammarRuleLine(key, alts, dialect.ruleOperator));
         }
+      }
+    }
+
+    // Extract line mutations from JSON Schema $defs if present
+    const extractedMutations: Record<string, LineMutation> = {};
+    if (sourceDoc.$defs && typeof sourceDoc.$defs === 'object') {
+      for (const [key, val] of Object.entries(sourceDoc.$defs as Record<string, unknown>)) {
+        if (!val || typeof val !== 'object') continue;
+        const def = val as Record<string, unknown>;
+        const sourceRuleName =
+          typeof def['x-grammar-rule'] === 'string' && def['x-grammar-rule'].trim()
+            ? def['x-grammar-rule'].trim()
+            : typeof def['x-source-rule'] === 'string' && def['x-source-rule'].trim()
+              ? def['x-source-rule'].trim()
+              : key;
+        const jType =
+          def.type === 'number' ||
+          def.type === 'boolean' ||
+          def.type === 'object' ||
+          def.type === 'array' ||
+          def.type === 'string'
+            ? def.type
+            : 'string';
+        extractedMutations[sourceRuleName] = {
+          ruleName: sourceRuleName,
+          targetProperty: key,
+          jsonType: jType,
+          patternOverride: typeof def.pattern === 'string' ? def.pattern : '',
+          description: typeof def.description === 'string' ? def.description : `Rule ${sourceRuleName}`,
+          enabled: true,
+        };
       }
     }
 
@@ -1300,6 +2446,7 @@ export function schemaJsonToGrammar(
       schemaName,
       schemaType,
       mutationPolicy,
+      mutations: Object.keys(extractedMutations).length > 0 ? extractedMutations : undefined,
     };
   } catch (err) {
     return {
@@ -1369,68 +2516,522 @@ export function buildJsonLdSchemaPackage(params: {
 }
 
 /* ============================================================================
- * 4. RECURSIVE GRAMMAR EVALUATOR WITH FULL BACKTRACKING & LONGEST-MATCH TRACE
+ * 4. RECURSIVE GRAMMAR EVALUATOR WITH EBNF/PEG REPETITIONS, CHOICES,
+ *    LOOKAHEAD, LOOKBEHIND, CHAR CLASSES & BACKTRACKING TRACE
  * ========================================================================== */
 
-interface SequenceItem {
-  kind: 'literal' | 'rule';
-  value: string;
-}
+type GrammarExprNode =
+  | { type: 'Literal'; value: string }
+  | { type: 'RuleRef'; name: string }
+  | { type: 'Wildcard' }
+  | { type: 'Anchor'; kind: 'start' | 'end' }
+  | { type: 'CharClass'; raw: string; regex: RegExp }
+  | { type: 'RegexTerm'; raw: string; regex: RegExp }
+  | { type: 'Sequence'; items: GrammarExprNode[] }
+  | { type: 'Choice'; branches: GrammarExprNode[] }
+  | { type: 'Repeat'; node: GrammarExprNode; min: number; max: number; lazy: boolean; label: string }
+  | { type: 'Lookahead'; node: GrammarExprNode; positive: boolean; raw: string }
+  | { type: 'Lookbehind'; node: GrammarExprNode; positive: boolean; raw: string };
 
 interface MatchOutcome {
   endPos: number;
   trace: EvaluationTraceStep[];
 }
 
-function tokenizeAlternative(alt: string): SequenceItem[] {
-  const items: SequenceItem[] = [];
-  let i = 0;
-  while (i < alt.length) {
-    const ch = alt[i];
-    if (/\s|,/.test(ch)) {
-      i += 1;
-      continue;
+function unescapeGrammarLiteral(raw: string): string {
+  return raw.replace(/\\([nrt\\'"bfv])/g, (_, ch: string) => {
+    switch (ch) {
+      case 'n':
+        return '\n';
+      case 'r':
+        return '\r';
+      case 't':
+        return '\t';
+      case 'b':
+        return '\b';
+      case 'f':
+        return '\f';
+      case 'v':
+        return '\v';
+      default:
+        return ch;
     }
-    if (ch === '"' || ch === "'") {
-      const quote = ch;
-      let lit = '';
-      i += 1;
-      while (i < alt.length && alt[i] !== quote) {
-        if (alt[i] === '\\' && i + 1 < alt.length) {
-          lit += alt[i + 1];
-          i += 2;
-        } else {
-          lit += alt[i];
-          i += 1;
-        }
-      }
-      i += 1;
-      items.push({ kind: 'literal', value: lit });
-      continue;
+  });
+}
+
+function parseGrammarExprAst(
+  input: string,
+  definedRules: Set<string>,
+  symbols: ResolvedGrammarSymbols = resolveGrammarSymbols(),
+  choiceDelim = '|'
+): GrammarExprNode | null {
+  const src = input.trim();
+  if (!src) return null;
+  let pos = 0;
+
+  const groupPair = pairDelimiters(symbols.groupParens);
+  const bracketPair = pairDelimiters(symbols.charClassBrackets);
+  const bracePair = pairDelimiters(symbols.repeatBraces);
+  const activeChoiceDelim = choiceDelim.trim() || '|';
+
+  const skipWs = () => {
+    while (pos < src.length && (/\s/.test(src[pos]) || src[pos] === ',')) {
+      pos += 1;
     }
-    if (ch === '<') {
-      const end = alt.indexOf('>', i);
-      if (end > i) {
-        items.push({ kind: 'rule', value: alt.slice(i + 1, end).trim() });
-        i = end + 1;
+  };
+
+  function isAtChoiceSeparator(): boolean {
+    if (pos >= src.length) return false;
+    if (activeChoiceDelim !== '/' && src.startsWith(activeChoiceDelim, pos)) {
+      return true;
+    }
+    if (src[pos] === '|') return true;
+    // Support PEG `/` choice when separated by whitespace (distinguished from inline `/regex/`)
+    if (
+      src[pos] === '/' &&
+      (pos === 0 || /\s/.test(src[pos - 1])) &&
+      (pos + 1 >= src.length || /\s/.test(src[pos + 1]))
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  function consumeChoiceSeparator(): boolean {
+    if (activeChoiceDelim !== '/' && src.startsWith(activeChoiceDelim, pos)) {
+      pos += activeChoiceDelim.length;
+      return true;
+    }
+    if (src[pos] === '|') {
+      pos += 1;
+      return true;
+    }
+    if (
+      src[pos] === '/' &&
+      (pos === 0 || /\s/.test(src[pos - 1])) &&
+      (pos + 1 >= src.length || /\s/.test(src[pos + 1]))
+    ) {
+      pos += 1;
+      return true;
+    }
+    return false;
+  }
+
+  function parseChoice(): GrammarExprNode | null {
+    const first = parseSequence();
+    if (!first) return null;
+    const branches: GrammarExprNode[] = [first];
+    while (true) {
+      skipWs();
+      if (isAtChoiceSeparator() && consumeChoiceSeparator()) {
+        const next = parseSequence();
+        if (next) branches.push(next);
         continue;
       }
+      break;
     }
-    const idMatch = alt.slice(i).match(/^[A-Za-z_][A-Za-z0-9_-]*/);
-    if (idMatch) {
-      items.push({ kind: 'rule', value: idMatch[0] });
-      i += idMatch[0].length;
-      continue;
-    }
-    i += 1;
+    return branches.length === 1 ? branches[0] : { type: 'Choice', branches };
   }
-  return items;
+
+  function parseSequence(): GrammarExprNode | null {
+    const items: GrammarExprNode[] = [];
+    while (pos < src.length) {
+      skipWs();
+      if (pos >= src.length) break;
+      const ch = src[pos];
+      if (
+        (groupPair && ch === groupPair[1]) ||
+        (bracketPair && ch === bracketPair[1]) ||
+        (bracePair && ch === bracePair[1]) ||
+        ch === ')' ||
+        isAtChoiceSeparator()
+      ) {
+        break;
+      }
+      const item = parsePrefix();
+      if (!item) {
+        pos += 1;
+        continue;
+      }
+      items.push(item);
+    }
+    if (items.length === 0) return null;
+    return items.length === 1 ? items[0] : { type: 'Sequence', items };
+  }
+
+  function parsePrefix(): GrammarExprNode | null {
+    skipWs();
+    if (pos >= src.length) return null;
+
+    if (symbols.posLookahead && src.startsWith(symbols.posLookahead, pos)) {
+      const start = pos;
+      pos += symbols.posLookahead.length;
+      const operand = parsePostfix();
+      if (!operand) return null;
+      return { type: 'Lookahead', node: operand, positive: true, raw: src.slice(start, pos).trim() };
+    }
+    if (symbols.negLookahead && src.startsWith(symbols.negLookahead, pos)) {
+      const start = pos;
+      pos += symbols.negLookahead.length;
+      const operand = parsePostfix();
+      if (!operand) return null;
+      return { type: 'Lookahead', node: operand, positive: false, raw: src.slice(start, pos).trim() };
+    }
+    return parsePostfix();
+  }
+
+  function parsePostfix(): GrammarExprNode | null {
+    let node = parseAtom();
+    if (!node) return null;
+
+    while (pos < src.length) {
+      // Check configured repetition symbols (longer multi-char tokens first)
+      const postfixCandidates: Array<{
+        tok: string;
+        min: number;
+        max: number;
+      }> = [];
+      if (symbols.oneOrMore) postfixCandidates.push({ tok: symbols.oneOrMore, min: 1, max: Infinity });
+      if (symbols.zeroOrMore) postfixCandidates.push({ tok: symbols.zeroOrMore, min: 0, max: Infinity });
+      if (symbols.optional) postfixCandidates.push({ tok: symbols.optional, min: 0, max: 1 });
+      postfixCandidates.sort((a, b) => b.tok.length - a.tok.length);
+
+      let matchedPostfix = false;
+      for (const cand of postfixCandidates) {
+        if (src.startsWith(cand.tok, pos)) {
+          pos += cand.tok.length;
+          let lazy = false;
+          if (symbols.optional && src.startsWith(symbols.optional, pos)) {
+            lazy = true;
+            pos += symbols.optional.length;
+          }
+          node = {
+            type: 'Repeat',
+            node,
+            min: cand.min,
+            max: cand.max,
+            lazy,
+            label: `${cand.tok}${lazy ? symbols.optional : ''}`,
+          };
+          matchedPostfix = true;
+          break;
+        }
+      }
+      if (matchedPostfix) continue;
+
+      // Bounded quantifier {m}, {m,}, {m,n} (controlled by repeatBraces symbol definition)
+      if (bracePair && src[pos] === bracePair[0]) {
+        const rest = src.slice(pos);
+        const escOpen = bracePair[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escClose = bracePair[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const qMatch = rest.match(new RegExp(`^${escOpen}\\s*(\\d+)(?:\\s*,\\s*(\\d*))?\\s*${escClose}(\\?)?`));
+        if (qMatch) {
+          pos += qMatch[0].length;
+          const min = Number(qMatch[1]);
+          const max =
+            qMatch[2] === undefined ? min : qMatch[2] === '' ? Infinity : Math.max(min, Number(qMatch[2]));
+          const lazy = Boolean(qMatch[3]);
+          node = { type: 'Repeat', node, min, max, lazy, label: qMatch[0] };
+          continue;
+        }
+      }
+      break;
+    }
+
+    return node;
+  }
+
+  function parseAtom(): GrammarExprNode | null {
+    skipWs();
+    if (pos >= src.length) return null;
+    const ch = src[pos];
+
+    // String literal '...' or "..."
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      let raw = '';
+      pos += 1;
+      while (pos < src.length && src[pos] !== quote) {
+        if (src[pos] === '\\' && pos + 1 < src.length) {
+          raw += `\\${src[pos + 1]}`;
+          pos += 2;
+        } else {
+          raw += src[pos];
+          pos += 1;
+        }
+      }
+      if (pos < src.length && src[pos] === quote) pos += 1;
+      return { type: 'Literal', value: unescapeGrammarLiteral(raw) };
+    }
+
+    // Lookbehind openers controlled by posLookbehind / negLookbehind
+    if (symbols.posLookbehind && src.startsWith(symbols.posLookbehind, pos)) {
+      const start = pos;
+      pos += symbols.posLookbehind.length;
+      const inner = parseChoice();
+      skipWs();
+      if (pos < src.length && src[pos] === ')') pos += 1;
+      if (!inner) return null;
+      return { type: 'Lookbehind', node: inner, positive: true, raw: src.slice(start, pos) };
+    }
+    if (symbols.negLookbehind && src.startsWith(symbols.negLookbehind, pos)) {
+      const start = pos;
+      pos += symbols.negLookbehind.length;
+      const inner = parseChoice();
+      skipWs();
+      if (pos < src.length && src[pos] === ')') pos += 1;
+      if (!inner) return null;
+      return { type: 'Lookbehind', node: inner, positive: false, raw: src.slice(start, pos) };
+    }
+
+    // Parenthesized lookahead (?=...) / (?!...) or group (...) controlled by groupParens & lookahead symbols
+    if (ch === '(' && (groupPair || symbols.posLookahead || symbols.negLookahead)) {
+      if (symbols.posLookahead && src.startsWith('(?=', pos)) {
+        const start = pos;
+        pos += 3;
+        const inner = parseChoice();
+        skipWs();
+        if (pos < src.length && src[pos] === ')') pos += 1;
+        return inner ? { type: 'Lookahead', node: inner, positive: true, raw: src.slice(start, pos) } : null;
+      }
+      if (symbols.negLookahead && src.startsWith('(?!', pos)) {
+        const start = pos;
+        pos += 3;
+        const inner = parseChoice();
+        skipWs();
+        if (pos < src.length && src[pos] === ')') pos += 1;
+        return inner ? { type: 'Lookahead', node: inner, positive: false, raw: src.slice(start, pos) } : null;
+      }
+    }
+
+    if (groupPair && ch === groupPair[0]) {
+      pos += 1;
+      if (src.startsWith('?:', pos)) pos += 2;
+      const inner = parseChoice();
+      skipWs();
+      if (pos < src.length && src[pos] === groupPair[1]) pos += 1;
+      return inner;
+    }
+
+    // Brackets: distinguish EBNF optional [ expr ] vs Character Class [0-9] / [^a-z]
+    if (bracketPair && ch === bracketPair[0]) {
+      const closeChar = bracketPair[1];
+      const closeIdx = (() => {
+        let j = pos + 1;
+        let q: '"' | "'" | null = null;
+        while (j < src.length) {
+          if (q) {
+            if (src[j] === '\\') {
+              j += 2;
+              continue;
+            }
+            if (src[j] === q) q = null;
+          } else {
+            if (src[j] === '\\') {
+              j += 2;
+              continue;
+            }
+            if (src[j] === '"' || src[j] === "'") q = src[j] as '"' | "'";
+            else if (src[j] === closeChar) return j;
+          }
+          j += 1;
+        }
+        return -1;
+      })();
+
+      if (closeIdx > pos) {
+        const innerRaw = src.slice(pos + 1, closeIdx);
+        const trimmedInner = innerRaw.trim();
+        const looksLikeEbnfOptional =
+          /['"]/.test(innerRaw) ||
+          definedRules.has(trimmedInner) ||
+          (trimmedInner.includes(' ') &&
+            (trimmedInner.match(/[A-Za-z_][A-Za-z0-9_-]*/g) || []).some((w) => definedRules.has(w)));
+
+        if (looksLikeEbnfOptional) {
+          pos += 1;
+          const inner = parseChoice();
+          skipWs();
+          if (pos < src.length && src[pos] === closeChar) pos += 1;
+          return inner ? { type: 'Repeat', node: inner, min: 0, max: 1, lazy: false, label: '[...]' } : null;
+        }
+
+        const rawClass = src.slice(pos, closeIdx + 1);
+        pos = closeIdx + 1;
+        try {
+          return { type: 'CharClass', raw: rawClass, regex: new RegExp(`^${rawClass}`) };
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    // EBNF zero-or-more braces { expr }
+    if (bracePair && ch === bracePair[0]) {
+      pos += 1;
+      const inner = parseChoice();
+      skipWs();
+      if (pos < src.length && src[pos] === bracePair[1]) pos += 1;
+      return inner ? { type: 'Repeat', node: inner, min: 0, max: Infinity, lazy: false, label: '{...}' } : null;
+    }
+
+    // Inline regex terminal /pattern/
+    if (symbols.regexDelimiter && src.startsWith(symbols.regexDelimiter, pos)) {
+      const rDelim = symbols.regexDelimiter;
+      let j = pos + rDelim.length;
+      while (j < src.length) {
+        if (src[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (src.startsWith(rDelim, j)) break;
+        j += 1;
+      }
+      if (j < src.length && src.startsWith(rDelim, j)) {
+        const pattern = src.slice(pos + rDelim.length, j);
+        const raw = src.slice(pos, j + rDelim.length);
+        pos = j + rDelim.length;
+        try {
+          const cleanPat = pattern.startsWith('^') ? pattern.slice(1) : pattern;
+          return { type: 'RegexTerm', raw, regex: new RegExp(`^(?:${cleanPat})`) };
+        } catch {
+          return null;
+        }
+      }
+    }
+
+    // Wildcard `.`
+    if (symbols.wildcard && src.startsWith(symbols.wildcard, pos)) {
+      pos += symbols.wildcard.length;
+      return { type: 'Wildcard' };
+    }
+
+    // Start / End anchors `^` / `$`
+    if (ch === '^') {
+      pos += 1;
+      return { type: 'Anchor', kind: 'start' };
+    }
+    if (ch === '$') {
+      pos += 1;
+      return { type: 'Anchor', kind: 'end' };
+    }
+
+    // Angle-bracketed rule ref <rule_name>
+    if (ch === '<') {
+      const end = src.indexOf('>', pos);
+      if (end > pos) {
+        const name = src.slice(pos + 1, end).trim();
+        pos = end + 1;
+        return name ? { type: 'RuleRef', name } : null;
+      }
+    }
+
+    // Bare non-terminal identifier
+    const idMatch = src.slice(pos).match(/^[A-Za-z_][A-Za-z0-9_-]*/);
+    if (idMatch) {
+      pos += idMatch[0].length;
+      return { type: 'RuleRef', name: idMatch[0] };
+    }
+
+    return null;
+  }
+
+  return parseChoice();
+}
+
+function stripRegexDelimiters(pattern: string): string {
+  let raw = pattern.trim();
+  if (raw.startsWith('/') && raw.lastIndexOf('/') > 0) {
+    raw = raw.slice(1, raw.lastIndexOf('/'));
+  }
+  if (raw.startsWith('^')) raw = raw.slice(1);
+  if (raw.endsWith('$') && !raw.endsWith('\\$')) raw = raw.slice(0, -1);
+  return raw;
+}
+
+function isSingleDigitUnitPattern(inner: string): boolean {
+  const clean = inner.trim();
+  if (clean === '[0-9]' || clean === '\\d' || clean === '([0-9])' || clean === '(\\d)') {
+    return true;
+  }
+  const stripped = clean.startsWith('(') && clean.endsWith(')') ? clean.slice(1, -1) : clean;
+  const parts = stripped.split('|');
+  return parts.length >= 2 && parts.every((p) => /^\d$/.test(p.trim()));
+}
+
+function matchMutationAtPos(
+  mut: LineMutation,
+  payload: string,
+  pos: number,
+  singleUnitOnly = false
+): string[] {
+  const slice = payload.slice(pos);
+  if (!slice) return [];
+
+  const matches: string[] = [];
+  const seen = new Set<string>();
+  const addMatch = (m: string) => {
+    if (m && !seen.has(m)) {
+      seen.add(m);
+      matches.push(m);
+    }
+  };
+
+  const rawPattern = (mut.patternOverride || '').trim();
+  const inner = rawPattern ? stripRegexDelimiters(rawPattern) : '';
+
+  if (mut.jsonType === 'number') {
+    if (inner) {
+      if (!singleUnitOnly && isSingleDigitUnitPattern(inner)) {
+        // Number rule whose pattern defines allowed digits (e.g. /^(0|1|2|3|4|5|6|7|8|9)$/)
+        // matches multi-digit numeric values (e.g. "201") composed of those digits!
+        try {
+          const multiRe = new RegExp(`^(?:${inner})+`);
+          const full = slice.match(multiRe);
+          if (full?.[0]) {
+            for (let len = full[0].length; len >= 1; len -= 1) {
+              addMatch(full[0].slice(0, len));
+            }
+          }
+        } catch {
+          // Ignore invalid user regex mid-edit
+        }
+      }
+      try {
+        const directRe = new RegExp(`^(?:${inner})`);
+        const m = slice.match(directRe);
+        if (m?.[0]) addMatch(m[0]);
+      } catch {
+        // Ignore invalid user regex mid-edit
+      }
+    } else {
+      const numMatch = slice.match(/^-?\d+(?:\.\d+)?/);
+      if (numMatch?.[0]) addMatch(numMatch[0]);
+    }
+  } else if (inner) {
+    try {
+      const directRe = new RegExp(`^(?:${inner})`);
+      const m = slice.match(directRe);
+      if (m?.[0]) addMatch(m[0]);
+    } catch {
+      // Ignore invalid user regex mid-edit
+    }
+  } else if (mut.jsonType === 'boolean') {
+    const bMatch = slice.match(/^(?:true|false)/i);
+    if (bMatch?.[0]) addMatch(bMatch[0]);
+  }
+
+  // Sort longest match first so greedy parses resolve cleanly while preserving shorter backtrack candidates
+  matches.sort((a, b) => b.length - a.length);
+  return matches;
 }
 
 export function evaluateGrammarPayload(
   rules: GrammarRule[],
   startRuleName: string,
-  payload: string
+  payload: string,
+  mutations?: Record<string, LineMutation>,
+  dialect?: DialectConfig
 ): EvaluationResult {
   if (!rules.length) {
     return {
@@ -1444,60 +3045,286 @@ export function evaluateGrammarPayload(
   }
 
   const ruleMap = new Map<string, GrammarRule>();
-  for (const r of rules) ruleMap.set(r.name, r);
-
-  const startRule = ruleMap.get(startRuleName) || rules[0];
-  const MAX_DEPTH = 24;
-  const MAX_OUTCOMES_PER_NODE = 16;
-  const activeCalls = new Set<string>();
-
-  function matchSequence(
-    seq: SequenceItem[],
-    index: number,
-    pos: number,
-    depth: number
-  ): MatchOutcome[] {
-    if (index >= seq.length) {
-      return [{ endPos: pos, trace: [] }];
-    }
-
-    const item = seq[index];
-    const results: MatchOutcome[] = [];
-
-    if (item.kind === 'literal') {
-      if (payload.startsWith(item.value, pos)) {
-        const litStep: EvaluationTraceStep = {
-          depth,
-          rule: `"${item.value}"`,
-          inputSlice: payload.slice(pos, pos + 16),
-          matched: true,
-          consumed: item.value,
-          note: 'Terminal literal matched',
-        };
-        const rest = matchSequence(seq, index + 1, pos + item.value.length, depth);
-        for (const r of rest) {
-          results.push({ endPos: r.endPos, trace: [litStep, ...r.trace] });
-        }
-      }
-      return results;
-    }
-
-    // Non-terminal reference: explore all valid outcomes (backtracking)
-    const subOutcomes = matchRuleAll(item.value, pos, depth);
-    for (const sub of subOutcomes) {
-      const rest = matchSequence(seq, index + 1, sub.endPos, depth);
-      for (const r of rest) {
-        results.push({ endPos: r.endPos, trace: [...sub.trace, ...r.trace] });
-        if (results.length >= MAX_OUTCOMES_PER_NODE) break;
-      }
-      if (results.length >= MAX_OUTCOMES_PER_NODE) break;
-    }
-    return results;
+  const definedNames = new Set<string>();
+  for (const r of rules) {
+    ruleMap.set(r.name, r);
+    definedNames.add(r.name);
   }
 
-  function matchRuleAll(ruleName: string, pos: number, depth: number): MatchOutcome[] {
+  const resolvedSymbols = resolveGrammarSymbols(dialect);
+  const choiceDelim = dialect?.choiceDelimiter || '|';
+
+  // Pre-parse each alternative into a full GrammarExprNode AST obeying configured Extended DAG symbol definitions
+  const parsedAltsCache = new Map<string, Array<{ raw: string; ast: GrammarExprNode }>>();
+  for (const r of rules) {
+    const parsedList: Array<{ raw: string; ast: GrammarExprNode }> = [];
+    for (const alt of r.alternatives) {
+      const ast = parseGrammarExprAst(alt, definedNames, resolvedSymbols, choiceDelim);
+      if (ast) parsedList.push({ raw: alt, ast });
+    }
+    parsedAltsCache.set(r.name, parsedList);
+  }
+
+  const startRule = ruleMap.get(startRuleName) || rules[0];
+  const MAX_DEPTH = 32;
+  const MAX_OUTCOMES_PER_NODE = 24;
+  const MAX_REPEAT_ITERS = 128;
+  const activeCalls = new Set<string>();
+
+  function evalExpr(
+    node: GrammarExprNode,
+    pos: number,
+    depth: number,
+    inRepeat = false
+  ): MatchOutcome[] {
     if (depth > MAX_DEPTH) return [];
-    const callKey = `${ruleName}@${pos}`;
+
+    switch (node.type) {
+      case 'Literal': {
+        if (!payload.startsWith(node.value, pos)) return [];
+        return [
+          {
+            endPos: pos + node.value.length,
+            trace: [
+              {
+                depth,
+                rule: `"${node.value}"`,
+                inputSlice: payload.slice(pos, pos + 16),
+                matched: true,
+                consumed: node.value,
+                note: 'Terminal literal matched',
+              },
+            ],
+          },
+        ];
+      }
+
+      case 'Wildcard': {
+        if (pos >= payload.length) return [];
+        const ch = payload[pos];
+        return [
+          {
+            endPos: pos + 1,
+            trace: [
+              {
+                depth,
+                rule: '.',
+                inputSlice: payload.slice(pos, pos + 16),
+                matched: true,
+                consumed: ch,
+                note: 'Wildcard matched single char',
+              },
+            ],
+          },
+        ];
+      }
+
+      case 'Anchor': {
+        const ok = node.kind === 'start' ? pos === 0 : pos === payload.length;
+        if (!ok) return [];
+        return [
+          {
+            endPos: pos,
+            trace: [
+              {
+                depth,
+                rule: node.kind === 'start' ? '^' : '$',
+                inputSlice: payload.slice(pos, pos + 12),
+                matched: true,
+                consumed: '',
+                note: node.kind === 'start' ? 'Start anchor matched' : 'End anchor matched',
+              },
+            ],
+          },
+        ];
+      }
+
+      case 'CharClass': {
+        const m = payload.slice(pos).match(node.regex);
+        if (!m?.[0]) return [];
+        return [
+          {
+            endPos: pos + m[0].length,
+            trace: [
+              {
+                depth,
+                rule: node.raw,
+                inputSlice: payload.slice(pos, pos + 16),
+                matched: true,
+                consumed: m[0],
+                note: 'Character class matched',
+              },
+            ],
+          },
+        ];
+      }
+
+      case 'RegexTerm': {
+        const m = payload.slice(pos).match(node.regex);
+        if (!m?.[0]) return [];
+        return [
+          {
+            endPos: pos + m[0].length,
+            trace: [
+              {
+                depth,
+                rule: node.raw,
+                inputSlice: payload.slice(pos, pos + 16),
+                matched: true,
+                consumed: m[0],
+                note: 'Inline regex matched',
+              },
+            ],
+          },
+        ];
+      }
+
+      case 'RuleRef':
+        return matchRuleAll(node.name, pos, depth, inRepeat);
+
+      case 'Sequence': {
+        let states: MatchOutcome[] = [{ endPos: pos, trace: [] }];
+        for (const item of node.items) {
+          const nextStates: MatchOutcome[] = [];
+          for (const st of states) {
+            const sub = evalExpr(item, st.endPos, depth, inRepeat);
+            for (const o of sub) {
+              nextStates.push({
+                endPos: o.endPos,
+                trace: [...st.trace, ...o.trace],
+              });
+              if (nextStates.length >= MAX_OUTCOMES_PER_NODE) break;
+            }
+            if (nextStates.length >= MAX_OUTCOMES_PER_NODE) break;
+          }
+          states = nextStates;
+          if (states.length === 0) break;
+        }
+        return states;
+      }
+
+      case 'Choice': {
+        const collected: MatchOutcome[] = [];
+        const seen = new Set<number>();
+        for (const branch of node.branches) {
+          const outs = evalExpr(branch, pos, depth, inRepeat);
+          for (const o of outs) {
+            if (seen.has(o.endPos)) continue;
+            seen.add(o.endPos);
+            collected.push(o);
+            if (collected.length >= MAX_OUTCOMES_PER_NODE) break;
+          }
+          if (collected.length >= MAX_OUTCOMES_PER_NODE) break;
+        }
+        return collected;
+      }
+
+      case 'Repeat': {
+        const results: MatchOutcome[] = [];
+        const seenEndPos = new Set<number>();
+        let frontier: Array<{ endPos: number; trace: EvaluationTraceStep[] }> = [{ endPos: pos, trace: [] }];
+
+        if (node.min === 0) {
+          seenEndPos.add(pos);
+          results.push({ endPos: pos, trace: [] });
+        }
+
+        const upperBound = Number.isFinite(node.max) ? Math.min(node.max, MAX_REPEAT_ITERS) : MAX_REPEAT_ITERS;
+        for (let count = 1; count <= upperBound; count += 1) {
+          const nextFrontier: Array<{ endPos: number; trace: EvaluationTraceStep[] }> = [];
+          const frontierEndSet = new Set<number>();
+
+          for (const st of frontier) {
+            const stepOuts = evalExpr(node.node, st.endPos, depth, true);
+            for (const o of stepOuts) {
+              // Guard against zero-width infinite repetition
+              if (o.endPos === st.endPos) continue;
+              if (frontierEndSet.has(o.endPos)) continue;
+              frontierEndSet.add(o.endPos);
+              const combined = { endPos: o.endPos, trace: [...st.trace, ...o.trace] };
+              nextFrontier.push(combined);
+              if (count >= node.min && !seenEndPos.has(o.endPos)) {
+                seenEndPos.add(o.endPos);
+                results.push(combined);
+              }
+              if (nextFrontier.length >= MAX_OUTCOMES_PER_NODE) break;
+            }
+            if (nextFrontier.length >= MAX_OUTCOMES_PER_NODE) break;
+          }
+
+          frontier = nextFrontier;
+          if (frontier.length === 0) break;
+        }
+
+        results.sort((a, b) => (node.lazy ? a.endPos - b.endPos : b.endPos - a.endPos));
+        return results.slice(0, MAX_OUTCOMES_PER_NODE);
+      }
+
+      case 'Lookahead': {
+        const probe = evalExpr(node.node, pos, depth + 1, false);
+        const succeeded = node.positive ? probe.length > 0 : probe.length === 0;
+        if (!succeeded) return [];
+        const preview = probe[0] ? payload.slice(pos, probe[0].endPos) : '';
+        return [
+          {
+            endPos: pos,
+            trace: [
+              {
+                depth,
+                rule: node.raw,
+                inputSlice: payload.slice(pos, pos + 16),
+                matched: true,
+                consumed: '',
+                note: node.positive
+                  ? `Positive lookahead matched "${preview}" (zero-width)`
+                  : 'Negative lookahead satisfied (zero-width)',
+              },
+            ],
+          },
+        ];
+      }
+
+      case 'Lookbehind': {
+        const minStart = Math.max(0, pos - 64);
+        let matchedSlice: string | null = null;
+        for (let start = pos; start >= minStart; start -= 1) {
+          const probe = evalExpr(node.node, start, depth + 1, false);
+          if (probe.some((o) => o.endPos === pos)) {
+            matchedSlice = payload.slice(start, pos);
+            break;
+          }
+        }
+        const succeeded = node.positive ? matchedSlice !== null : matchedSlice === null;
+        if (!succeeded) return [];
+        return [
+          {
+            endPos: pos,
+            trace: [
+              {
+                depth,
+                rule: node.raw,
+                inputSlice: payload.slice(Math.max(0, pos - 12), pos + 8),
+                matched: true,
+                consumed: '',
+                note: node.positive
+                  ? `Positive lookbehind matched "${matchedSlice}" (zero-width)`
+                  : 'Negative lookbehind satisfied (zero-width)',
+              },
+            ],
+          },
+        ];
+      }
+    }
+  }
+
+  function matchRuleAll(
+    ruleName: string,
+    pos: number,
+    depth: number,
+    inRepeat = false
+  ): MatchOutcome[] {
+    if (depth > MAX_DEPTH) return [];
+    const callKey = `${ruleName}@${pos}@${inRepeat ? 'r' : 'n'}`;
     if (activeCalls.has(callKey)) return [];
     const rule = ruleMap.get(ruleName);
     if (!rule) return [];
@@ -1507,28 +3334,65 @@ export function evaluateGrammarPayload(
     const seenEndPos = new Set<number>();
 
     try {
-      // Explore all alternatives so shorter prefixes (e.g., `digit | digit digit`)
-      // do not prematurely shadow longer full matches!
-      for (const alt of rule.alternatives) {
-        const seq = tokenizeAlternative(alt);
-        if (seq.length === 0) continue;
+      const mut = mutations?.[ruleName];
+      const hasActiveMutationPattern = Boolean(mut && mut.enabled && (mut.patternOverride || '').trim());
+      const isLeafRule = rule.referencedRules.length === 0;
 
-        const seqOutcomes = matchSequence(seq, 0, pos, depth + 1);
-        for (const out of seqOutcomes) {
-          if (seenEndPos.has(out.endPos)) continue;
-          seenEndPos.add(out.endPos);
+      // Apply Workbench 5 schema mutation constraints (regex patternOverride & numeric multi-digit typing)
+      if (
+        mut &&
+        mut.enabled &&
+        (hasActiveMutationPattern || (isLeafRule && (mut.jsonType === 'number' || mut.jsonType === 'boolean')))
+      ) {
+        const mutMatches = matchMutationAtPos(mut, payload, pos, inRepeat);
+        for (const matchedText of mutMatches) {
+          const endPos = pos + matchedText.length;
+          if (seenEndPos.has(endPos)) continue;
+          seenEndPos.add(endPos);
+          const termStep: EvaluationTraceStep = {
+            depth: depth + 1,
+            rule: `"${matchedText}"`,
+            inputSlice: payload.slice(pos, pos + 16),
+            matched: true,
+            consumed: matchedText,
+            note: 'Terminal literal matched',
+          };
           const headerStep: EvaluationTraceStep = {
             depth,
             rule: ruleName,
             inputSlice: payload.slice(pos, pos + 20),
             matched: true,
-            consumed: payload.slice(pos, out.endPos),
-            note: `Matched branch: ${alt}`,
+            consumed: matchedText,
+            note: `Matched branch: '${matchedText}'`,
           };
           collected.push({
-            endPos: out.endPos,
-            trace: [headerStep, ...out.trace],
+            endPos,
+            trace: [headerStep, termStep],
           });
+        }
+      }
+
+      // Explore grammar alternatives (supports repetitions, inline choices, char classes, lookahead, lookbehind)
+      const parsedAlts = parsedAltsCache.get(ruleName) || [];
+      if (!isLeafRule || !hasActiveMutationPattern) {
+        for (const altEntry of parsedAlts) {
+          const altOutcomes = evalExpr(altEntry.ast, pos, depth + 1, false);
+          for (const out of altOutcomes) {
+            if (seenEndPos.has(out.endPos)) continue;
+            seenEndPos.add(out.endPos);
+            const headerStep: EvaluationTraceStep = {
+              depth,
+              rule: ruleName,
+              inputSlice: payload.slice(pos, pos + 20),
+              matched: true,
+              consumed: payload.slice(pos, out.endPos),
+              note: `Matched branch: ${altEntry.raw}`,
+            };
+            collected.push({
+              endPos: out.endPos,
+              trace: [headerStep, ...out.trace],
+            });
+          }
         }
       }
     } finally {
@@ -1897,7 +3761,7 @@ export function extractRulesFromPythonAst(ast: PythonAstNode, dialect: DialectCo
         dict.keys.forEach((k, idx) => {
           const v = dict.values?.[idx];
           if (k._type === 'Constant' && v?._type === 'Constant') {
-            lines.push(`${String(k.value)} ${dialect.ruleOperator} ${String(v.value)}`);
+            lines.push(formatGrammarRuleLine(String(k.value), String(v.value), dialect.ruleOperator));
           }
         });
         return lines.join('\n');
@@ -2195,7 +4059,7 @@ export function extractRulesFromRustAst(mod: RustAstModule, dialect: DialectConf
 
   const lines: string[] = [`${dialect.commentPrefix} Synced bidirectionally from Rust syn::File AST`];
   for (const entry of constItem.entries) {
-    lines.push(`${entry.key} ${dialect.ruleOperator} ${entry.value}`);
+    lines.push(formatGrammarRuleLine(entry.key, entry.value, dialect.ruleOperator));
   }
   return lines.join('\n');
 }
