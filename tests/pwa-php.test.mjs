@@ -7,6 +7,8 @@ import vm from 'node:vm';
 import { LOGIC_CALCULATOR_PRESETS, DEFAULT_CAUCHY_CONFIG, evaluateLogicStatement, evaluateCauchySequence, getLogicBindingDiagnostics } from '../src/engine/logicLambdaEngine.ts';
 import { normalizeLogicEvaluationInput, logicInputDiagnostic } from '../src/engine/logicInputNormalizer.ts';
 import { SUPPORTED_LANGUAGES } from '../src/types/studio.ts';
+import { RestHateoasEngineStore } from '../src/engine/hateoasEngine.ts';
+import { McpLazyServerRegistry } from '../src/engine/mcpServerEngine.ts';
 
 const project = process.cwd();
 const php = (...args) => spawnSync('php', args, { encoding: 'utf8' });
@@ -68,11 +70,120 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.equal(response.status, 400);
     response = await fetch(`${root}/studio/assets/app-abcdefgh.js`);
     assert.match(response.headers.get('content-type'), /javascript/);
-    response = await fetch(`${root}/studio/api/rules`, { method: 'POST' });
+    response = await fetch(`${root}/studio/api/evaluate`, { method: 'POST' });
+    assert.equal(response.status, 200);
+    const { _links: evalLinks, ...defaultEvaluation } = await response.json();
+    assert.deepEqual(defaultEvaluation, new RestHateoasEngineStore().evaluatePayload());
+    response = await fetch(`${root}/studio/api/evaluate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rule: 'digit', payload: '123x' }),
+    });
+    const { _links: digitLinks, ...digitEvaluation } = await response.json();
+    assert.deepEqual(digitEvaluation, new RestHateoasEngineStore().evaluatePayload('digit', '123x'));
+    response = await fetch(`${root}/studio/api/evaluate`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payload: '日本語' }),
+    });
     assert.equal(response.status, 503);
-    assert.match(response.headers.get('content-type'), /json/);
     response = await fetch(`${root}/studio/api/rules`);
     assert.equal(response.headers.get('cache-control'), 'no-store');
+    const nodeStore = new RestHateoasEngineStore();
+    const graph = nodeStore.getGraph();
+    const phpRules = (await response.json())._embedded.rules.map(({ _links, ...rule }) => rule);
+    const nodeRules = nodeStore.getRules().map(rule => ({
+      ...rule, usedOperators: graph.nodes.find(node => node.name === rule.name)?.usedOperators || [],
+      config: nodeStore.workspace.ruleConfigs[rule.name] || null,
+      mutation: nodeStore.workspace.mutations[rule.name] || null,
+    }));
+    assert.deepEqual(phpRules, nodeRules);
+    response = await fetch(`${root}/studio/api/rules`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'scratch', expression: "scratch | digit+ | 'scratch'" }),
+    });
+    assert.equal(response.status, 201);
+    const createdRule = nodeStore.createRule('scratch', "scratch | digit+ | 'scratch'");
+    assert.equal((await response.json()).grammarText, createdRule.grammar);
+    response = await fetch(`${root}/studio/api/histolog`);
+    const historyAfterCreate = await response.json();
+    assert.equal(historyAfterCreate.index.totalGenerations, 2);
+    assert.deepEqual(historyAfterCreate._embedded.generations.map(({ fingerprint, changedFields, touchedSymbols, additions, deletions }) =>
+      ({ fingerprint, changedFields, touchedSymbols, additions, deletions })),
+    nodeStore.histolog.map(({ fingerprint, changedFields, touchedSymbols, additions, deletions }) =>
+      ({ fingerprint, changedFields, touchedSymbols, additions, deletions })));
+    response = await fetch(`${root}/studio/api/rules/scratch`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'renamed' }),
+    });
+    assert.equal(response.status, 200);
+    const updatedRule = nodeStore.updateRule('scratch', { name: 'renamed' });
+    assert.equal((await response.json()).grammarText, updatedRule.grammar);
+    response = await fetch(`${root}/studio/api/rules/renamed`);
+    const renamedRule = await response.json();
+    assert.deepEqual(renamedRule.referencedRules, ['renamed', 'digit']);
+    assert.equal(renamedRule.members.expression.value, "renamed | digit+ | 'scratch'");
+    response = await fetch(`${root}/studio/api/nodes?kind=rule`);
+    const ruleNodes = await response.json();
+    assert.equal(ruleNodes.count, 6);
+    assert(ruleNodes._embedded.nodes.some(node => node.id === 'renamed'));
+    response = await fetch(`${root}/studio/api/nodes`);
+    assert.equal(response.status, 200);
+    assert((await response.json()).kinds.includes('histolog'));
+    response = await fetch(`${root}/studio/api/nodes/rule/renamed/members/locked`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":true}',
+    });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/nodes/rule/renamed/members/expression`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"value":"digit"}',
+    });
+    assert.equal(response.status, 423);
+    response = await fetch(`${root}/studio/api/nodes/rule/renamed/members/locked`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/nodes/rule/renamed/members/name`, { method: 'DELETE' });
+    assert.equal(response.status, 405);
+    response = await fetch(`${root}/studio/api/nodes/rule/renamed/members/precedence`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":4}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).member.value, 4);
+    nodeStore.mutateNodeMember('rule', 'renamed', 'precedence', 'update', 4);
+    response = await fetch(`${root}/studio/api/export/grammar`);
+    const { language: grammarLanguage, _links: grammarLinks, ...grammarExport } = await response.json();
+    assert.equal(grammarLanguage, 'grammar');
+    assert.deepEqual(grammarExport, nodeStore.exportWorkspace('grammar'));
+    response = await fetch(`${root}/studio/api/export/jsonld`);
+    const { language: jsonldLanguage, _links: jsonldLinks, ...jsonldExport } = await response.json();
+    assert.equal(jsonldLanguage, 'jsonld');
+    assert.deepEqual(jsonldExport, nodeStore.exportWorkspace('jsonld'));
+    for (const language of SUPPORTED_LANGUAGES.map(item => item.exportId).filter(id => id !== 'jsonld')) {
+      response = await fetch(`${root}/studio/api/export/${language}`);
+      const { language: actualLanguage, _links, ...exported } = await response.json();
+      assert.equal(actualLanguage, language);
+      assert.deepEqual(exported, nodeStore.exportWorkspace(language));
+    }
+    response = await fetch(`${root}/studio/api/nodes/dialect/active/members/preset`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":"peg"}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).member.value, 'peg');
+    response = await fetch(`${root}/studio/api/nodes/dialect/active/members/preset`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":"ebnf"}',
+    });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/rules`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"name":"digit","expression":"x"}',
+    });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/api/symbols`);
+    const phpSymbols = (await response.json())._embedded.symbols.map(({ _links, ...symbol }) => symbol);
+    assert.deepEqual(phpSymbols, nodeStore.getGraph().symbolRegistry);
+    response = await fetch(`${root}/studio/api/symbols/oneOrMore`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":"#"}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).member.value, '#');
+    assert.equal(nodeStore.mutateNodeMember('symbol', 'oneOrMore', 'value', 'update', '#').status, 200);
+    response = await fetch(`${root}/studio/api/nodes/symbol/oneOrMore/members/value`);
+    assert.equal((await response.json()).value, '#');
+    response = await fetch(`${root}/studio/api/symbols/missing`);
+    assert.equal(response.status, 404);
     response = await fetch(`${root}/studio/healthz`);
     assert.deepEqual(await response.json(), { ok: true, service: 'grammar2json-studio' });
     assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -80,11 +191,105 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     const discovery = await response.json();
     assert.equal(discovery.partial, true);
     assert.equal(discovery._links.languages.href, `${root}/studio/api/languages`);
+    assert.equal(discovery._links.workspaces.href, `${root}/studio/api/workspaces`);
+    response = await fetch(`${root}/studio/api/workspaces/default`);
+    const { _links: defaultLinks, updatedAt: defaultTimestamp, ...phpDefault } = await response.json();
+    const { updatedAt: nodeTimestamp, ...nodeDefault } = nodeStore.workspace;
+    assert.deepEqual(phpDefault, nodeDefault);
+    response = await fetch(`${root}/studio/api/workspaces/default`);
+    assert.equal((await response.json()).updatedAt, defaultTimestamp);
+    response = await fetch(`${root}/studio/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'my workspace', name: 'Example', grammarText: 'custom ::= "x"', extra: {} }),
+    });
+    assert.equal(response.status, 201);
+    assert.equal(response.headers.get('location'), `${root}/studio/api/workspaces/my%20workspace`);
+    assert.equal((await response.json()).workspace.grammarText, 'custom ::= "x"');
+    response = await fetch(`${root}/studio/api/workspaces`);
+    assert.equal((await response.json()).count, 2);
+    response = await fetch(`${root}/studio/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"id":"second","name":""}',
+    });
+    assert.equal((await response.json()).workspace.name, 'second');
+    response = await fetch(`${root}/studio/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'my workspace', name: 'Updated', grammarText: 'custom ::= "x"', extra: {} }),
+    });
+    assert.equal(response.status, 201);
+    response = await fetch(`${root}/studio/api/workspaces`);
+    assert.deepEqual((await response.json())._embedded.workspaces.map(workspace => workspace.id), ['default', 'my workspace', 'second']);
+    response = await fetch(`${root}/studio/api/workspaces/second`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    for (const id of ['bad/id', '..', '%', 'bad\\id']) {
+      response = await fetch(`${root}/studio/api/workspaces`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }),
+      });
+      assert.equal(response.status, 400);
+    }
+    response = await fetch(`${root}/studio/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"id":"bad","dialect":null}',
+    });
+    assert.equal(response.status, 400);
+    response = await fetch(`${root}/studio/api/workspaces`, { method: 'HEAD' });
+    assert.equal(response.status, 200);
+    assert.equal(await response.text(), '');
+    const mcpCall = (route, body) => fetch(`${root}/studio/${route}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    response = await fetch(`${root}/studio/api/mcp/logic_calc`);
+    assert.equal(response.status, 503);
+    response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'tools/list' });
+    assert.deepEqual((await response.json()).result.tools.map(tool => tool.name), ['evaluate_logic_lambda']);
+    response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'resources/list' });
+    const resource = (await response.json()).result.resources[0];
+    assert.equal(resource.uri, 'grammar2json://logic_calc/artifact');
+    response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: resource.uri } });
+    const artifact = JSON.parse((await response.json()).result.contents[0].text);
+    response = await fetch(`${root}/studio/api/logic`);
+    const liveLogic = await response.json();
+    assert.equal(artifact.statement, liveLogic.statement);
+    assert.deepEqual(artifact.labels, liveLogic.labels);
+    response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'grammar2json://logic_calc/missing' } });
+    assert.equal((await response.json()).error.code, -32002);
+    const registry = new McpLazyServerRegistry();
+    for (const args of [
+      { logic_statement: 'offset(x, hours) > 100' },
+      { logic_statement: 'offset(x, hours) > 100', logic_labels: JSON.stringify({ offset: { kind: 'lambda', value: 'λx. λhours. x + hours' }, x: 99, hours: 2 }) },
+      { logic_statement: 'p and q', logic_labels: JSON.stringify({ p: true, q: false }) },
+      { statement: 'x', logic_statement: 'hours' },
+    ]) {
+      const request = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'evaluate_logic_lambda', arguments: args } };
+      response = await mcpCall('api/mcp/logic_calc', request);
+      assert.equal(response.status, 200);
+      const actual = (await response.json()).result;
+      const expected = (await registry.handleJsonRpc('logic_calc', request)).result;
+      assert.equal(actual.isError, expected.isError);
+      assert.equal(actual.structuredContent.ok, expected.structuredContent.ok);
+      assert.equal(actual.structuredContent.displayValue, expected.structuredContent.displayValue);
+      assert.deepEqual(actual.structuredContent.diagnostics, expected.structuredContent.diagnostics);
+      if (expected.structuredContent.ok) assert.deepEqual(actual.structuredContent.truthTable, expected.structuredContent.truthTable);
+    }
+    response = await mcpCall('api/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/list' });
+    assert.deepEqual((await response.json()).result.tools.map(tool => tool.name), ['logic_calc__evaluate_logic_lambda']);
+    response = await mcpCall('api/mcp', { jsonrpc: '2.0', id: 3, method: 'tools/call',
+      params: { name: 'logic_calc__evaluate_logic_lambda', arguments: { logic_statement: '1 + 2' } } });
+    assert.equal((await response.json()).result.structuredContent.displayValue, '3');
+    response = await mcpCall('api/mcp', { jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'logic_calc__unported', arguments: {} } });
+    assert.equal((await response.json()).error.code, -32601);
+    response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 5, method: 'tools/call',
+      params: { name: 'evaluate_logic_lambda', arguments: { statement: '1 @ 2' } } });
+    assert.equal((await response.json()).result.isError, true);
+    response = await mcpCall('api/mcp', { jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'logic_calc__evaluate_logic_lambda', arguments: [] } });
+    assert.equal((await response.json()).error.code, -32602);
+    response = await mcpCall('api/mcp', { jsonrpc: '2.0', method: 'notifications/initialized' });
+    assert.equal(response.status, 202);
+    assert.equal(await response.text(), '');
     response = await fetch(`${root}/studio/api/languages`);
     const languages = await response.json();
     assert.equal(languages.count, SUPPORTED_LANGUAGES.length);
     assert.deepEqual(languages.languages.map(({ _links, ...language }) => language), SUPPORTED_LANGUAGES);
-    assert(languages.languages.every(language => language._links.exportLogic.available === false && language._links.exportWorkspace.available === false));
+    assert(languages.languages.every(language => language._links.exportLogic.available === false &&
+      language._links.exportWorkspace.available === true));
     response = await fetch(`${root}/studio/api`, { method: 'HEAD' });
     assert.equal(response.status, 200);
     assert.equal(await response.text(), '');
@@ -190,6 +395,8 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     response = await fetch(`${root}/studio/api/logic`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ statement: 'price + extra', cauchyConfig: { seedValues: 'price', recurrenceExpr: 'right', maxIterations: 1 } }) });
     assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/workspaces/default`);
+    assert.equal((await response.json()).logicStatement, 'price + extra');
     response = await fetch(`${root}/studio/api/logic/labels`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'extra', kind: 'number', value: '7' }) });
     assert.equal(response.status, 201);
@@ -208,6 +415,22 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
       body: JSON.stringify({ lambdaExpr: 'λx. x * 3' }) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).callback.id, callback.id);
+    response = await fetch(`${root}/studio/api/nodes/callback/${callback.id}/members/description`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"value":"Updated description"}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).member.value, 'Updated description');
+    response = await fetch(`${root}/studio/api/nodes/logic/active/members/statement`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":"price + extra + 1"}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).member.value, 'price + extra + 1');
+    response = await fetch(`${root}/studio/api/nodes/logic/active/members/statement`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":"price + extra"}',
+    });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/nodes?kind=callback`);
+    assert.equal((await response.json()).count, 4);
     response = await fetch(`${root}/studio/api/callbacks`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'bad', lambdaExpr: '42' }) });
     assert.equal(response.status, 400);
@@ -221,6 +444,8 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     const persisted = await response.json();
     assert.equal(persisted.statement, 'price + extra');
     assert(persisted.labels.some(label => label.id === newLabel.id));
+    response = await fetch(`${root}/studio/api/histolog`);
+    const historyBeforeRestart = await response.json();
     server.kill();
     await new Promise(resolve => server.once('exit', resolve));
     server = spawn('php', ['-S', `127.0.0.1:${port}`, `${target}/index.php`], {
@@ -231,6 +456,29 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
       catch (error) { if (i === 50) throw error; await new Promise(r => setTimeout(r, 20)); }
     }
     assert.equal((await response.json()).statement, 'price + extra');
+    response = await fetch(`${root}/studio/api/histolog`);
+    const historyAfterRestart = await response.json();
+    assert.deepEqual(historyAfterRestart.index, historyBeforeRestart.index);
+    response = await fetch(`${root}/studio/api/symbols/oneOrMore`);
+    assert.equal((await response.json()).value, '#');
+    response = await fetch(`${root}/studio/api/symbols/oneOrMore`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: '{"value":"+"}',
+    });
+    assert.equal(response.status, 200);
+    nodeStore.mutateNodeMember('symbol', 'oneOrMore', 'value', 'update', '+');
+    response = await fetch(`${root}/studio/api/rules/renamed`);
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/rules/renamed`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).grammarText, nodeStore.deleteRule('renamed').grammar);
+    response = await fetch(`${root}/studio/api/workspaces/my%20workspace`);
+    const savedWorkspace = await response.json();
+    assert.equal(savedWorkspace.grammarText, 'custom ::= "x"');
+    assert.deepEqual(savedWorkspace.extra, {});
+    response = await fetch(`${root}/studio/api/workspaces/my%20workspace`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    response = await fetch(`${root}/studio/api/workspaces/my%20workspace`, { method: 'GET' });
+    assert.equal(response.status, 404);
     response = await fetch(`${root}/studio/api/callbacks/${callback.id}`);
     assert.equal((await response.json()).lambdaExpr, 'λx. x * 3');
     response = await fetch(`${root}/studio/api/callbacks/${callback.id}`, { method: 'DELETE' });
@@ -248,6 +496,37 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     assert.equal(response.status, 400);
     response = await fetch(`${root}/studio/api/logic`);
     assert.equal((await response.json()).statement, 'price + extra');
+    response = await fetch(`${root}/studio/api/histolog`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"summary":"Before clear"}',
+    });
+    const checkpoint = await response.json();
+    response = await fetch(`${root}/studio/api/workspaces/default`, { method: 'DELETE' });
+    assert.equal(response.status, 200);
+    const cleared = await response.json();
+    assert.equal(cleared.clearedDefault, true);
+    assert(cleared.generation > checkpoint.generation);
+    response = await fetch(`${root}/studio/api/logic`);
+    const emptyLogic = await response.json();
+    assert.equal(emptyLogic.statement, '');
+    assert.equal(emptyLogic.evaluation.error, 'Expression is empty.');
+    response = await fetch(`${root}/studio/api/rules`);
+    assert.equal((await response.json()).count, 0);
+    response = await fetch(`${root}/studio/api/histolog/diff?from=${checkpoint.generation}&to=${cleared.generation}`);
+    const diff = await response.json();
+    assert(diff.diffs.some(field => field.field === 'grammar' && field.changed));
+    response = await fetch(`${root}/studio/api/nodes/histolog/${cleared.generation}/members/summary`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"value":"Cleared workspace"}',
+    });
+    assert.equal((await response.json()).member.value, 'Cleared workspace');
+    response = await fetch(`${root}/studio/api/histolog/${checkpoint.generation}/restore`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"section":"all"}',
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).restoredFrom, checkpoint.generation);
+    response = await fetch(`${root}/studio/api/logic`);
+    assert.equal((await response.json()).statement, 'price + extra');
+    response = await fetch(`${root}/studio/api/rules`);
+    assert((await response.json()).count > 0);
     assert.equal((await fetch(`${root}/studio/api.php`)).status, 404);
     assert.equal((await fetch(`${root}/studio/missing.js`)).status, 404);
     assert.equal((await fetch(`${root}/studio/%252eenv`)).status, 400);
@@ -263,6 +542,11 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     }
     assert.equal((await response.json()).statement, defaults.statement);
     response = await fetch(`${root}/studio/api/logic`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{"statement":"1"}' });
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).error, /GRAMMAR2JSON_STATE_DIR/);
+    response = await fetch(`${root}/studio/api/workspaces`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"id":"unsaved"}',
+    });
     assert.equal(response.status, 503);
     assert.match((await response.json()).error, /GRAMMAR2JSON_STATE_DIR/);
   } finally {
