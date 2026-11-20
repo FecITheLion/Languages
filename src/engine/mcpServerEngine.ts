@@ -46,6 +46,7 @@ import {
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './logicLambdaEngine.ts';
+import { normalizeLogicEvaluationInput } from './logicInputNormalizer.ts';
 import {
   buildPipelineBreadcrumbs,
   PAGE_TO_MCP_SERVER,
@@ -458,6 +459,10 @@ export const MCP_SERVER_DESCRIPTORS: McpServerDescriptor[] = [
           properties: {
             statement: { type: 'string', description: 'Logic/arithmetic/λ statement (defaults to active calculator statement).' },
             labels: { type: 'array', description: 'Optional array of { name, value, kind } bindings.' },
+            logic_statement: { type: 'string', description: 'Logic statement using the input contract field name.' },
+            logic_labels: { type: 'string', description: 'Label definitions or literal inputs as a string.' },
+            input: { type: 'string', description: 'A single statement or combined logic input string.' },
+            values: { type: 'array', description: 'Positional literal values for the active labels.' },
           },
         },
         sampleArgs: {},
@@ -1175,7 +1180,7 @@ export class McpLazyServerRegistry {
             },
           ],
           structuredContent: payload,
-          isError: false,
+          isError: serverId === 'logic_calc' && toolName === 'evaluate_logic_lambda' && payload.ok === false,
         };
 
         // LRU eviction when full
@@ -1835,15 +1840,40 @@ export class McpLazyServerRegistry {
         : ctx.logicLabels;
 
       if (toolName === 'evaluate_logic_lambda') {
-        const evalRes = evaluateLogicStatement(statement, labels);
-        const suggestions = analyzeLabelSuggestions(statement, labels, {
+        const hasInput = args.input !== undefined;
+        const hasValues = args.values !== undefined;
+        const hasNamedInput = args.logic_statement !== undefined || args.logic_labels !== undefined;
+        if ((hasInput || hasValues) && (hasInput && hasValues || hasNamedInput || args.statement !== undefined || args.labels !== undefined)) {
+          return { ok: false, error: 'Use only one of input, values, or named statement and labels.' };
+        }
+        const rawInput = hasInput
+          ? args.input
+          : hasValues
+            ? args.values
+            : hasNamedInput
+              ? {
+                  ...(args.statement !== undefined ? { statement: args.statement } : {}),
+                  ...(args.labels !== undefined ? { labels } : {}),
+                  ...(args.logic_statement !== undefined ? { logic_statement: args.logic_statement } : {}),
+                  ...(args.logic_labels !== undefined ? { logic_labels: args.logic_labels } : {}),
+                }
+              : { statement, labels };
+        const normalized = normalizeLogicEvaluationInput(rawInput, {
+          statement: ctx.logicStatement,
+          labels: ctx.logicLabels,
+        });
+        if (!normalized.ok) return { ok: false, error: normalized.error };
+        const normalizedStatement = normalized.input.statement;
+        const normalizedLabels = normalized.input.labels;
+        const evalRes = evaluateLogicStatement(normalizedStatement, normalizedLabels);
+        const suggestions = analyzeLabelSuggestions(normalizedStatement, normalizedLabels, {
           lockedNames: ctx.mutationPolicy.lockedRules,
           allowMutation: ctx.mutationPolicy.allowImportMutation,
         });
-        const namedCallbacks = translateLambdaCallsToNamedCallbacks(statement, labels);
+        const namedCallbacks = translateLambdaCallsToNamedCallbacks(normalizedStatement, normalizedLabels);
         return {
           ok: evalRes.ok,
-          statement,
+          statement: normalizedStatement,
           translatedStatement: namedCallbacks.translatedStatement,
           displayValue: evalRes.displayValue,
           valueType: evalRes.valueType,
