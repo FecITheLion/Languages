@@ -46,6 +46,7 @@ export const GUIDED_HELP_CONTEXTS: GuidedHelpContext[] = [
   'graph',
   'histolog',
   'api',
+  'modules',
   'openapi',
   'dsl',
   'bundle',
@@ -378,6 +379,11 @@ export const GUIDED_HELP_TOURS: Record<GuidedHelpContext, GuidedHelpTour> = {
       'view.api.response',
       ['Request response', 'Review status / data', 'Optional workspace sync']
     ),
+  ]),
+  modules: tour('Module Workbench', 'Edit and package workbench, endpoint, and website module drafts.', [
+    step('Choose a module', 'Select a built-in workbench module or import a ZIP. Each package has a manifest and files for scripts, templates, styles, and assets.', 'view.modules.list', ['Module catalog', 'Select module', 'Module files']),
+    step('Edit its parts', 'Edit the manifest and files independently. Imported scripts remain source text and are not executed.', 'view.modules.editor', ['Manifest', 'Scripts / templates / styles', 'Draft changes']),
+    step('Move a module', 'Export the selected module as a ZIP or import one from another installation. Drafts remain in this browser until exported.', 'view.modules.package', ['Local draft', 'ZIP package', 'Review before deployment']),
   ]),
   openapi: tour('API description', 'Review and organize the available API endpoints.', [
     step(

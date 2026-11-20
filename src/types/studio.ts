@@ -46,7 +46,7 @@ export type WorkflowSlug =
 
 export type PipelineStage = 'frontend' | 'formal' | 'ir' | 'codegen' | 'storage';
 
-export type TopView = 'workbench' | 'graph' | 'histolog' | 'api' | 'files' | 'openapi' | 'dsl' | 'bundle';
+export type TopView = 'workbench' | 'graph' | 'histolog' | 'api' | 'modules' | 'files' | 'openapi' | 'dsl' | 'bundle';
 
 export type TransformTarget = 'jsonld' | 'python' | 'rust' | 'wasm';
 

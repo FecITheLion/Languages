@@ -554,7 +554,8 @@ function evaluate_statement(string $statement, array $labels, ?array &$evaluated
         }
         $display = display_value($value);
         $evaluated = $value;
-        return ['ok'=>true,'displayValue'=>$display,'valueType'=>$value['kind'] === 'closure' ? 'lambda' : $value['kind'],'trace'=>$trace,'diagnostics'=>[]];
+        return ['ok'=>true,'displayValue'=>$display,'valueType'=>$value['kind'] === 'closure' ? 'lambda' : $value['kind'],
+            'trace'=>$trace,'diagnostics'=>[],'freeVariables'=>collect_free($ast)];
     } catch (EvaluationError $error) {
         return ['ok'=>false,'displayValue'=>'Eval Error','valueType'=>'error','trace'=>$trace,'error'=>$error->getMessage(),'diagnostics'=>binding_diagnostics($error->getMessage(), $ast, $labels)];
     }
@@ -1009,6 +1010,19 @@ function grammar_serialize(string $original, array $rules, stdClass $dialect): s
     return implode("\n", $lines);
 }
 
+function grammar_unicode_chars(string $value): array {
+    $chars = preg_split('//u', $value, -1, PREG_SPLIT_NO_EMPTY);
+    if ($chars === false) throw new UnsupportedLogic('Grammar text or input is not valid UTF-8.');
+    return $chars;
+}
+function grammar_unicode_length(string $value): int {
+    return count(grammar_unicode_chars($value));
+}
+function grammar_unicode_substr(string $value, int $start, ?int $length = null): string {
+    $chars = grammar_unicode_chars($value);
+    return implode('', array_slice($chars, $start, $length));
+}
+
 final class GrammarExpressionParser {
     private string $src;
     private int $pos = 0;
@@ -1243,16 +1257,12 @@ final class GrammarPayloadEvaluator {
     private stdClass $mutations;
 
     public function __construct(array $rules, stdClass $workspace, string $payload) {
-        if (strlen($payload) > 16384 || preg_match('/[^\x00-\x7f]/', $payload)) {
-            throw new UnsupportedLogic('Grammar evaluation currently supports ASCII payloads up to 16 KiB.');
-        }
+        if (grammar_unicode_length($payload) > 16384) throw new UnsupportedLogic('Grammar payload exceeds 16 KiB.');
         $this->payload = $payload;
         $this->mutations = $workspace->mutations;
         $names = array_column($rules, 'name');
         foreach ($rules as $rule) {
-            if (preg_match('/[^\x00-\x7f]/', $rule['expression'])) {
-                throw new UnsupportedLogic('Grammar evaluation currently supports ASCII expressions.');
-            }
+            grammar_unicode_chars($rule['expression']);
             $this->rules[$rule['name']] = $rule;
             $this->asts[$rule['name']] = [];
             foreach ($rule['alternatives'] as $alternative) {
@@ -1266,21 +1276,21 @@ final class GrammarPayloadEvaluator {
         if (++$this->work > 100000) throw new UnsupportedLogic('Grammar evaluation exceeded its work limit.');
     }
     private function regex(string $pattern, int $pos): ?string {
-        if (preg_match('/\\\\[upPkKgG]|\\(\\?[<P#(]|\\(\\*|\\\\[1-9]/', $pattern)) {
+        if (preg_match('/\\\\[1-9]|\\(\\?<[A-Za-z]|\\(\\?P|\\(\\?#|\\(\\*|\\\\K/', $pattern)) {
             throw new UnsupportedLogic('The grammar regular expression uses syntax not supported by the PHP evaluator.');
         }
-        $pattern = '~(*LIMIT_MATCH=100000)(*LIMIT_DEPTH=1000)^(?:'.str_replace('~', '\\~', $pattern).')~';
+        $pattern = '~(*LIMIT_MATCH=100000)(*LIMIT_DEPTH=1000)^(?:'.str_replace('~', '\\~', $pattern).')~u';
         set_error_handler(static function (int $severity, string $message): never {
             throw new UnsupportedLogic('Invalid grammar regular expression: '.$message);
         });
-        try { $matched = preg_match($pattern, substr($this->payload, $pos), $matches); }
+        try { $matched = preg_match($pattern, grammar_unicode_substr($this->payload, $pos), $matches); }
         finally { restore_error_handler(); }
         if ($matched === false) throw new UnsupportedLogic('Grammar regular expression failed: '.preg_last_error_msg());
         return $matched === 1 && $matches[0] !== '' ? $matches[0] : null;
     }
     private function outcome(int $end, array $trace = []): array { return ['endPos'=>$end, 'trace'=>$trace]; }
     private function step(int $depth, string $rule, int $pos, string $consumed, string $note, int $preview = 16): array {
-        return ['depth'=>$depth, 'rule'=>$rule, 'inputSlice'=>substr($this->payload, $pos, $preview),
+        return ['depth'=>$depth, 'rule'=>$rule, 'inputSlice'=>grammar_unicode_substr($this->payload, $pos, $preview),
             'matched'=>true, 'consumed'=>$consumed, 'note'=>$note];
     }
     private function expression(array $node, int $pos, int $depth, bool $inRepeat = false): array {
@@ -1289,22 +1299,23 @@ final class GrammarPayloadEvaluator {
         $type = $node['type'];
         if ($type === 'literal') {
             $value = $node['value'];
-            if (substr($this->payload, $pos, strlen($value)) !== $value) return [];
-            return [$this->outcome($pos + strlen($value), [$this->step($depth, '"'.$value.'"', $pos, $value, 'Terminal literal matched')])];
+            $length = grammar_unicode_length($value);
+            if (grammar_unicode_substr($this->payload, $pos, $length) !== $value) return [];
+            return [$this->outcome($pos + $length, [$this->step($depth, '"'.$value.'"', $pos, $value, 'Terminal literal matched')])];
         }
         if ($type === 'wildcard') {
-            if ($pos >= strlen($this->payload)) return [];
-            $value = $this->payload[$pos];
+            if ($pos >= grammar_unicode_length($this->payload)) return [];
+            $value = grammar_unicode_substr($this->payload, $pos, 1);
             return [$this->outcome($pos + 1, [$this->step($depth, '.', $pos, $value, 'Wildcard matched single char')])];
         }
         if ($type === 'anchor') {
-            if (($node['kind'] === '^' && $pos !== 0) || ($node['kind'] === '$' && $pos !== strlen($this->payload))) return [];
+            if (($node['kind'] === '^' && $pos !== 0) || ($node['kind'] === '$' && $pos !== grammar_unicode_length($this->payload))) return [];
             return [$this->outcome($pos, [$this->step($depth, $node['kind'], $pos, '',
                 $node['kind'] === '^' ? 'Start anchor matched' : 'End anchor matched', 12)])];
         }
         if ($type === 'class' || $type === 'regex') {
             $value = $this->regex($node['pattern'], $pos);
-            return $value === null ? [] : [$this->outcome($pos + strlen($value), [
+            return $value === null ? [] : [$this->outcome($pos + grammar_unicode_length($value), [
                 $this->step($depth, $node['raw'], $pos, $value, $type === 'class' ? 'Character class matched' : 'Inline regex matched')])];
         }
         if ($type === 'ref') return $this->matchRule($node['name'], $pos, $depth, $inRepeat);
@@ -1355,7 +1366,7 @@ final class GrammarPayloadEvaluator {
         if ($type === 'lookahead') {
             $probe = $this->expression($node['node'], $pos, $depth + 1);
             if ((bool)$probe !== $node['positive']) return [];
-            $preview = $probe ? substr($this->payload, $pos, $probe[0]['endPos'] - $pos) : '';
+            $preview = $probe ? grammar_unicode_substr($this->payload, $pos, $probe[0]['endPos'] - $pos) : '';
             $note = $node['positive'] ? 'Positive lookahead matched "'.$preview.'" (zero-width)' : 'Negative lookahead satisfied (zero-width)';
             return [$this->outcome($pos, [$this->step($depth, $node['raw'], $pos, '', $note)])];
         }
@@ -1363,7 +1374,7 @@ final class GrammarPayloadEvaluator {
             $matched = null;
             for ($start = $pos; $start >= max(0, $pos - 64); --$start) {
                 foreach ($this->expression($node['node'], $start, $depth + 1) as $out) {
-                    if ($out['endPos'] === $pos) { $matched = substr($this->payload, $start, $pos - $start); break 2; }
+                    if ($out['endPos'] === $pos) { $matched = grammar_unicode_substr($this->payload, $start, $pos - $start); break 2; }
                 }
             }
             if (($matched !== null) !== $node['positive']) return [];
@@ -1386,12 +1397,12 @@ final class GrammarPayloadEvaluator {
         if ($mutation->jsonType === 'number' && $pattern !== '' && !$single
             && preg_match('/^(?:\[0-9\]|\\\\d|\(\[0-9\]\)|\(\\\\d\)|\(?\d(?:\|\d)+\)?)$/', $pattern)) {
             $value = $this->regex('(?:'.$pattern.')+', $pos);
-            if ($value !== null) for ($length = strlen($value); $length >= 1; --$length) $add(substr($value, 0, $length));
+            if ($value !== null) for ($length = grammar_unicode_length($value); $length >= 1; --$length) $add(grammar_unicode_substr($value, 0, $length));
         }
         if ($pattern !== '') $add($this->regex($pattern, $pos));
         elseif ($mutation->jsonType === 'number') $add($this->regex('-?\d+(?:\.\d+)?', $pos));
         elseif ($mutation->jsonType === 'boolean') $add($this->regex('(?i:true|false)', $pos));
-        usort($matches, fn($a, $b) => strlen($b) <=> strlen($a));
+        usort($matches, fn($a, $b) => grammar_unicode_length($b) <=> grammar_unicode_length($a));
         return $matches;
     }
     private function matchRule(string $name, int $pos, int $depth, bool $repeat = false): array {
@@ -1407,7 +1418,7 @@ final class GrammarPayloadEvaluator {
             $leaf = !$rule['referencedRules'];
             if ($mutation && ($mutation->enabled ?? false) && ($activePattern || ($leaf && in_array($mutation->jsonType, ['number','boolean'], true)))) {
                 foreach ($this->mutationMatches($mutation, $pos, $repeat) as $value) {
-                    $end = $pos + strlen($value);
+                    $end = $pos + grammar_unicode_length($value);
                     if (isset($seen[$end])) continue;
                     $seen[$end] = true;
                     $results[] = $this->outcome($end, [
@@ -1421,7 +1432,7 @@ final class GrammarPayloadEvaluator {
                     $end = $out['endPos'];
                     if (isset($seen[$end])) continue;
                     $seen[$end] = true;
-                    $header = $this->step($depth, $name, $pos, substr($this->payload, $pos, $end - $pos), 'Matched branch: '.$entry['raw'], 20);
+                    $header = $this->step($depth, $name, $pos, grammar_unicode_substr($this->payload, $pos, $end - $pos), 'Matched branch: '.$entry['raw'], 20);
                     $results[] = $this->outcome($end, array_merge([$header], $out['trace']));
                 }
             }
@@ -1434,7 +1445,7 @@ final class GrammarPayloadEvaluator {
             'summary'=>'No grammar rules loaded', 'detail'=>'Define at least one rule in Step 1 before evaluating.', 'trace'=>[]];
         if (!isset($this->rules[$start])) $start = array_key_first($this->rules);
         $outcomes = $this->matchRule($start, 0, 0);
-        $length = strlen($this->payload);
+        $length = grammar_unicode_length($this->payload);
         foreach ($outcomes as $out) if ($out['endPos'] === $length) {
             return ['matched'=>true, 'consumedLength'=>$length, 'remaining'=>'',
                 'summary'=>"Valid match for <$start> ($length/$length chars)",
@@ -1443,16 +1454,16 @@ final class GrammarPayloadEvaluator {
         }
         $best = $outcomes[0] ?? null;
         if ($best && $best['endPos'] > 0) {
-            $consumed = $best['endPos']; $remaining = substr($this->payload, $consumed);
+            $consumed = $best['endPos']; $remaining = grammar_unicode_substr($this->payload, $consumed);
             return ['matched'=>false, 'consumedLength'=>$consumed, 'remaining'=>$remaining,
                 'summary'=>"Partial match ($consumed/$length chars)",
-                'detail'=>"Rule <$start> matched prefix \"".substr($this->payload, 0, $consumed)."\", trailing \"$remaining\" unconsumed.",
+                'detail'=>"Rule <$start> matched prefix \"".grammar_unicode_substr($this->payload, 0, $consumed)."\", trailing \"$remaining\" unconsumed.",
                 'trace'=>array_slice($best['trace'], 0, 140)];
         }
         $input = $this->payload !== '' ? $this->payload : '(empty)';
         return ['matched'=>false, 'consumedLength'=>0, 'remaining'=>$this->payload,
             'summary'=>"No match for <$start>", 'detail'=>"Input \"$input\" did not satisfy any branch of <$start>.",
-            'trace'=>[['depth'=>0, 'rule'=>$start, 'inputSlice'=>substr($this->payload, 0, 20),
+            'trace'=>[['depth'=>0, 'rule'=>$start, 'inputSlice'=>grammar_unicode_substr($this->payload, 0, 20),
                 'matched'=>false, 'consumed'=>'', 'note'=>'No alternative matched from offset 0']]];
     }
 }
@@ -1781,6 +1792,120 @@ function workspace_other_export(string $language, array $rules, stdClass $worksp
         'ocaml'=>["$slug.ml", 'text/plain', 'OCaml (.ml)'],
     };
     return ['content'=>$content, 'filename'=>$filename, 'mime'=>$mime, 'label'=>$label];
+}
+
+function logic_export_unsupported(array $config, string $target): ?string {
+    return ($config['enabled'] ?? false) && in_array($target, ['go','java','cpp','csharp','php'], true)
+        ? "Cauchy evaluation is not implemented for $target exports." : null;
+}
+function logic_export_ast(array $node): array {
+    return match ($node['type']) {
+        'identifier'=>['type'=>'Identifier','name'=>$node['name']],
+        'number'=>['type'=>'NumberLit','value'=>$node['value']],
+        'boolean'=>['type'=>'BooleanLit','value'=>$node['value']],
+        'unary'=>['type'=>'UnaryOp','op'=>$node['op'],'operand'=>logic_export_ast($node['body'])],
+        'binary'=>['type'=>'BinaryOp','op'=>$node['op'],'left'=>logic_export_ast($node['left']),'right'=>logic_export_ast($node['right'])],
+        'call'=>['type'=>'Call','callee'=>logic_export_ast($node['callee']),'arg'=>logic_export_ast($node['arg'])],
+        'lambda'=>['type'=>'Lambda','param'=>$node['name'],'body'=>logic_export_ast($node['body'])],
+        'quantifier'=>['type'=>'Quantifier','quantifier'=>$node['op'],'param'=>$node['name'],'body'=>logic_export_ast($node['body'])],
+        default=>throw new UnsupportedLogic('Unsupported logic AST node for export.'),
+    };
+}
+function logic_export_spec(string $statement, array $labels, array $evaluation, stdClass $workspace): array {
+    $required = []; $seen = [];
+    foreach ($labels as $label) {
+        if ($label['kind'] === 'lambda') continue;
+        $name = trim($label['name']);
+        if ($name === '' || isset($seen[$name])) continue;
+        $seen[$name] = true;
+        $required[] = ['name'=>$name,'kind'=>$label['kind'],'defaultValue'=>trim($label['value']) ?: ($label['kind'] === 'boolean' ? 'false' : '0')];
+    }
+    foreach ($evaluation['freeVariables'] ?? [] as $name) {
+        if ($name === '' || isset($seen[$name])) continue;
+        $seen[$name] = true; $required[] = ['name'=>$name,'kind'=>'number','defaultValue'=>'0'];
+    }
+    $rules = parse_grammar($workspace->grammarText, $workspace->dialect);
+    $studioRules = [];
+    foreach ($rules as $rule) if (trim($rule['name']) !== '' && trim($rule['expression']) !== '') {
+        $studioRules[] = ['name'=>trim($rule['name']),'expression'=>trim($rule['expression'])];
+    }
+    $names = array_column($studioRules, 'name'); $synthetic = [];
+    if ($required && !in_array('logic_input', $names, true)) {
+        $parts = array_map(fn($input) => '("'.$input['name'].'=" '.$input['name'].')', $required);
+        $synthetic[] = ['name'=>'logic_input','expression'=>implode(' " " ', $parts)];
+    }
+    foreach ($required as $input) if (!in_array($input['name'], $names, true)) {
+        $synthetic[] = ['name'=>$input['name'],'expression'=>$input['kind'] === 'boolean'
+            ? '"true" | "false" | "1" | "0"' : '"-"? digit+ ("." digit+)?'];
+    }
+    if (!in_array('digit', $names, true) && array_filter($synthetic, fn($rule) => str_contains($rule['expression'], 'digit'))) {
+        $synthetic[] = ['name'=>'digit','expression'=>'"0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"'];
+    }
+    $combined = array_merge($studioRules, $synthetic);
+    $syntheticText = array_map(fn($rule) => $rule['name'].' '.$workspace->dialect->ruleOperator.' '.$rule['expression'], $synthetic);
+    $base = trim($workspace->grammarText);
+    $grammar = implode("\n", array_filter([$base, implode("\n", $syntheticText)], fn($text) => $text !== ''));
+    $entry = $required && array_filter($combined, fn($rule) => $rule['name'] === 'logic_input')
+        ? 'logic_input' : ($combined[0]['name'] ?? 'logic_input');
+    $sample = implode(' ', array_map(fn($input) => $input['name'].'='.$input['defaultValue'], $required));
+    if ($sample === '') $sample = trim($workspace->evalPayload);
+    return ['requiredInputs'=>$required,'rules'=>$combined,'grammarText'=>$grammar,'entryRule'=>$entry,'sampleSingleInput'=>$sample];
+}
+function logic_export_target(array $state, string $target): array {
+    $supported = ['python','jsonld','rust','wat','wasm','typescript','javascript','go','java','cpp','csharp','php',
+        'sql','swift','kotlin','ruby','scala','haskell','elixir','lua','zig','dart','ocaml'];
+    if (!in_array($target, $supported, true)) throw new InputError("Unsupported logic export target '$target'.", 404);
+    $unsupported = logic_export_unsupported($state['cauchyConfig'], $target);
+    if ($unsupported !== null) throw new InputError($unsupported, 422);
+    $evaluation = evaluate_statement($state['statement'], $state['labels']);
+    $spec = logic_export_spec($state['statement'], $state['labels'], $evaluation, workspace_default($state));
+    if ($target !== 'jsonld') throw new LogicStorageError("Native PHP logic export '$target' is not implemented.");
+    $doc = ['@context'=>'https://schema.org','@type'=>'MathSolver','name'=>'LogicLambdaStatement',
+        'x-logic-format'=>'grammar2json-logic-lambda/v1','x-logic-statement'=>trim($state['statement']),
+        'x-translated-statement'=>trim($state['statement']),
+        'x-input-grammar'=>['entryRule'=>$spec['entryRule'],'sampleSingleInput'=>$spec['sampleSingleInput'],
+            'requiredInputs'=>$spec['requiredInputs'],'rules'=>$spec['rules'],'grammarText'=>$spec['grammarText']],
+        'x-cli-parameters'=>['namedLiteralFlags'=>array_map(fn($input) => ['name'=>$input['name'],'flag'=>'--'.$input['name'],
+            'literalType'=>$input['kind'],'defaultValue'=>$input['defaultValue']], $spec['requiredInputs']),
+            'editableStringFlags'=>[['flag'=>'--input','target'=>'SAMPLE_SINGLE_INPUT','defaultValue'=>$spec['sampleSingleInput']],
+                ['flag'=>'--statement','target'=>'LOGIC_STATEMENT','defaultValue'=>trim($state['statement'])],
+                ['flag'=>'--grammar','target'=>'ACTIVE_GRAMMAR','defaultValue'=>$spec['grammarText']]]],
+        'x-named-callbacks'=>[],
+        'x-labels'=>array_map(fn($label) => ['name'=>$label['name'],'kind'=>$label['kind'],'value'=>$label['value']], $state['labels']),
+        'x-evaluation'=>['ok'=>$evaluation['ok'],'valueType'=>$evaluation['valueType'],'displayValue'=>$evaluation['displayValue']],
+        'x-ast'=>logic_export_ast(parse_logic($state['statement']))];
+    if ($state['cauchyConfig']['enabled']) {
+        $cauchy = evaluate_cauchy((object)$state['cauchyConfig'], $state['labels']);
+        $doc['x-cauchy-sequence'] = ['paramStyle'=>$state['cauchyConfig']['paramStyle'],
+            'resolvedParamNames'=>$cauchy['resolvedParamNames'],'seedValues'=>$state['cauchyConfig']['seedValues'],
+            'recurrenceExpr'=>$state['cauchyConfig']['recurrenceExpr'],'maxIterations'=>$state['cauchyConfig']['maxIterations'],
+            'epsilon'=>$state['cauchyConfig']['epsilon'],'converged'=>$cauchy['converged'],
+            'cauchyIndexN'=>$cauchy['cauchyIndexN'],'limitEstimate'=>$cauchy['limitEstimate'],'tailDiameter'=>$cauchy['tailDiameter']];
+    }
+    return ['content'=>json_encode($doc, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_LINE_TERMINATORS),
+        'filename'=>'logic_lambda_calc.jsonld','mime'=>'application/ld+json'];
+}
+function serve_logic_export(string $route, string $method): never {
+    $target = substr($route, strlen('api/logic/export/'));
+    $links = ['self'=>['href'=>api_links('/'.$route)['self']['href'],'method'=>'GET'],
+        'logic'=>['href'=>api_links('/api/logic')['self']['href'],'method'=>'GET']];
+    if (!in_array($method, ['GET','HEAD'], true)) {
+        header('Allow: GET, HEAD, OPTIONS');
+        api_json(405, ['ok'=>false,'error'=>'Method not allowed.','_links'=>$links], true);
+    }
+    try {
+        $export = logic_export_target(logic_state(logic_store()), $target);
+        api_json(200, ['language'=>$target,'filename'=>$export['filename'],'mime'=>$export['mime'],
+            'content'=>$export['content'],'_links'=>$links], true);
+    } catch (InputError $error) {
+        $status = $error->getCode() === 404 ? 404 : ($error->getCode() === 422 ? 422 : 400);
+        api_json($status, ['ok'=>false,'code'=>$status === 422 ? 'unsupported_cauchy_export' : 'unsupported_logic_export',
+            'language'=>$target,'error'=>$error->getMessage(),'_links'=>$links], true);
+    } catch (UnsupportedLogic $error) {
+        api_json(422, ['ok'=>false,'code'=>'logic_export_failed','language'=>$target,'error'=>$error->getMessage(),'_links'=>$links], true);
+    } catch (LogicStorageError $error) {
+        api_json(503, ['ok'=>false,'code'=>'logic_export_failed','language'=>$target,'error'=>$error->getMessage(),'_links'=>$links], true);
+    }
 }
 
 function history_stable_json(mixed $value): string {
@@ -3046,7 +3171,7 @@ function serve_api_discovery(string $route): never {
             'id'=>$id, 'exportId'=>$exportId, 'label'=>$label, 'shortLabel'=>$shortLabel, 'extension'=>$extension,
             '_links'=>[
                 'exportWorkspace'=>['href'=>$prefix.'/api/export/'.rawurlencode($exportId),'method'=>'GET','available'=>true],
-                'exportLogic'=>['href'=>$prefix.'/api/logic/export/'.rawurlencode($exportId),'method'=>'GET','available'=>false],
+                'exportLogic'=>['href'=>$prefix.'/api/logic/export/'.rawurlencode($exportId),'method'=>'GET','available'=>$exportId === 'jsonld'],
             ],
         ];
     }
@@ -3209,6 +3334,7 @@ function serve_api(string $route): never {
     if ($route === 'api/evaluate') serve_grammar_evaluation($method);
     if ($route === 'api/engine/clear' || $route === 'api/histolog' || $route === 'api/histolog/diff'
         || preg_match('~^api/histolog/\d+(?:/restore)?$~', $route)) serve_history($route, $method);
+    if (preg_match('~^api/logic/export/[^/]+$~', $route)) serve_logic_export($route, $method);
     if (preg_match('~^api/export/[a-z]+$~', $route)) serve_grammar_export($method, substr($route, strlen('api/export/')));
     if (preg_match('~^api/nodes/(rule|symbol|dialect|logic|callback|histolog)/[^/]+(?:/members(?:/[^/]+)?)?$~', $route)) serve_grammar_node($route, $method);
     if (in_array($route, ['api/mcp','api/mcp/logic_calc'], true)) serve_logic_mcp($route, $method);

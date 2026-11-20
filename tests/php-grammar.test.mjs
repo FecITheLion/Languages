@@ -5,6 +5,7 @@ import { evaluateGrammarPayload, grammarToSchemaJson, parseGrammar } from '../sr
 import { DIALECT_PRESETS } from '../src/data/openapiAndDsl.ts';
 import { RestHateoasEngineStore } from '../src/engine/hateoasEngine.ts';
 import { computeSnapshotFingerprint, diffHistologSnapshots, extractTouchedSymbols } from '../src/engine/histologEngine.ts';
+import { evaluateLogicStatement, exportLogicStatement } from '../src/engine/logicLambdaEngine.ts';
 
 test('PHP grammar parser agrees with the shared parser', () => {
   const dialect = DIALECT_PRESETS.ebnf.config;
@@ -89,6 +90,8 @@ test('PHP grammar evaluator matches shared traces for grammar operators and muta
     { grammar: "start ::= ('a' | 'b')+ ['c'] 'd'", rule: 'start', payload: 'abbcd', mutations: {} },
     { grammar: "start ::= &'a' 'a' !'b' [0-9]{2}", rule: 'start', payload: 'a42', mutations: {} },
     { grammar: "start ::= 'a' (?<='a') /[0-9]+/ $", rule: 'start', payload: 'a123', mutations: {} },
+    { grammar: "start ::= 'éλ'", rule: 'start', payload: 'éλ', mutations: {} },
+    { grammar: "start ::= [éλ]+", rule: 'start', payload: 'éλ', mutations: {} },
     { grammar: '', rule: '', payload: 'a', mutations: {} },
   ];
   const php = spawnSync('php', ['-r', `
@@ -107,6 +110,36 @@ test('PHP grammar evaluator matches shared traces for grammar operators and muta
   assert.equal(php.status, 0, php.stderr);
   assert.deepEqual(JSON.parse(php.stdout), cases.map(c =>
     evaluateGrammarPayload(parseGrammar(c.grammar, workspace.dialect), c.rule, c.payload, c.mutations, workspace.dialect)));
+});
+
+test('PHP grammar evaluator matches Unicode literals, classes and code-point offsets', () => {
+  const workspace = new RestHateoasEngineStore().workspace;
+  const cases = [
+    { grammar: "start ::= '🙂éλ'", payload: '🙂éλ' },
+    { grammar: 'start ::= [🙂éλ]+', payload: '🙂éλ🙂' },
+    { grammar: "start ::= '🙂' 'é' 'x'", payload: '🙂éx!' },
+    { grammar: "start ::= 'ø' | '🦊'", payload: '🦊' },
+  ];
+  const php = spawnSync('php', ['-r', `
+    define('PHP_API_ENTRY', true);
+    require 'api.php';
+    $input = json_decode(stream_get_contents(STDIN), false, 32, JSON_THROW_ON_ERROR);
+    $out = [];
+    foreach ($input->cases as $c) {
+      $w = $input->workspace;
+      $rules = parse_grammar($c->grammar, $w->dialect);
+      $out[] = (new GrammarPayloadEvaluator($rules, $w, $c->payload))->evaluate('start');
+    }
+    echo json_encode($out, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE);
+  `], { input: JSON.stringify({ workspace, cases }), encoding: 'utf8' });
+  assert.equal(php.status, 0, php.stderr);
+  const results = JSON.parse(php.stdout);
+  assert.equal(results[0].matched, true);
+  assert.equal(results[0].consumedLength, 3);
+  assert.deepEqual(results[1].trace.find(step => step.rule === 'start').consumed, '🙂éλ🙂');
+  assert.equal(results[2].consumedLength, 3);
+  assert.equal(results[2].remaining, '!');
+  assert.equal(results[3].matched, true);
 });
 
 test('PHP workspace code generation matches dynamic shared exports', () => {
@@ -190,4 +223,32 @@ test('PHP workspace language templates match shared exporters', () => {
   assert.equal(php.status, 0, php.stderr);
   const actual = JSON.parse(php.stdout);
   for (let i = 0; i < languages.length; i++) assert.deepEqual(actual[i], store.exportWorkspace(languages[i]), languages[i]);
+});
+
+test('PHP JSON-LD logic export matches the shared exporter', () => {
+  const store = new RestHateoasEngineStore();
+  store.workspace.cauchyConfig.enabled = false;
+  const statement = 'price > 20';
+  const labels = [{ id: 'price', name: 'price', kind: 'number', value: '45' }];
+  const input = {
+    statement, labels, cauchyConfig: store.workspace.cauchyConfig,
+    workspace: store.workspace,
+  };
+  const php = spawnSync('php', ['-r', `
+    define('PHP_API_ENTRY', true);
+    require 'api.php';
+    $input = json_decode(stream_get_contents(STDIN), true, 64, JSON_THROW_ON_ERROR);
+    $state = ['statement'=>$input['statement'], 'labels'=>$input['labels'], 'cauchyConfig'=>$input['cauchyConfig']];
+    $result = logic_export_target($state, 'jsonld');
+    echo $result['content'];
+  `], { input: JSON.stringify(input), encoding: 'utf8' });
+  assert.equal(php.status, 0, php.stderr);
+  const expected = exportLogicStatement('jsonld', statement, labels,
+    evaluateLogicStatement(statement, labels), store.workspace.cauchyConfig, {
+      grammarText: store.workspace.grammarText,
+      rules: parseGrammar(store.workspace.grammarText, store.workspace.dialect),
+      dialect: store.workspace.dialect,
+      sampleInput: store.workspace.evalPayload,
+    });
+  assert.deepEqual(JSON.parse(php.stdout), JSON.parse(expected.content));
 });

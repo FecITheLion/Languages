@@ -50,6 +50,7 @@ const VALID_TOP_VIEWS: readonly TopView[] = [
   'graph',
   'histolog',
   'api',
+  'modules',
   'openapi',
   'dsl',
   'bundle',

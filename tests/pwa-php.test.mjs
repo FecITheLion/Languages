@@ -83,7 +83,8 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     response = await fetch(`${root}/studio/api/evaluate`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payload: '日本語' }),
     });
-    assert.equal(response.status, 503);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).matched, false);
     response = await fetch(`${root}/studio/api/rules`);
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const nodeStore = new RestHateoasEngineStore();
@@ -249,6 +250,16 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     const liveLogic = await response.json();
     assert.equal(artifact.statement, liveLogic.statement);
     assert.deepEqual(artifact.labels, liveLogic.labels);
+    response = await fetch(`${root}/studio/api/logic/export/jsonld`);
+    const { language: logicLanguage, _links: logicLinks, ...logicExport } = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(logicLanguage, 'jsonld');
+    assert.equal(JSON.parse(logicExport.content)['@type'], 'MathSolver');
+    response = await fetch(`${root}/studio/api/logic/export/notarealtarget`);
+    assert.equal(response.status, 404);
+    response = await fetch(`${root}/studio/api/logic/export/php`);
+    assert.equal(response.status, 422);
+    assert.equal((await response.json()).code, 'unsupported_cauchy_export');
     response = await mcpCall('api/mcp/logic_calc', { jsonrpc: '2.0', id: 1, method: 'resources/read', params: { uri: 'grammar2json://logic_calc/missing' } });
     assert.equal((await response.json()).error.code, -32002);
     const registry = new McpLazyServerRegistry();
@@ -288,7 +299,7 @@ test('installer validates build, base and empty target; PHP routes SPA and rejec
     const languages = await response.json();
     assert.equal(languages.count, SUPPORTED_LANGUAGES.length);
     assert.deepEqual(languages.languages.map(({ _links, ...language }) => language), SUPPORTED_LANGUAGES);
-    assert(languages.languages.every(language => language._links.exportLogic.available === false &&
+    assert(languages.languages.every(language => language._links.exportLogic.available === (language.exportId === 'jsonld') &&
       language._links.exportWorkspace.available === true));
     response = await fetch(`${root}/studio/api`, { method: 'HEAD' });
     assert.equal(response.status, 200);

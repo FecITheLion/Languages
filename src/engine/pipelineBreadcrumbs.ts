@@ -66,6 +66,7 @@ export const TOP_VIEW_LABELS: Record<TopView, string> = {
   histolog: 'Histolog & Diff',
   files: 'Shared Files',
   api: 'API Studio',
+  modules: 'Module Workbench',
   openapi: 'OpenAPI Spec',
   dsl: 'DSL Flows',
   bundle: 'Export Bundle',

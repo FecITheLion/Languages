@@ -127,6 +127,7 @@ import { PipelineBreadcrumbs } from './components/PipelineBreadcrumbs';
 import { PipelineGrid } from './components/PipelineGrid';
 import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
+import { ModuleWorkbench } from './components/ModuleWorkbench';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
 import { VirtualFilesWorkbench } from './components/VirtualFilesWorkbench';
 import { applyVirtualSubmission, mergeVirtualFiles, parseVirtualFiles, readVirtualFiles, restoreAutoSavedVirtualEdits, restoreVirtualEdits, serializeVaultListing, VirtualFilesError, virtualEditAllowed, virtualEdits, workbenchVirtualFiles, type VirtualFiles, type VirtualSubmission } from './engine/virtualFiles';
@@ -2933,7 +2934,7 @@ export default function App() {
     SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage) ?? SUPPORTED_LANGUAGES[0];
 
   const primaryNavItems: Array<{
-    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'files' | 'specs';
+    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'modules' | 'files' | 'specs';
     fullLabel: string;
     compactLabel: string;
     icon: typeof Layers;
@@ -2971,6 +2972,14 @@ export default function App() {
       icon: Terminal,
       active: topView === 'api',
       onClick: () => setTopView('api'),
+    },
+    {
+      id: 'modules',
+      fullLabel: 'Module Workbench',
+      compactLabel: 'Modules',
+      icon: Boxes,
+      active: topView === 'modules',
+      onClick: () => setTopView('modules'),
     },
     {
       id: 'files',
@@ -3478,6 +3487,8 @@ export default function App() {
               void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
             }
           />
+        ) : topView === 'modules' ? (
+          <ModuleWorkbench />
         ) : topView === 'files' ? (
           <div className="space-y-4">
             <GuideBanner guideId="files" />
@@ -3923,7 +3934,7 @@ export default function App() {
         aria-label="Mobile navigation"
         className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur-xs md:hidden dark:border-slate-800 dark:bg-slate-900/95"
       >
-        <div className="grid h-14 grid-cols-5">
+        <div className="grid h-14 grid-cols-7">
           {primaryNavItems.map((item) => {
             const Icon = item.icon;
             return (
