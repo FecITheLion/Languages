@@ -1,4 +1,5 @@
 import type { LogicLabelBinding } from './logicLambdaEngine.ts';
+import { readVirtualFiles, VirtualFilesError, type VirtualFiles } from './virtualFiles.ts';
 import type {
   DialectConfig,
   LineMutation,
@@ -14,7 +15,8 @@ export type HistologFieldKey =
   | 'dsl'
   | 'python'
   | 'rust'
-  | 'wat';
+  | 'wat'
+  | 'virtualFiles';
 
 export const HISTOLOG_FIELD_LABELS: Record<HistologFieldKey, string> = {
   grammar: 'Grammar',
@@ -26,6 +28,7 @@ export const HISTOLOG_FIELD_LABELS: Record<HistologFieldKey, string> = {
   python: 'Python AST',
   rust: 'Rust AST',
   wat: 'WABT / WAT',
+  virtualFiles: 'Virtual file edits',
 };
 
 export const HISTOLOG_FIELD_KEYS: HistologFieldKey[] = [
@@ -38,6 +41,7 @@ export const HISTOLOG_FIELD_KEYS: HistologFieldKey[] = [
   'python',
   'rust',
   'wat',
+  'virtualFiles',
 ];
 
 export interface HistologSnapshotState {
@@ -54,6 +58,7 @@ export interface HistologSnapshotState {
   pythonSource: string;
   rustSource: string;
   watSource: string;
+  virtualFiles?: VirtualFiles;
 }
 
 export interface HistologDiffLine {
@@ -145,6 +150,7 @@ export function computeSnapshotFingerprint(state: HistologSnapshotState): string
     pythonSource: state.pythonSource,
     rustSource: state.rustSource,
     watSource: state.watSource,
+    virtualFiles: state.virtualFiles ?? {},
   });
 
   let hash = 0x811c9dc5;
@@ -207,6 +213,7 @@ export function serializeSnapshotFields(
     python: state.pythonSource.trimEnd(),
     rust: state.rustSource.trimEnd(),
     wat: state.watSource.trimEnd(),
+    virtualFiles: JSON.stringify(state.virtualFiles ?? {}, null, 2),
   };
 }
 
@@ -505,6 +512,7 @@ export function buildHistologIndex(entries: HistologEntry[]): HistologIndex {
     python: [],
     rust: [],
     wat: [],
+    virtualFiles: [],
   };
   const bySource: Record<string, number[]> = {};
 
@@ -731,6 +739,7 @@ function normalizeImportedEntry(raw: unknown, fallbackGen: number): HistologEntr
     pythonSource: typeof r.snapshot.pythonSource === 'string' ? r.snapshot.pythonSource : '',
     rustSource: typeof r.snapshot.rustSource === 'string' ? r.snapshot.rustSource : '',
     watSource: typeof r.snapshot.watSource === 'string' ? r.snapshot.watSource : '',
+    virtualFiles: r.snapshot.virtualFiles === undefined ? undefined : readVirtualFiles(r.snapshot.virtualFiles),
   };
 
   const gen = typeof r.generation === 'number' && Number.isFinite(r.generation) ? r.generation : fallbackGen;
@@ -798,7 +807,8 @@ export function importHistologCustom(
       const single = normalizeImportedEntry(parsed, 0);
       if (single) parsedEntries = [single];
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof VirtualFilesError) return { ok: false, error: `Invalid virtual files in history: ${error.message}` };
     // Attempt NDJSON line-by-line parse
     detectedFormat = 'histolog-ndjson';
     const lines = trimmed.split(/\r?\n/).filter((l) => l.trim().length > 0);
@@ -808,7 +818,8 @@ export function importHistologCustom(
         if (obj.recordType === 'histolog_header') continue;
         const normalized = normalizeImportedEntry(obj, parsedEntries.length);
         if (normalized) parsedEntries.push(normalized);
-      } catch {
+      } catch (error) {
+        if (error instanceof VirtualFilesError) return { ok: false, error: `Invalid virtual files in history: ${error.message}` };
         return {
           ok: false,
           error: `Invalid JSON/NDJSON syntax on line ${i + 1}.`,

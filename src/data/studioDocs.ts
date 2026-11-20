@@ -54,10 +54,10 @@ export const STUDIO_DOCS: Record<string, StudioDocEntry> = {
     title: 'Cauchy Sequence Analyzer',
     category: '03. Logic & Lambda',
     summary:
-      'Evaluates iterative numerical recurrences and verifies the Cauchy convergence criterion: ∀ε > 0, ∃N such that ∀m,n ≥ N, |a_m - a_n| < ε.',
+      'Evaluates iterative numerical recurrences and checks whether a finite sampled tail has diameter below epsilon. This is an estimate, not a proof of convergence.',
     syntax: 'Parameter styles: Positional (_1, _2 or _0, _1) · Directional (left, right, mid) · Given Names (e.g. a, b)',
     example: 'Seeds: "0, 1", Recurrence: "(left + right) / 2" → converges to 0.666667 (2/3) with Cauchy Index N(0.0001) = 13.',
-    notes: 'All saved Local Global Callbacks and logic labels are automatically in scope inside the recurrence expression and exported to Python, JSON-LD, and TypeScript.',
+    notes: 'When enabled, the analyzer generates the configured number of terms (at most 120) from the most recent seed-width window, then finds the first sampled tail with diameter below epsilon. It does not stop early or change input parsing order. Logic labels are in scope; this numeric recurrence is separate from any input-analysis sequencing pass.',
   },
   globalCallbacks: {
     key: 'globalCallbacks',
@@ -101,13 +101,13 @@ export const STUDIO_DOCS: Record<string, StudioDocEntry> = {
   },
   domDragSplitMerge: {
     key: 'domDragSplitMerge',
-    title: 'DOM Drag-and-Drop: Order, Merge & Biject/Split',
-    category: 'Higher Echelons & Routine Builder',
+    title: 'Reorder, combine, and split items',
+    category: 'Workbench item controls',
     summary:
-      'Drag any element in Workbench, Rule Graph, OpenAPI Spec, DSL Flows, Export Bundle, or the Sequential Routine Builder. While dragging, temporary drop zones appear for Before, After, Merge, and every possible Split/Biject boundary.',
-    syntax: 'Drag handle → hover dashed drop slots: [Insert Before] · [Merge Composite] · [Temp Split Slot] · [Insert After]',
-    example: 'Drag step A onto a Split Slot on step B to biject/split step B and splice A cleanly, or drop onto Merge to combine into a reversible composite artifact.',
-    notes: 'Biject/Split operations preserve inverse symmetry so merged artifacts can be cleanly split back apart.',
+      'Use Move up and Move down to change order. Open More actions to combine items or split one at a chosen point. On desktop, drag-and-drop provides additional placement options.',
+    syntax: 'Move up/down · More actions → Combine / Split · Drag → labeled drop positions',
+    example: 'Choose an item to combine into another, or choose a split point to separate an item into parts.',
+    notes: 'A combined item is a composite; splitting it separates its parts again.',
   },
   mcpClientExport: {
     key: 'mcpClientExport',

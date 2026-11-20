@@ -34,9 +34,9 @@ export interface GuideEntry {
 
 const modalTour = (body: string): TourStep[] => [
   { target: '[data-tour="modal-header"]', title: 'Where you are', body: 'Each workbench is one step of the compiler pipeline. The header shows the step, its id and the target language.' },
-  { target: '[data-tour="modal-structure"]', title: 'Pick your layout', body: 'Switch between Menu Bar, Calculator, Grid and Split layouts and preview at fixed device sizes.' },
+  { target: '[data-tour="modal-structure"]', title: 'Choose a workbench', body: 'Select a pipeline step. In the modal, you can also choose a layout and preview size.' },
   { target: '[data-tour="modal-body"]', title: 'Do the work', body: body },
-  { target: '[data-tour="modal-footer"]', title: 'Submit to the shared tree', body: 'Verify & Advance (or Submit) merges this workbench output into the shared file tree and records a diff.' },
+  { target: '[data-tour="modal-footer"]', title: 'Submit to the shared tree', body: 'Verify & Advance (or Submit) sends this workbench output to the shared file tree.' },
 ];
 
 const frames = (a: [string, string], b: [string, string], c: [string, string]): HowToFrame[] =>
@@ -48,9 +48,9 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
     title: 'Grammar2JSON Studio',
     headline: 'From grammar to running code in twelve verified steps.',
     pitch:
-      'Hand-writing parsers, schemas, ASTs and WASM by hand drifts out of sync. Studio keeps every stage bidirectional and merges each result into one shared file tree with a diff.',
-    proof: ['12 pipeline workbenches, one verified chain', 'Shared file tree with per-submission diffs', 'Installable offline PWA on a PHP core'],
-    outputs: ['src/', 'module/', 'diff/'],
+      'Hand-writing parsers, schemas, ASTs and WASM by hand drifts out of sync. Studio brings each stage together in one shared file tree.',
+    proof: ['12 pipeline workbenches', 'Shared file tree with conflict previews', 'Installable PWA on a PHP core'],
+    outputs: ['workbench/', 'modal/'],
     tour: [
       { target: '[data-tour="nav"]', title: 'Primary navigation', body: 'Workbench, Graph, History, API Studio, Shared Files and Specs live here.' },
       { target: '[data-tour="toolbar"]', title: 'Workspace toolbar', body: 'Search, switch languages, undo/redo Histolog generations and copy deep links.' },
@@ -67,18 +67,17 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
     id: 'files',
     title: 'Shared Files',
     headline: 'One abstract file tree every workbench writes into.',
-    pitch: 'Workbenches no longer keep private outputs. Each submission is merged into one virtual tree and logged as a patch, so you always see what changed and who changed it.',
-    proof: ['engine / data / module / diff layers', 'Per-file revisions and line diffs', 'Mirrored to the PHP core when installed'],
-    outputs: ['diff/NNNN-<workbench>.patch'],
+    pitch: 'Browse workbench outputs in one virtual tree, edit files, and review conflicts when generated content changes.',
+    proof: ['Validated artifact submissions', 'Conflict previews for edits', 'Browser autosave'],
+    outputs: ['workbench/'],
     tour: [
       { target: '[data-tour="files-tree"]', title: 'The tree', body: 'Every file any workbench has submitted, grouped by layer.' },
-      { target: '[data-tour="files-viewer"]', title: 'Content & diff', body: 'Toggle between file content and the latest diff for the selected file.' },
-      { target: '[data-tour="files-log"]', title: 'Submission log', body: 'Each submission lists the files it added or modified.' },
+      { target: '[data-tour="files-viewer"]', title: 'Content and conflicts', body: 'Edit the selected file and compare conflicts with regenerated content.' },
     ],
     frames: frames(
       ['Submit', 'Finish a workbench step.'],
       ['Browse', 'Open the file in the tree.'],
-      ['Diff', 'Switch to Diff to see exactly what mutated.']
+      ['Review', 'Compare edits with generated content when a conflict appears.']
     ),
   },
   dialect: {
@@ -104,7 +103,7 @@ export const GUIDES: Record<GuideId, GuideEntry> = {
     headline: 'Compute with logic statements and Cauchy sequences.',
     pitch: 'Evaluate logic expressions, label bindings and sequences, then export them as code for any target.',
     proof: ['Lambda statement evaluator', 'Cauchy sequence support', 'Multi-target export'],
-    outputs: ['src/engine/logicLambdaEngine.ts'],
+    outputs: ['src/data/logic.json'],
     tour: modalTour('Enter a logic statement and bind labels to see evaluated results.'),
     frames: frames(['Write a statement', 'Use the calculator layout.'], ['Bind labels', 'Map labels to values.'], ['Export', 'Copy or submit the engine.']),
   },

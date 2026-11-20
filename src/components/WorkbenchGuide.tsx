@@ -5,22 +5,29 @@ import { getGuide, type GuideEntry } from '../data/workbenchGuides';
 const btn =
   'inline-flex min-h-[32px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800';
 
-export function LiveTour({ guide, onClose }: { guide: GuideEntry; onClose: () => void }) {
+export function LiveTour({ guide, onClose, modal }: { guide: GuideEntry; onClose: () => void; modal: boolean }) {
   const [i, setI] = useState(0);
   const [rect, setRect] = useState<DOMRect | null>(null);
   const step = guide.tour[i];
 
+  const pageTargets: Record<string, string> = {
+    '[data-tour="modal-header"]': '[data-tour="pipeline"]',
+    '[data-tour="modal-structure"]': '[data-tour="pipeline"]',
+    '[data-tour="modal-body"]': '[data-tour="workbench-body"]',
+    '[data-tour="modal-footer"]': '[data-tour="workbench-verify"]',
+  };
+  const target = modal || !step.target ? step.target : (pageTargets[step.target] ?? step.target);
   const measure = useCallback(() => {
-    const el = step.target ? document.querySelector(step.target) : null;
+    const el = target ? document.querySelector(target) : null;
     if (el) {
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' });
       setRect(el.getBoundingClientRect());
     } else {
       setRect(null);
     }
-  }, [step]);
+  }, [target]);
 
   useLayoutEffect(() => {
+    if (target) document.querySelector(target)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
     measure();
     const t = window.setTimeout(measure, 350);
     window.addEventListener('resize', measure);
@@ -30,7 +37,7 @@ export function LiveTour({ guide, onClose }: { guide: GuideEntry; onClose: () =>
       window.removeEventListener('resize', measure);
       window.removeEventListener('scroll', measure, true);
     };
-  }, [measure]);
+  }, [measure, target]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -182,7 +189,7 @@ export function HowToPanel({ guide, mode, onClose }: { guide: GuideEntry; mode: 
 }
 
 /** Elevator pitch + Live Tour + Video/Image how-to for one workbench (or the home page). */
-export function GuideBanner({ guideId, variant = 'compact' }: { guideId: string; variant?: 'hero' | 'compact' }) {
+export function GuideBanner({ guideId, variant = 'compact', modal = false }: { guideId: string; variant?: 'hero' | 'compact'; modal?: boolean }) {
   const guide = getGuide(guideId);
   const [tour, setTour] = useState(false);
   const [howto, setHowto] = useState<null | 'video' | 'images'>(null);
@@ -217,7 +224,7 @@ export function GuideBanner({ guideId, variant = 'compact' }: { guideId: string;
         </button>
         <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">→ {guide.outputs.join(', ')}</span>
       </div>
-      {tour && <LiveTour guide={guide} onClose={() => setTour(false)} />}
+      {tour && <LiveTour guide={guide} modal={modal} onClose={() => setTour(false)} />}
       {howto && <HowToPanel guide={guide} mode={howto} onClose={() => setHowto(null)} />}
     </section>
   );

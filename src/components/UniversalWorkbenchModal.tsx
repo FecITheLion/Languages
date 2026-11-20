@@ -156,7 +156,7 @@ export function UniversalWorkbenchModal({
         {/* Viewport Constrained Body */}
         <div className="flex-1 overflow-auto bg-slate-100/70 p-4 sm:p-5 dark:bg-slate-950">
           <div className="mx-auto mb-4 w-full">
-            <GuideBanner guideId={flow.page} />
+            <GuideBanner guideId={flow.page} modal />
           </div>
           <div
             data-tour="modal-body"

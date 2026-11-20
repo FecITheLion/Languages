@@ -126,7 +126,10 @@ export function PipelineGrid({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+            <h1
+              data-tour-id="home.pipeline"
+              className="text-sm font-semibold text-slate-900 dark:text-slate-100"
+            >
               Compiler Pipeline Grid
             </h1>
             <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
@@ -266,8 +269,11 @@ export function PipelineGrid({
       )}
 
       {/* Row 2: Stage Filter Strip with Per-Stage Verified Counters + Active MCP Endpoint */}
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800/80">
+      <div
+        className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800/80"
+      >
         <div
+          data-tour-id="home.navigation"
           className="no-scrollbar inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
           role="group"
           aria-label="Filter pipeline by compiler stage"
@@ -290,6 +296,7 @@ export function PipelineGrid({
                 key={st.stage}
                 type="button"
                 onClick={() => onStageFilterChange(st.stage)}
+                data-tour-id={st.stage === 'storage' ? 'workbench.schema.export' : undefined}
                 className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
                   isSelected
                     ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'

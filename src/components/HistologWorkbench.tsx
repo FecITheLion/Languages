@@ -28,6 +28,7 @@ import {
 } from '../engine/histologEngine';
 
 interface HistologWorkbenchProps {
+  allowExport?: boolean;
   entries: HistologEntry[];
   index: HistologIndex;
   schemaName: string;
@@ -56,6 +57,7 @@ function formatShortTime(iso: string): string {
 }
 
 export function HistologWorkbench({
+  allowExport = true,
   entries,
   index,
   schemaName,
@@ -136,6 +138,7 @@ export function HistologWorkbench({
   );
 
   const handleExport = (format: HistologExportFormat) => {
+    if (!allowExport) return;
     const res = exportHistologCustom(
       entries,
       index,
@@ -148,6 +151,7 @@ export function HistologWorkbench({
   };
 
   const handleCopyPatch = async () => {
+    if (!allowExport) return;
     const res = exportHistologCustom(
       entries,
       index,
@@ -257,8 +261,10 @@ export function HistologWorkbench({
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-slate-800/80">
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-1 text-xs font-medium text-slate-500 dark:text-slate-400">Export:</span>
+            {!allowExport && <span className="text-xs text-amber-700">Blocked by mutation policy</span>}
             <button
               type="button"
+              disabled={!allowExport}
               onClick={() => handleExport('histolog-json')}
               className="inline-flex min-h-[36px] items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
             >
@@ -267,6 +273,7 @@ export function HistologWorkbench({
             </button>
             <button
               type="button"
+              disabled={!allowExport}
               onClick={() => handleExport('histolog-ndjson')}
               className="inline-flex min-h-[36px] items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
             >
@@ -275,6 +282,7 @@ export function HistologWorkbench({
             </button>
             <button
               type="button"
+              disabled={!allowExport}
               onClick={() => handleExport('patch-diff')}
               className="inline-flex min-h-[36px] items-center gap-1 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 sm:min-h-0 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
             >
@@ -398,6 +406,7 @@ export function HistologWorkbench({
         <button
           type="button"
           onClick={() => setMobilePane('timeline')}
+          data-tour-id="view.histolog.entries"
           className={`min-h-[40px] rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
             mobilePane === 'timeline'
               ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
@@ -409,6 +418,7 @@ export function HistologWorkbench({
         <button
           type="button"
           onClick={() => setMobilePane('diff')}
+          data-tour-id="view.histolog.diff"
           className={`min-h-[40px] rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
             mobilePane === 'diff'
               ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
@@ -423,6 +433,7 @@ export function HistologWorkbench({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-12">
         {/* LEFT PANE: Inverted Index & Timeline */}
         <div
+          data-tour-id="view.histolog.entries"
           className={`${
             mobilePane === 'timeline' ? 'flex' : 'hidden lg:flex'
           } flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 lg:col-span-5 dark:border-slate-800 dark:bg-slate-900`}
@@ -638,6 +649,7 @@ export function HistologWorkbench({
 
         {/* RIGHT PANE: Historical Diff Viewer */}
         <div
+          data-tour-id="view.histolog.diff"
           className={`${
             mobilePane === 'diff' ? 'flex' : 'hidden lg:flex'
           } flex-col gap-3 rounded-xl border border-slate-200 bg-white p-4 lg:col-span-7 dark:border-slate-800 dark:bg-slate-900`}
@@ -702,6 +714,7 @@ export function HistologWorkbench({
               </button>
               <button
                 type="button"
+                disabled={!allowExport}
                 onClick={() => void handleCopyPatch()}
                 className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
               >

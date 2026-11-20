@@ -10,10 +10,13 @@ import {
 import {
   evaluateCauchySequence,
   evaluateLogicStatement,
+  getLogicBindingDiagnostics,
+  getLogicExportUnsupportedReason,
   type CauchySequenceConfig,
   type LogicExportTarget,
   type LogicLabelBinding,
 } from './src/engine/logicLambdaEngine.ts';
+import { logicInputDiagnostic, normalizeLogicEvaluationInput } from './src/engine/logicInputNormalizer.ts';
 import {
   generateMcpClientConfig,
   generateMcpExportForClient,
@@ -38,6 +41,11 @@ const isProd =
   process.env.NODE_ENV === 'production' ||
   (process.env.NODE_ENV !== 'development' && fs.existsSync(path.join(distDir, 'index.html')));
 const PORT = Number(process.env.PORT) || 3000;
+const PRETTY_BASE_PATH = process.env.PRETTY_BASE_PATH || '/';
+if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(PRETTY_BASE_PATH)) {
+  throw new Error('PRETTY_BASE_PATH must be a slash-terminated path of letters, digits, hyphens, and underscores.');
+}
+const prettyPrefix = (origin: string) => `${origin}${PRETTY_BASE_PATH === '/' ? '' : PRETTY_BASE_PATH.slice(0, -1)}`;
 
 function getOrigin(req: express.Request): string {
   const host = req.get('host');
@@ -66,6 +74,8 @@ function sendHal(
 
 async function startServer() {
   const app = express();
+  app.use('/api/logic/evaluate', express.text({ type: 'text/plain', limit: '5mb' }));
+  app.use('/api/logic/evaluate', express.json({ strict: false, limit: '5mb' }));
   app.use(express.json({ limit: '5mb' }));
 
   app.get('/healthz', (_req, res) => {
@@ -112,14 +122,15 @@ async function startServer() {
 
   app.get('/api', (req, res) => {
     const origin = getOrigin(req);
-    sendHal(res, 200, restStore.buildRootDocument(origin));
+    sendHal(res, 200, restStore.buildRootDocument(origin, PRETTY_BASE_PATH));
   });
 
   // List all addressable nodes across the engine (each with mutable & non-mutable members)
   app.get('/api/nodes', (req, res) => {
     const origin = getOrigin(req);
     const kindFilter = typeof req.query.kind === 'string' ? req.query.kind : '';
-    const allNodes = restStore.listAddressableNodes(origin);
+    const allNodes = restStore.listAddressableNodes(origin, PRETTY_BASE_PATH);
+    const prettyBase = prettyPrefix(origin);
     const filtered = kindFilter ? allNodes.filter((n) => n.kind === kindFilter) : allNodes;
     sendHal(res, 200, {
       count: filtered.length,
@@ -141,6 +152,9 @@ async function startServer() {
         root: { href: `${origin}/api`, method: 'GET', title: 'API Root' },
         nodeTemplate: { href: `${origin}/api/nodes/{kind}/{nodeId}`, method: 'GET', templated: true },
         memberTemplate: { href: `${origin}/api/nodes/{kind}/{nodeId}/members/{member}`, method: 'GET', templated: true },
+        prettyNodeTemplate: { href: `${prettyBase}/nodes/{kind}/{nodeId}`, method: 'GET', templated: true },
+        prettyMemberTemplate: { href: `${prettyBase}/nodes/{kind}/{nodeId}/members/{member}`, method: 'GET', templated: true },
+        shortMemberTemplate: { href: `${prettyBase}/members/{member}?node={kind}/{nodeId}`, method: 'GET', templated: true },
       },
     });
   });
@@ -148,7 +162,7 @@ async function startServer() {
   // Inspect a single node with full mutable & immutable member map
   app.get('/api/nodes/:kind/:nodeId', (req, res) => {
     const origin = getOrigin(req);
-    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin);
+    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin, PRETTY_BASE_PATH);
     if (!node) {
       sendHal(res, 404, {
         error: `Node '${req.params.kind}/${req.params.nodeId}' not found.`,
@@ -162,7 +176,7 @@ async function startServer() {
   // List all members (mutable and non-mutable) on a specific node
   app.get('/api/nodes/:kind/:nodeId/members', (req, res) => {
     const origin = getOrigin(req);
-    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin);
+    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin, PRETTY_BASE_PATH);
     if (!node) {
       sendHal(res, 404, {
         error: `Node '${req.params.kind}/${req.params.nodeId}' not found.`,
@@ -187,7 +201,7 @@ async function startServer() {
   // Read any mutable or non-mutable member at a node
   app.get('/api/nodes/:kind/:nodeId/members/:member', (req, res) => {
     const origin = getOrigin(req);
-    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin);
+    const node = restStore.getAddressableNode(req.params.kind, req.params.nodeId, origin, PRETTY_BASE_PATH);
     if (!node) {
       sendHal(res, 404, {
         error: `Node '${req.params.kind}/${req.params.nodeId}' not found.`,
@@ -296,7 +310,7 @@ async function startServer() {
       });
       return;
     }
-    const node = restStore.getAddressableNode('rule', rule.name, origin);
+    const node = restStore.getAddressableNode('rule', rule.name, origin, PRETTY_BASE_PATH);
     const selfHref = `${origin}/api/rules/${encodeURIComponent(rule.name)}`;
     sendHal(res, 200, {
       ...rule,
@@ -661,8 +675,20 @@ async function startServer() {
 
   app.post('/api/logic/evaluate', (req, res) => {
     const origin = getOrigin(req);
-    const stmt = typeof req.body?.statement === 'string' ? req.body.statement : restStore.workspace.logicStatement;
-    const labels = Array.isArray(req.body?.labels) ? (req.body.labels as LogicLabelBinding[]) : restStore.workspace.logicLabels;
+    const normalized = normalizeLogicEvaluationInput(req.body, {
+      statement: restStore.workspace.logicStatement,
+      labels: restStore.workspace.logicLabels,
+    });
+    if (!normalized.ok) {
+      sendHal(res, 400, {
+        ok: false,
+        error: normalized.error,
+        diagnostics: [logicInputDiagnostic(normalized.error)],
+        _links: { self: { href: `${origin}/api/logic/evaluate`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
+      });
+      return;
+    }
+    const { statement: stmt, labels } = normalized.input;
     const evalRes = evaluateLogicStatement(stmt, labels);
     sendHal(res, 200, {
       statement: stmt,
@@ -671,6 +697,7 @@ async function startServer() {
       valueType: evalRes.valueType,
       trace: evalRes.trace,
       error: evalRes.error,
+      diagnostics: getLogicBindingDiagnostics(evalRes, labels),
       _links: { self: { href: `${origin}/api/logic/evaluate`, method: 'POST' }, logic: { href: `${origin}/api/logic`, method: 'GET' } },
     });
   });
@@ -918,17 +945,37 @@ async function startServer() {
   app.get('/api/logic/export/:language', (req, res) => {
     const origin = getOrigin(req);
     const lang = req.params.language as LogicExportTarget;
-    const exported = restStore.exportLogic(lang);
-    sendHal(res, 200, {
-      language: lang,
-      filename: exported.filename,
-      mime: exported.mime,
-      content: exported.content,
-      _links: {
-        self: { href: `${origin}/api/logic/export/${encodeURIComponent(lang)}`, method: 'GET' },
-        logic: { href: `${origin}/api/logic`, method: 'GET' },
-      },
-    });
+    const self = { href: `${origin}/api/logic/export/${encodeURIComponent(lang)}`, method: 'GET' };
+    const links = { self, logic: { href: `${origin}/api/logic`, method: 'GET' } };
+    const unsupportedReason = getLogicExportUnsupportedReason(lang, restStore.workspace.cauchyConfig);
+    if (unsupportedReason) {
+      sendHal(res, 422, {
+        ok: false,
+        code: 'unsupported_cauchy_export',
+        language: lang,
+        error: unsupportedReason,
+        _links: links,
+      });
+      return;
+    }
+    try {
+      const exported = restStore.exportLogic(lang);
+      sendHal(res, 200, {
+        language: lang,
+        filename: exported.filename,
+        mime: exported.mime,
+        content: exported.content,
+        _links: links,
+      });
+    } catch (error) {
+      sendHal(res, 500, {
+        ok: false,
+        code: 'logic_export_failed',
+        language: lang,
+        error: error instanceof Error ? error.message : 'Logic export failed.',
+        _links: links,
+      });
+    }
   });
 
   app.post('/api/evaluate', (req, res) => {

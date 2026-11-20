@@ -64,6 +64,7 @@ import type {
 } from '../types/studio';
 
 export interface StepViewsProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   activePage: WorkflowSlug;
   layoutStructure?: ModalStructure;
   dialect: DialectConfig;
@@ -408,13 +409,17 @@ export function StepViews(props: StepViewsProps) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div
+            data-tour-id="workbench.dialect.symbols"
+            className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+          >
             <div>
               <label htmlFor="dialectPreset" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
                 Dialect Preset
               </label>
               <select
                 id="dialectPreset"
+                data-tour-id="workbench.dialect.preset"
                 value={props.dialect.preset}
                 onChange={(e) => props.onApplyDialectPreset(e.target.value as DialectPresetId)}
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
@@ -527,7 +532,7 @@ export function StepViews(props: StepViewsProps) {
             })()}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 pt-1">
+          <div data-tour-id="workbench.dialect.grammar" className="flex flex-wrap items-center gap-2 pt-1">
             <button
               type="button"
               onClick={props.onLoadEbnfSample}
@@ -819,6 +824,7 @@ export function StepViews(props: StepViewsProps) {
   if (activePage === 'logic_calc') {
     return (
       <LogicLambdaWorkbench
+        onSubmitArtifacts={props.onSubmitArtifacts}
         gridClass={gridClass}
         primarySpan={spans.primary}
         secondarySpan={spans.secondary}
@@ -850,6 +856,7 @@ export function StepViews(props: StepViewsProps) {
   if (activePage === 'mcp_servers') {
     return (
       <McpServersWorkbench
+        onSubmitArtifacts={props.onSubmitArtifacts}
         gridClass={gridClass}
         primarySpan={spans.primary}
         secondarySpan={spans.secondary}
@@ -878,7 +885,10 @@ export function StepViews(props: StepViewsProps) {
             </p>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div
+            data-tour-id="workbench.schema.config"
+            className="grid grid-cols-1 gap-3 sm:grid-cols-2"
+          >
             <div>
               <label htmlFor="schemaPreset" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
                 Vocabulary Profile
@@ -1011,7 +1021,10 @@ export function StepViews(props: StepViewsProps) {
               {props.jsonValid ? 'Valid JSON-LD' : 'Invalid JSON'}
             </span>
           </div>
-          <pre className="max-h-80 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800">
+          <pre
+            data-tour-id="workbench.schema.output"
+            className="max-h-80 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800"
+          >
             {schemaEnvelopePreview}
           </pre>
         </div>
@@ -1074,9 +1087,12 @@ export function StepViews(props: StepViewsProps) {
             </div>
           </div>
 
-          <div className="max-h-80 space-y-2.5 overflow-auto pr-1">
+          <div data-tour-id="workbench.mutations.rules" className="max-h-80 space-y-2.5 overflow-auto pr-1">
             {props.rules.length === 0 ? (
-              <div className="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              <div
+                data-tour-id="workbench.mutations.policy"
+                className="rounded-lg border border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-800 dark:text-slate-400"
+              >
                 Add grammar rules first to configure line-by-line mutations.
               </div>
             ) : (
@@ -1095,6 +1111,7 @@ export function StepViews(props: StepViewsProps) {
                 return (
                   <div
                     key={rule.id}
+                    data-tour-id={props.rules[0]?.id === rule.id ? 'workbench.mutations.policy' : undefined}
                     draggable
                     onDragStart={(e) => handleRuleDragStart(e, rule.name)}
                     onDragOver={(e) => handleRuleDragOver(e, rule.name)}
@@ -1204,7 +1221,10 @@ export function StepViews(props: StepViewsProps) {
           <div className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-300">
             Before → After Schema Map
           </div>
-          <pre className="max-h-80 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800">
+          <pre
+            data-tour-id="workbench.mutations.targets"
+            className="max-h-80 flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800"
+          >
             {mutationDiffPreview}
           </pre>
         </div>
@@ -1242,6 +1262,7 @@ export function StepViews(props: StepViewsProps) {
               </label>
               <select
                 id="evalRuleSelect"
+                data-tour-id="workbench.evaluator.rule"
                 value={props.evalRule}
                 onChange={(e) => props.onEvalRuleChange(e.target.value)}
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
@@ -1277,6 +1298,7 @@ export function StepViews(props: StepViewsProps) {
             </label>
             <textarea
               id="evalPayloadInput"
+              data-tour-id="workbench.evaluator.payload"
               rows={3}
               value={props.evalPayload}
               onChange={(e) => props.onEvalPayloadChange(e.target.value)}
@@ -1286,6 +1308,7 @@ export function StepViews(props: StepViewsProps) {
           </div>
 
           <div
+            data-tour-id="workbench.evaluator.result"
             className={`flex items-start gap-3 rounded-lg border p-3.5 ${
               props.evalResult.matched
                 ? 'border-emerald-200 bg-emerald-50/70 text-emerald-900 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-200'
@@ -1428,7 +1451,10 @@ export function StepViews(props: StepViewsProps) {
           </div>
 
           {/* Package Builder: Grammar/AST -> JSON-LD + Generated Schema */}
-          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-950/60">
+          <div
+            data-tour-id="workbench.payload_io.actions"
+            className="rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-950/60"
+          >
             <div className="mb-2 flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-slate-100">
                 <Package className="h-4 w-4 text-blue-600 dark:text-blue-400" />
@@ -1469,6 +1495,7 @@ export function StepViews(props: StepViewsProps) {
               <button
                 type="button"
                 onClick={() => props.onExportJsonLdPackage(packageTargets)}
+                data-tour-id="workbench.payload_io.export"
                 className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
               >
                 <Download className="h-3.5 w-3.5" />
@@ -1477,6 +1504,7 @@ export function StepViews(props: StepViewsProps) {
               <button
                 type="button"
                 onClick={() => jsonLdPkgInputRef.current?.click()}
+                data-tour-id="workbench.payload_io.import"
                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 <Upload className="h-3.5 w-3.5" />
@@ -1666,7 +1694,10 @@ export function StepViews(props: StepViewsProps) {
               </p>
             </div>
 
-            <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
+            <div
+              data-tour-id="workbench.gdrive.mode"
+              className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
+            >
               <button
                 type="button"
                 onClick={() => props.onDriveModeChange('drive')}
@@ -1695,7 +1726,10 @@ export function StepViews(props: StepViewsProps) {
           </div>
 
           {isDrive && !props.driveUser ? (
-            <div className="rounded-lg border border-slate-200 bg-slate-50 p-5 dark:border-slate-800 dark:bg-slate-950">
+            <div
+              data-tour-id="workbench.gdrive.snapshots"
+              className="rounded-lg border border-slate-200 bg-slate-50 p-5 dark:border-slate-800 dark:bg-slate-950"
+            >
               <div className="text-sm font-medium text-slate-900 dark:text-slate-100">
                 Connect your Google account
               </div>
@@ -1706,6 +1740,7 @@ export function StepViews(props: StepViewsProps) {
                 <button
                   type="button"
                   onClick={props.onGoogleSignIn}
+                  data-tour-id="workbench.gdrive.save"
                   disabled={props.driveAuthLoading}
                   className="gsi-material-button"
                 >
@@ -1753,7 +1788,7 @@ export function StepViews(props: StepViewsProps) {
                 </div>
               )}
 
-              <div className="flex flex-wrap items-end gap-2">
+              <div data-tour-id="workbench.gdrive.save" className="flex flex-wrap items-end gap-2">
                 <div className="min-w-[200px] flex-1">
                   <label htmlFor="vaultFileName" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
                     Snapshot File Name
@@ -1807,7 +1842,10 @@ export function StepViews(props: StepViewsProps) {
             </span>
           </div>
 
-          <div className="max-h-72 flex-1 divide-y divide-slate-200 overflow-auto rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800">
+          <div
+            data-tour-id="workbench.gdrive.snapshots"
+            className="max-h-72 flex-1 divide-y divide-slate-200 overflow-auto rounded-lg border border-slate-200 dark:divide-slate-800 dark:border-slate-800"
+          >
             {props.vaultFiles.length === 0 ? (
               <div className="p-4 text-xs text-slate-500 dark:text-slate-400">
                 {isDrive && !props.driveUser
@@ -1881,6 +1919,7 @@ export function StepViews(props: StepViewsProps) {
             <button
               type="button"
               onClick={props.onGeneratePythonFromGrammar}
+              data-tour-id="workbench.python_ast.source"
               className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
             >
               <Code2 className="h-3.5 w-3.5" />
@@ -1896,6 +1935,7 @@ export function StepViews(props: StepViewsProps) {
             <button
               type="button"
               onClick={props.onSyncPythonToGrammar}
+              data-tour-id="workbench.python_ast.sync"
               className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
               Python AST → Grammar &amp; JSON-LD
@@ -1946,7 +1986,10 @@ export function StepViews(props: StepViewsProps) {
             </div>
           </div>
 
-          <pre className="max-h-[340px] flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800">
+          <pre
+            data-tour-id="workbench.python_ast.tree"
+            className="max-h-[340px] flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800"
+          >
             {pyInspectorTab === 'dump' ? props.pythonAstDump : JSON.stringify(props.pythonAst, null, 2)}
           </pre>
         </div>
@@ -1974,6 +2017,7 @@ export function StepViews(props: StepViewsProps) {
             <button
               type="button"
               onClick={props.onGenerateRustFromWorkspace}
+              data-tour-id="workbench.rust_ast.source"
               className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
             >
               <Code2 className="h-3.5 w-3.5" />
@@ -1982,6 +2026,7 @@ export function StepViews(props: StepViewsProps) {
             <button
               type="button"
               onClick={props.onSyncRustToGrammar}
+              data-tour-id="workbench.rust_ast.sync"
               className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
             >
               Rust AST → Grammar &amp; JSON-LD
@@ -2040,7 +2085,10 @@ export function StepViews(props: StepViewsProps) {
             </div>
           </div>
 
-          <pre className="max-h-[340px] flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800">
+          <pre
+            data-tour-id="workbench.rust_ast.tree"
+            className="max-h-[340px] flex-1 overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-200 dark:border-slate-800"
+          >
             {rustInspectorTab === 'dump' ? props.rustAstDump : JSON.stringify(props.rustAst, null, 2)}
           </pre>
         </div>
@@ -2083,6 +2131,7 @@ export function StepViews(props: StepViewsProps) {
           <button
             type="button"
             onClick={props.onExportWasmBinary}
+            data-tour-id="workbench.wasm_wabt.export"
             className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
           >
             <Download className="h-3.5 w-3.5" />
@@ -2091,7 +2140,7 @@ export function StepViews(props: StepViewsProps) {
         </div>
 
         <div>
-          <div className="flex items-center justify-between text-xs">
+          <div data-tour-id="workbench.wasm_wabt.compile" className="flex items-center justify-between text-xs">
             <label htmlFor="watSourceEditor" className="font-medium text-slate-600 dark:text-slate-400">
               WABT Text Format (.wat)
             </label>
@@ -2109,6 +2158,7 @@ export function StepViews(props: StepViewsProps) {
           </div>
           <textarea
             id="watSourceEditor"
+            data-tour-id="workbench.wasm_wabt.wat"
             rows={11}
             value={props.watSource}
             onChange={(e) => props.onWatSourceChange(e.target.value)}

@@ -66,6 +66,7 @@ interface RoutineStepRunResult {
 }
 
 interface ApiStudioWorkbenchProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   onSyncWorkspaceToServer: () => Promise<void>;
   onPullServerWorkspace?: () => Promise<void>;
   onDownloadFile: (content: string, filename: string, mime: string) => void;
@@ -269,6 +270,7 @@ function resolvePipeTemplate(template: string, ctx: Record<string, unknown>): st
 }
 
 export function ApiStudioWorkbench({
+  onSubmitArtifacts,
   onSyncWorkspaceToServer,
   onPullServerWorkspace,
   onDownloadFile,
@@ -300,6 +302,13 @@ export function ApiStudioWorkbench({
   const [routineRunning, setRoutineRunning] = useState(false);
   const [routineResults, setRoutineResults] = useState<RoutineStepRunResult[]>([]);
   const [routineArtifacts, setRoutineArtifacts] = useState<Record<string, unknown>>({});
+
+  useEffect(() => {
+    onSubmitArtifacts('api', [
+      ...(lastCall ? [{ path: 'api/response.txt', content: lastCall.responseText }] : []),
+      ...(routineResults.length ? [{ path: 'api/routine-results.json', content: JSON.stringify({ results: routineResults, artifacts: routineArtifacts }, null, 2) }] : []),
+    ]);
+  }, [onSubmitArtifacts, lastCall, routineResults, routineArtifacts]);
 
   const selectedRoutineStep =
     routineSteps.find((s) => s.id === selectedRoutineStepId) || routineSteps[0] || null;
@@ -505,7 +514,7 @@ export function ApiStudioWorkbench({
       };
       return prev.filter((s) => s.id !== sourceId).map((s) => (s.id === targetId ? merged : s));
     });
-    onNotify('Merged two endpoint steps into a composite sequential step (reversible via Biject/Split).');
+    onNotify('Combined the endpoint steps into one group. Use Split to separate them again.');
   };
 
   const handleSplitRoutine = (targetId: string, splitIndex = 1, draggedSourceId?: string) => {
@@ -573,7 +582,7 @@ export function ApiStudioWorkbench({
     onNotify(
       draggedSourceId
         ? 'Split step at chosen boundary and spliced dragged step cleanly between halves.'
-        : 'Bijected step into reversible Left/Forward & Right/Verify sequential calls.'
+        : 'Separated this step into forward and verification calls.'
     );
   };
 
@@ -683,7 +692,7 @@ export function ApiStudioWorkbench({
             label: `After ${sub.label.slice(0, 14)}`,
           }))
         : [
-            { index: 1, label: 'Biject Fwd / Verify' },
+            { index: 1, label: 'Forward / verification' },
             { index: 2, label: 'Splice Pipeline' },
           ],
   }));
@@ -696,20 +705,26 @@ export function ApiStudioWorkbench({
           <div className="flex items-center gap-2">
             <Terminal className="h-4 w-4 text-blue-600 dark:text-blue-400" />
             <h1 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              API Studio — Postman REST/CRUD/HATEOAS Console &amp; Sequential Routine Builder
+              Try API requests and build routines
             </h1>
             <DocTooltip docKey="hateoasRestNodes" />
           </div>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            Traverse live HAL+JSON hypermedia links, mutate or verify every node&apos;s mutable &amp; non-mutable members, and chain endpoints sequentially into reusable artifact routines.
+          <p className="mt-1 max-w-2xl text-xs leading-relaxed text-slate-600 dark:text-slate-300">
+            Send a request to explore the API, or build a routine that runs several requests in order. Some requests can change workspace data.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
+          <div
+            data-tour-id="view.api.mode"
+            role="group"
+            aria-label="Choose an API tool"
+            className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
+          >
             <button
               type="button"
               onClick={() => setStudioMode('postman')}
+              aria-pressed={studioMode === 'postman'}
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 studioMode === 'postman'
                   ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
@@ -717,11 +732,12 @@ export function ApiStudioWorkbench({
               }`}
             >
               <Send className="h-3.5 w-3.5" />
-              API Console (Postman)
+              Send a request
             </button>
             <button
               type="button"
               onClick={() => setStudioMode('routine')}
+              aria-pressed={studioMode === 'routine'}
               className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
                 studioMode === 'routine'
                   ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
@@ -729,7 +745,7 @@ export function ApiStudioWorkbench({
               }`}
             >
               <Workflow className="h-3.5 w-3.5" />
-              Sequential Routine Builder
+              Build a routine
             </button>
           </div>
 
@@ -739,7 +755,7 @@ export function ApiStudioWorkbench({
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200 dark:hover:bg-slate-800"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Sync Studio → API
+            Sync workspace to API
           </button>
         </div>
       </div>
@@ -797,6 +813,7 @@ export function ApiStudioWorkbench({
             {/* Request Bar */}
             <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <form
+                data-tour-id="view.api.request"
                 onSubmit={(e) => {
                   e.preventDefault();
                   void executeRequest();
@@ -984,7 +1001,10 @@ export function ApiStudioWorkbench({
             </div>
 
             {/* Live Response & HATEOAS Hypermedia Navigator */}
-            <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <div
+              data-tour-id="view.api.response"
+              className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2.5 dark:border-slate-800">
                 <div className="flex items-center gap-3 text-xs">
                   {(
@@ -1221,7 +1241,7 @@ export function ApiStudioWorkbench({
               <div className="flex items-center gap-2">
                 <Layers className="h-4 w-4 text-blue-600 dark:text-blue-400" />
                 <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                  Sequential Artifact Routine ({routineSteps.length} steps)
+                  Routine steps ({routineSteps.length})
                 </span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
@@ -1254,7 +1274,7 @@ export function ApiStudioWorkbench({
                   }
                   className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
                 >
-                  <Download className="h-3.5 w-3.5" /> Export Routine
+                  <Download className="h-3.5 w-3.5" /> Download routine
                 </button>
                 <button
                   type="button"
@@ -1263,14 +1283,14 @@ export function ApiStudioWorkbench({
                   className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-60"
                 >
                   <Play className="h-3.5 w-3.5" />
-                  {routineRunning ? 'Running Routine...' : 'Run Routine Sequentially'}
+                  {routineRunning ? 'Running steps...' : 'Run steps in order'}
                 </button>
               </div>
             </div>
 
             <DomEchelonManipulator
-              title="DOM Sequential Endpoint Chain (Drag to Order, Merge, or Drop on Temp Split Slots)"
-              subtitle="Each step executes its REST/HATEOAS call and pipes {{artifacts.<key>.*}} & {{prev.body.*}} into subsequent steps."
+              title="Arrange routine steps"
+              subtitle="Steps run from top to bottom. Select a step to edit it, or move it up and down to change what runs first."
               items={routineDomItems}
               activeId={selectedRoutineStep?.id}
               onSelect={setSelectedRoutineStepId}
@@ -1284,7 +1304,10 @@ export function ApiStudioWorkbench({
           {/* Right Pane: Selected Step Editor + Live Sequential Execution Trace */}
           <div className="space-y-4 lg:col-span-5">
             {selectedRoutineStep && (
-              <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+              <div
+                data-tour-id="view.api.request"
+                className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+              >
                 <div className="text-xs font-semibold text-slate-900 dark:text-slate-100">
                   Edit Step: {selectedRoutineStep.label}
                 </div>
@@ -1367,7 +1390,10 @@ export function ApiStudioWorkbench({
             )}
 
             {/* Sequential Artifact Output Log */}
-            <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            <div
+              data-tour-id="view.api.response"
+              className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"
+            >
               <div className="flex items-center justify-between text-xs">
                 <span className="font-semibold text-slate-900 dark:text-slate-100">
                   Sequential Artifact Pipeline Output

@@ -17,7 +17,6 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import { DomEchelonManipulator, type EchelonDomItem } from './DomEchelonManipulator';
-import { DocTooltip } from './DocTooltip';
 import type { RuleDependencyGraphData, RuleGraphNode, RuleMergeStrategy } from '../types/studio';
 
 interface RuleDependencyGraphProps {
@@ -420,8 +419,14 @@ export function RuleDependencyGraph({
 
   if (graph.nodes.length === 0) {
     return (
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400">
-        No grammar rules parsed yet. Add rules in the Live Mirror or load a dialect preset to render the dependency graph.
+      <div
+        data-tour-id={!compact ? 'view.graph.canvas' : undefined}
+        className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500 dark:border-slate-800 dark:bg-slate-950 dark:text-slate-400"
+      >
+        No grammar rules parsed yet.{' '}
+        <span data-tour-id={!compact ? 'view.graph.selection' : undefined}>
+          Add rules in the Live Mirror or load a dialect preset to render the dependency graph.
+        </span>
       </div>
     );
   }
@@ -429,7 +434,10 @@ export function RuleDependencyGraph({
   return (
     <div className="space-y-3.5">
       {/* Header summary strip (unboxed typographic metadata) */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div
+        data-tour-id={!compact ? 'view.graph.canvas' : undefined}
+        className="flex flex-wrap items-center justify-between gap-3"
+      >
         <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 dark:text-slate-400">
           <GitBranch className="h-4 w-4 text-blue-600 dark:text-blue-400" />
           <span className="font-semibold text-slate-900 dark:text-slate-100">Rule Dependency Graph</span>
@@ -705,6 +713,7 @@ export function RuleDependencyGraph({
               return (
                 <g
                   key={node.id}
+                  data-tour-id={!compact && nodeIdx === 0 ? 'view.graph.selection' : undefined}
                   transform={`translate(${pos.x}, ${pos.y})`}
                   onPointerDown={(e) => handleNodePointerDown(e, node)}
                   className={canDragNodes && !node.isMissing ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'}
@@ -945,7 +954,7 @@ export function RuleDependencyGraph({
                         className="inline-flex items-center justify-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
                       >
                         <Scissors className="h-3.5 w-3.5" />
-                        Biject / Split
+                        Split rule
                       </button>
                     )}
                     {onEditRuleInModal && (
@@ -1039,16 +1048,15 @@ export function RuleDependencyGraph({
           </div>
         )}
       </div>
-      {/* Higher-Echelon DOM Drag-and-Drop Order, Merge & Biject/Split Interface */}
+      {/* Grammar rule ordering and structure controls */}
       {!compact && onReorderRules && (
         <div className="space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
-            <span>Rule Graph DOM Interface — Order, Merge &amp; Biject/Split</span>
-            <DocTooltip docKey="domDragSplitMerge" />
+            <span>Rule order and structure</span>
           </div>
           <DomEchelonManipulator
-            title="Active Grammar Graph Nodes"
-            subtitle="Drag any rule to reveal temporary drop targets for Reorder, Merge, and every possible Split boundary"
+            title="Arrange grammar rules"
+            subtitle="Use Move up and Move down to change a rule's place in the grammar."
             items={graph.nodes
               .filter((n) => !n.isMissing)
               .map<EchelonDomItem>((n) => {

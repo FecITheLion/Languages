@@ -300,7 +300,7 @@ export function RulePropertiesWorkbench({
               Modify each rule&apos;s name, expression value, custom key/value properties, precedence, and token execution order.
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div data-tour-id="workbench.rule_props.actions" className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
               onClick={onApplyPrecedenceOrder}
@@ -364,7 +364,7 @@ export function RulePropertiesWorkbench({
             <span>Select a rule to edit · Drag edges to reorder or center to merge</span>
             <span className="font-mono tabular-nums">{rules.length} rules</span>
           </div>
-          <div className="flex flex-wrap gap-1.5">
+          <div data-tour-id="workbench.rule_props.rules" className="flex flex-wrap gap-1.5">
             {rules.map((r, idx) => {
               const cfg = ruleConfigs[r.name];
               const isSelected = activeRule?.name === r.name;
@@ -446,7 +446,10 @@ export function RulePropertiesWorkbench({
             No grammar rules defined yet. Click Add Rule above to create one.
           </div>
         ) : (
-          <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/60">
+          <div
+            data-tour-id="workbench.rule_props.precedence"
+            className="space-y-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4 dark:border-slate-800 dark:bg-slate-950/60"
+          >
             {/* Name, Precedence & Associativity */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-12">
               <div className="sm:col-span-5">

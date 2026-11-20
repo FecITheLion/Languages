@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Download, FileCode, Maximize2, RotateCcw } from 'lucide-react';
 import { buildPhpProjectFiles } from '../engine/phpZipPackager';
 import type { StudioLintIssue } from '../engine/htmlOutputFormatter';
@@ -10,6 +10,7 @@ import { DocTooltip } from './DocTooltip';
 import type { OpenApiSpec, ParsedDsl, WorkflowSlug, WorkspaceSnapshot } from '../types/studio';
 
 interface OpenApiInspectorProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   spec: OpenApiSpec;
   onJumpToPage: (page: WorkflowSlug) => void;
   onOpenEditModal?: (page: WorkflowSlug) => void;
@@ -18,6 +19,7 @@ interface OpenApiInspectorProps {
 }
 
 export function OpenApiInspector({
+  onSubmitArtifacts,
   spec,
   onJumpToPage,
   onOpenEditModal,
@@ -64,6 +66,9 @@ export function OpenApiInspector({
       'x-merged-routes': Object.keys(mergedRoutes).length > 0 ? mergedRoutes : undefined,
     };
   }, [spec, allRoutes, mergedRoutes, splitRoutes]);
+  useEffect(() => {
+    onSubmitArtifacts('openapi-inspector', [{ path: 'specs/inspected-openapi.json', content: JSON.stringify(effectiveSpec, null, 2) }]);
+  }, [onSubmitArtifacts, effectiveSpec]);
 
   const domItems: EchelonDomItem[] = useMemo(
     () =>
@@ -84,7 +89,7 @@ export function OpenApiInspector({
                   label: `Split after /${seg}`,
                 }))
               : [
-                  { index: 1, label: 'Biject Read / Write Endpoints' },
+                  { index: 1, label: 'Separate read / write endpoints' },
                 ],
         };
       }),
@@ -115,7 +120,7 @@ export function OpenApiInspector({
     const left = segs.length >= 2 ? `/${segs.slice(0, splitIndex).join('/')}` : `${route}/read`;
     const right = segs.length >= 2 ? `/${segs.slice(splitIndex).join('/')}` : `${route}/mutate`;
     setSplitRoutes((prev) => ({ ...prev, [route]: [left, right] }));
-    onMutateOpenApiEndpoints?.(allRoutes, `Bijected OpenAPI route ${route} → ${left} + ${right}`);
+    onMutateOpenApiEndpoints?.(allRoutes, `Split endpoint ${route} into ${left} and ${right}`);
   };
 
   return (
@@ -123,51 +128,60 @@ export function OpenApiInspector({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="flex items-center gap-1.5">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">{spec.info.title}</h2>
+            <h2
+              data-tour-id="view.openapi.document"
+              className="text-base font-semibold text-slate-900 dark:text-slate-100"
+            >
+              {spec.info.title}
+            </h2>
             <DocTooltip docKey="domDragSplitMerge" />
           </div>
           <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-            OpenAPI {spec.openapi} · Version {spec.info.version} · {Object.keys(effectiveSpec.paths).length} live synchronized endpoints
+            API description · Version {spec.info.version} · {Object.keys(effectiveSpec.paths).length} available endpoints
           </p>
         </div>
 
-        <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
+        <div role="group" aria-label="Choose how to view the API description" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
           <button
             type="button"
             onClick={() => setViewMode('table')}
+            aria-pressed={viewMode === 'table'}
             className={`rounded-md px-3 py-1.5 text-xs font-medium ${
               viewMode === 'table'
                 ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
                 : 'text-slate-600 dark:text-slate-400'
             }`}
           >
-            Operations Table
+            Endpoint list
           </button>
           <button
             type="button"
             onClick={() => setViewMode('dom')}
+            aria-pressed={viewMode === 'dom'}
             className={`rounded-md px-3 py-1.5 text-xs font-medium ${
               viewMode === 'dom'
                 ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
                 : 'text-slate-600 dark:text-slate-400'
             }`}
           >
-            DOM Order / Merge / Split
+            Organize endpoints
           </button>
           <button
             type="button"
             onClick={() => setViewMode('html')}
+            aria-pressed={viewMode === 'html'}
             className={`rounded-md px-3 py-1.5 text-xs font-medium ${
               viewMode === 'html'
                 ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
                 : 'text-slate-600 dark:text-slate-400'
             }`}
           >
-            HTML openapi.json
+            View JSON
           </button>
         </div>
       </div>
 
+      <div data-tour-id="view.openapi.operations">
       {viewMode === 'table' ? (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900">
           <table className="w-full text-left text-sm">
@@ -237,8 +251,8 @@ export function OpenApiInspector({
         </div>
       ) : viewMode === 'dom' ? (
         <DomEchelonManipulator
-          title="OpenAPI Endpoint DOM Interface"
-          subtitle="Drag any endpoint to reorder, merge into another route, or drop onto a temporary split boundary"
+          title="Arrange API endpoints"
+          subtitle="Use Move up and Move down to change an endpoint's place. These changes organize the API description; they do not send requests."
           items={domItems}
           onReorder={handleReorderRoute}
           onMerge={handleMergeRoute}
@@ -258,6 +272,7 @@ export function OpenApiInspector({
           maxHeightClass="max-h-[560px]"
         />
       )}
+      </div>
     </div>
   );
 }
@@ -299,7 +314,7 @@ export function DslInspector({
         meta: `${f.id} → ${f.next} · stage=${f.stage} · verify=${f.verify}`,
         preview: `page=${f.page} · lang=${f.lang}`,
         splitOptions: [
-          { index: 1, label: `Biject ${f.id} → pre + post verify` },
+          { index: 1, label: 'Separate action and verification steps' },
           { index: 2, label: `Split ${f.id} into parallel branch` },
         ],
       })),
@@ -308,7 +323,7 @@ export function DslInspector({
 
   return (
     <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
-      <div className="space-y-3 lg:col-span-7">
+      <div data-tour-id="view.dsl.edit" className="space-y-3 lg:col-span-7">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">dsl/flows.dsl Editor</h2>
@@ -370,10 +385,11 @@ export function DslInspector({
         )}
       </div>
 
-      <div className="space-y-4 lg:col-span-5">
+      <div data-tour-id="view.dsl.navigation" className="space-y-4 lg:col-span-5">
+        <div data-tour-id="view.dsl.flows">
         <DomEchelonManipulator
-          title="DSL Flow Nodes — Drag to Order, Merge & Split"
-          subtitle="Dragging a flow reveals temporary drop targets for reordering, merging, and biject/splitting"
+          title="Arrange workflow steps"
+          subtitle="Steps run in order. Select one to open its workbench, or move it up and down to change the sequence."
           items={flowDomItems}
           onReorder={(src, tgt, pos) => onReorderFlows?.(src, tgt, pos)}
           onMerge={onMergeFlows}
@@ -386,6 +402,7 @@ export function DslInspector({
             }
           }}
         />
+        </div>
 
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
           <div className="mb-3 flex items-center justify-between text-xs">
@@ -407,6 +424,7 @@ export function DslInspector({
 }
 
 interface BundleInspectorProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   openapi: OpenApiSpec;
   dslSource: string;
   snapshot: WorkspaceSnapshot;
@@ -416,6 +434,7 @@ interface BundleInspectorProps {
 }
 
 export function BundleInspector({
+  onSubmitArtifacts,
   openapi,
   dslSource,
   snapshot,
@@ -445,6 +464,17 @@ export function BundleInspector({
     const rest = expanded.filter((f) => !fileOrder.includes(f.path));
     return [...ordered, ...rest];
   }, [baseFiles, fileOrder, mergedFiles, splitFiles]);
+
+  useEffect(() => {
+    const snapshotPath = 'grammar2json-studio/workspace.g2j.json';
+    const excluded = new Set([snapshotPath]);
+    for (const [path, parts] of Object.entries(splitFiles)) {
+      if (path === snapshotPath || mergedFiles[path]) parts.forEach(part => excluded.add(part.path));
+    }
+    onSubmitArtifacts('bundle', files
+      .filter(file => !excluded.has(file.path) && !mergedFiles[file.path])
+      .map(file => ({ path: `bundle/${file.path}`, content: file.content })));
+  }, [onSubmitArtifacts, files, splitFiles, mergedFiles]);
 
   const [selectedPath, setSelectedPath] = useState(files[0]?.path || '');
   const activeFile = files.find((f) => f.path === selectedPath) || files[0];
@@ -489,38 +519,44 @@ export function BundleInspector({
           <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
             PHP / HTML / OpenAPI / DSL Project Package
           </h2>
-          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+          <p
+            data-tour-id="view.bundle.verify"
+            className="mt-0.5 text-xs text-slate-500 dark:text-slate-400"
+          >
             Live bundle of {files.length} generated files updated from every grammar, logic, callback, and DSL mutation.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
+          <div role="group" aria-label="Choose how to browse the export bundle" className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950">
             <button
               type="button"
               onClick={() => setBundleMode('tree')}
+              aria-pressed={bundleMode === 'tree'}
               className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                 bundleMode === 'tree'
                   ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
                   : 'text-slate-500'
               }`}
             >
-              File Inspector
+              Browse files
             </button>
             <button
               type="button"
               onClick={() => setBundleMode('dom')}
+              aria-pressed={bundleMode === 'dom'}
               className={`rounded-md px-2.5 py-1 text-xs font-medium ${
                 bundleMode === 'dom'
                   ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
                   : 'text-slate-500'
               }`}
             >
-              DOM Order / Merge / Split
+              Organize files
             </button>
           </div>
           <button
             type="button"
             onClick={onDownloadZip}
+            data-tour-id="view.bundle.export"
             className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-3.5 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
           >
             <Download className="h-3.5 w-3.5" />
@@ -529,16 +565,17 @@ export function BundleInspector({
         </div>
       </div>
 
+      <div data-tour-id="view.bundle.contents">
       {bundleMode === 'dom' ? (
         <DomEchelonManipulator
-          title="Export Bundle Artifact DOM Interface"
-          subtitle="Drag bundle files to reorder packaging sequence, merge two files, or split a file into reversible halves"
+          title="Arrange files in the download"
+          subtitle="Use Move up and Move down to change the order of files in the downloaded bundle. More actions can combine or split files."
           items={files.map((f) => ({
             id: f.path,
             label: f.path.replace(/^grammar2json-studio\//, ''),
             meta: `${f.content.split('\n').length} lines · ${f.content.length.toLocaleString()} chars`,
             preview: f.content.split('\n').slice(0, 2).join(' '),
-            splitOptions: [{ index: 1, label: 'Biject file into part1 + part2' }],
+            splitOptions: [{ index: 1, label: 'First / second part' }],
           }))}
           onReorder={handleReorderFile}
           onMerge={handleMergeFile}
@@ -592,11 +629,13 @@ export function BundleInspector({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
 
 interface SpecsBundleViewProps {
+  onSubmitArtifacts: (owner: string, submissions: import('../engine/virtualFiles').VirtualSubmission[]) => void;
   activeSubTab: 'openapi' | 'dsl' | 'bundle';
   onSubTabChange: (tab: 'openapi' | 'dsl' | 'bundle') => void;
   openapi: OpenApiSpec;
@@ -618,6 +657,7 @@ interface SpecsBundleViewProps {
 }
 
 export function SpecsBundleView({
+  onSubmitArtifacts,
   activeSubTab,
   onSubTabChange,
   openapi,
@@ -675,6 +715,7 @@ export function SpecsBundleView({
 
       {activeSubTab === 'openapi' && (
         <OpenApiInspector
+          onSubmitArtifacts={onSubmitArtifacts}
           spec={openapi}
           onJumpToPage={onJumpToPage}
           onOpenEditModal={onOpenEditModal}
@@ -699,6 +740,7 @@ export function SpecsBundleView({
       )}
       {activeSubTab === 'bundle' && (
         <BundleInspector
+          onSubmitArtifacts={onSubmitArtifacts}
           openapi={openapi}
           dslSource={dslSource}
           snapshot={snapshot}

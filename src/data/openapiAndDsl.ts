@@ -10,6 +10,45 @@ import type {
   WorkflowSlug,
 } from '../types/studio.ts';
 
+const LOGIC_LABELS_INPUT_SCHEMA = {
+  anyOf: [
+    { type: 'string' },
+    { type: 'array', items: { type: ['string', 'number', 'boolean'] } },
+    {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['id', 'name', 'kind', 'value'],
+        properties: {
+          id: { type: 'string' },
+          name: { type: 'string' },
+          kind: { type: 'string', enum: ['number', 'boolean', 'lambda'] },
+          value: { type: 'string' },
+        },
+      },
+    },
+    {
+      type: 'object',
+      additionalProperties: {
+        oneOf: [
+          { type: ['string', 'number', 'boolean'] },
+          {
+            type: 'object',
+            required: ['kind', 'value'],
+            properties: {
+              kind: { type: 'string', enum: ['number', 'boolean', 'lambda'] },
+              value: { type: ['string', 'number', 'boolean'] },
+            },
+            additionalProperties: false,
+          },
+        ],
+      },
+    },
+  ],
+  description:
+    'Label text, positional values, complete binding objects, or a name-to-value object. Excess positional values use _1, _2, etc. by position; collisions are errors. Use {kind:"lambda",value:"λx. ..."} for new callbacks. Empty arrays retain configured labels.',
+};
+
 export const OPENAPI_SPEC: OpenApiSpec = {
   openapi: '3.1.0',
   info: {
@@ -18,7 +57,7 @@ export const OPENAPI_SPEC: OpenApiSpec = {
     description:
       'Bidirectional OpenAPI workflow controlling Grammar, Schema.org JSON-LD + Generated Schema Packages, Python ast, Rust syn AST, and WASM/WABT split pages with integrated search and declared mutation policies.',
   },
-  servers: [{ url: './', description: 'Local PHP / Studio Server' }],
+  servers: [{ url: './', description: 'Grammar2JSON Studio HTTP server' }],
   paths: {
     '/index.php?page=dialect': {
       get: {
@@ -167,6 +206,131 @@ export const OPENAPI_SPEC: OpenApiSpec = {
         responses: { '200': { description: 'JSON-RPC 2.0 MCP response with cache HIT/MISS metadata' } },
       },
     },
+    '/api/logic/evaluate': {
+      post: {
+        operationId: 'evaluateLogic',
+        summary: 'Evaluate logic with configured or supplied inputs',
+        tags: ['Logic API'],
+        'x-language': 'logic',
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                anyOf: [
+                  { type: 'null', description: 'Use the configured statement and labels.' },
+                  {
+                    type: 'string',
+                    description:
+                      'Statement text, known name=value bindings, or a combined JSON object/array encoded as text; blank text uses configured defaults.',
+                  },
+                  {
+                    type: 'array',
+                    minItems: 2,
+                    maxItems: 2,
+                    prefixItems: [{ type: 'string' }, { type: 'string' }],
+                    description:
+                      'Two strings form [statement, labels], except when both are numeric/boolean literals, which are positional values; blank members use defaults.',
+                  },
+                  {
+                    type: 'array',
+                    items: { type: ['string', 'number', 'boolean'] },
+                    description:
+                      'Positional literals map in order to configured non-lambda labels; excess values use _1, _2, etc. by position. Fallback name collisions are errors. Empty arrays use defaults.',
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      statement: { type: 'string', description: 'Legacy statement field.' },
+                      labels: LOGIC_LABELS_INPUT_SCHEMA,
+                      logic_statement: { type: 'string', description: 'Named statement field.' },
+                      logic_labels: LOGIC_LABELS_INPUT_SCHEMA,
+                      input: {
+                        type: ['string', 'array', 'object', 'null'],
+                        description: 'A single statement, combined JSON, or another supported input form.',
+                      },
+                      values: {
+                        type: 'array',
+                        items: { type: ['string', 'number', 'boolean'] },
+                        description: 'Positional literal values for configured non-lambda labels, then _# fallback names by position.',
+                      },
+                    },
+                    additionalProperties: false,
+                    description:
+                      'Omit or empty fields to use configured defaults. Existing statement/label fields remain supported.',
+                  },
+                ],
+              },
+            },
+            'text/plain': {
+              schema: {
+                type: 'string',
+                description: 'Statement text, known name=value bindings, or a combined JSON object/array string.',
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Evaluation result, including matched value, trace, and evaluator errors.',
+            content: {
+              'application/hal+json': {
+                schema: {
+                  type: 'object',
+                  required: ['statement', 'ok', 'displayValue', 'valueType', 'trace', '_links'],
+                  properties: {
+                    statement: { type: 'string' },
+                    ok: { type: 'boolean' },
+                    displayValue: { type: 'string' },
+                    valueType: { type: 'string' },
+                    trace: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        required: ['step', 'kind', 'expression', 'result'],
+                        properties: {
+                          step: { type: 'number' },
+                          kind: { type: 'string', enum: ['beta', 'callback', 'logic', 'arith', 'bind'] },
+                          expression: { type: 'string' },
+                          result: { type: 'string' },
+                        },
+                      },
+                    },
+                    error: { type: ['string', 'null'] },
+                    diagnostics: {
+                      type: 'array',
+                      description: 'Unbound identifiers referenced by the statement or an evaluated label; no values are inferred.',
+                      items: { type: 'object', required: ['code', 'label'], properties: { code: { const: 'unbound_label' }, label: { type: 'string' } } },
+                    },
+                    _links: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+          '400': {
+            description: 'Malformed, ambiguous, or incomplete input.',
+            content: {
+              'application/hal+json': {
+                schema: {
+                  type: 'object',
+                  required: ['ok', 'error', '_links'],
+                  properties: {
+                    ok: { const: false },
+                    error: { type: 'string' },
+                    diagnostics: {
+                      type: 'array',
+                      items: { type: 'object', required: ['code', 'message'], properties: { code: { enum: ['ambiguous_input', 'invalid_input'] }, message: { type: 'string' } } },
+                    },
+                    _links: { type: 'object' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     '/index.php?page=payload_io': {
       get: {
         operationId: 'flowPayloadIO',
@@ -222,6 +386,18 @@ export const OPENAPI_SPEC: OpenApiSpec = {
 
 export const DEFAULT_DSL_SOURCE = `# Grammar2JSON Studio — Industry Compiler Toolchain DSL Flow Definition
 # Format: FLOW <id> | step=<n> | stage=<frontend|formal|ir|codegen|storage> | page=<slug> | lang=<grammar|logic|json|python|rust|wasm|mcp> | verify=<rule> | next=<next_id> | label=<title>
+#
+# Implemented REST contract (served by server.ts, not a workflow/UI route):
+# POST /api/logic/evaluate, Content-Type: application/json or text/plain
+# Omitted/empty input uses the configured logic statement and label bindings.
+# Accepted inputs: statement text; [statement, labels] string pair (unless both
+# strings are numeric/boolean literals); positional literal arrays; or
+# {"logic_statement":"...", "logic_labels":"..."}.
+# logic_labels accepts name=value text, positional text/arrays, or a JSON object
+# (excess positional values use their _# position; collisions are errors).
+# string/object. New number/boolean names infer kind; callbacks require an
+# explicit {"kind":"lambda","value":"λx. ..."} value. Legacy label bindings
+# remain supported. Invalid/ambiguous inputs return HTTP 400.
 
 FLOW FLOW_DIALECT     | step=1  | stage=frontend | page=dialect     | lang=grammar | verify=has_rules        | next=FLOW_RULE_PROPS  | label=1. Grammar & DAG
 FLOW FLOW_RULE_PROPS  | step=2  | stage=frontend | page=rule_props  | lang=grammar | verify=has_rules        | next=FLOW_LOGIC_CALC  | label=2. Rule Props & Ops
