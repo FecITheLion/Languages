@@ -9,7 +9,9 @@ interface HtmlCodeOutputProps {
   title: string;
   language: string;
   code: string;
+  filename?: string;
   issues?: StudioLintIssue[];
+  lintIssues?: StudioLintIssue[];
   maxHeightClass?: string;
   onDownloadHtml?: (content: string, filename: string, mime: string) => void;
 }
@@ -64,18 +66,24 @@ export function HtmlCodeOutput({
   title,
   language,
   code,
-  issues = [],
+  filename,
+  issues,
+  lintIssues,
   maxHeightClass = 'max-h-[360px]',
   onDownloadHtml,
 }: HtmlCodeOutputProps) {
   const [copiedHtml, setCopiedHtml] = useState(false);
   const [activeIssueId, setActiveIssueId] = useState<string | null>(null);
+  const resolvedIssues = useMemo(
+    () => (issues && issues.length > 0 ? issues : lintIssues ?? []),
+    [issues, lintIssues]
+  );
 
   const lines = useMemo(() => code.split(/\r?\n/), [code]);
 
   const htmlDoc = useMemo(
-    () => formatCodeAsHtmlDocument(code, title, language, issues),
-    [code, title, language, issues]
+    () => formatCodeAsHtmlDocument(code, title, language, resolvedIssues),
+    [code, title, language, resolvedIssues]
   );
 
   const lineIssuesMap = useMemo(() => {
@@ -83,7 +91,7 @@ export function HtmlCodeOutput({
     lines.forEach((line, idx) => {
       const ln = idx + 1;
       const matched: StudioLintIssue[] = [];
-      for (const issue of issues) {
+      for (const issue of resolvedIssues) {
         if (issue.lineNumber === ln) {
           matched.push(issue);
         } else if (
@@ -97,7 +105,7 @@ export function HtmlCodeOutput({
       if (matched.length > 0) map.set(ln, matched);
     });
     return map;
-  }, [lines, issues]);
+  }, [lines, resolvedIssues]);
 
   const handleCopyHtml = async () => {
     try {
@@ -109,7 +117,7 @@ export function HtmlCodeOutput({
     }
   };
 
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'output';
+  const slug = (filename || title).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'output';
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950 dark:border-slate-800">
@@ -121,11 +129,11 @@ export function HtmlCodeOutput({
           <span className="text-slate-400">HTML ({language})</span>
           <span className="text-slate-500">·</span>
           <span className="tabular-nums text-slate-400">{lines.length}L</span>
-          {issues.length > 0 && (
+          {resolvedIssues.length > 0 && (
             <>
               <span className="text-slate-500">·</span>
               <span className="tabular-nums text-amber-400">
-                {issues.length} lint
+                {resolvedIssues.length} lint
               </span>
             </>
           )}
@@ -142,7 +150,7 @@ export function HtmlCodeOutput({
           {onDownloadHtml && (
             <button
               type="button"
-              onClick={() => onDownloadHtml(htmlDoc, `${slug}.html`, 'text/html')}
+              onClick={() => onDownloadHtml(htmlDoc, filename ? `${filename}.html` : `${slug}.html`, 'text/html')}
               className="inline-flex items-center gap-1 rounded bg-blue-600 px-2 py-0.5 font-mono text-[10px] text-white hover:bg-blue-700"
             >
               <Download className="h-3 w-3" />

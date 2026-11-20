@@ -1,7 +1,7 @@
+import type { LogicLabelBinding } from './logicLambdaEngine.ts';
 import type {
   DialectConfig,
   LineMutation,
-  LogicLabelBinding,
   RuleOrderConfig,
 } from '../types/studio.ts';
 
@@ -162,10 +162,10 @@ export function serializeSnapshotFields(
     .sort()
     .map((key) => {
       const m = state.mutations[key];
-      const pat = m.pattern ? ` /${m.pattern}/` : '';
-      const req = m.required ? ' [required]' : '';
-      const fmt = m.format ? ` format=${m.format}` : '';
-      return `${key} : ${m.jsonType}${pat}${fmt}${req}`;
+      const pat = m.patternOverride ? ` /${m.patternOverride}/` : '';
+      const target = m.targetProperty ? ` -> ${m.targetProperty}` : '';
+      const status = m.enabled ? '' : ' [disabled]';
+      return `${key}${target} : ${m.jsonType}${pat}${status}`;
     })
     .join('\n');
 

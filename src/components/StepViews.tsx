@@ -33,6 +33,9 @@ import {
 import type { GlobalCallbackDef } from '../engine/globalCallbacksEngine';
 import type { LogicLabelBinding } from '../engine/logicLambdaEngine';
 import type { McpWorkspaceContext } from '../engine/mcpServerEngine';
+import type { AutocompleteSuggestion, ReferencedModuleExport } from '../engine/moduleAutocompleteEngine';
+import type { StudioLintIssue } from '../engine/htmlOutputFormatter';
+import { DocTooltip } from './DocTooltip';
 import { LogicLambdaWorkbench } from './LogicLambdaWorkbench';
 import { McpServersWorkbench, type PipelineMcpUiEffect } from './McpServersWorkbench';
 import { RuleDependencyGraph } from './RuleDependencyGraph';
@@ -46,6 +49,7 @@ import type {
   McpServerId,
   ModalStructure,
   MutationPolicy,
+  PrimaryLanguage,
   PythonAstNode,
   RuleDependencyGraphData,
   RuleMergeStrategy,
@@ -172,6 +176,12 @@ export interface StepViewsProps {
   onMergeStrategyChange: (strategy: RuleMergeStrategy) => void;
   onReorderRules: (sourceName: string, targetName: string, position: 'before' | 'after') => void;
   onMergeRules: (sourceName: string, targetName: string, strategy?: RuleMergeStrategy) => void;
+  onSplitRule?: (ruleName: string, splitIndex?: number) => void;
+  onOpenEditModal?: (page: WorkflowSlug) => void;
+  primaryLanguage?: PrimaryLanguage;
+  autocompleteSuggestions?: AutocompleteSuggestion[];
+  lintIssues?: StudioLintIssue[];
+  onRippleModuleExport?: (exp: ReferencedModuleExport, moduleName?: string) => void;
   canUndo: boolean;
   onUndo: () => void;
 }
@@ -419,8 +429,9 @@ export function StepViews(props: StepViewsProps) {
 
             <div>
               <div className="flex items-center justify-between gap-1">
-                <label htmlFor="ruleOperator" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                  Rule Operator
+                <label htmlFor="ruleOperator" className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                  <span>Rule Operator</span>
+                  <DocTooltip docKey="ruleOperator" />
                 </label>
                 {props.dialect.ruleOperator.trim() === '' ? (
                   <span className="font-mono text-[10px] text-blue-600 dark:text-blue-400">
@@ -448,8 +459,9 @@ export function StepViews(props: StepViewsProps) {
             </div>
 
             <div>
-              <label htmlFor="choiceDelimiter" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                Choice Delimiter
+              <label htmlFor="choiceDelimiter" className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                <span>Choice Delimiter</span>
+                <DocTooltip docKey="choiceDelimiter" />
               </label>
               <input
                 id="choiceDelimiter"
@@ -461,8 +473,9 @@ export function StepViews(props: StepViewsProps) {
             </div>
 
             <div>
-              <label htmlFor="commentPrefix" className="block text-xs font-medium text-slate-600 dark:text-slate-400">
-                Comment Prefix
+              <label htmlFor="commentPrefix" className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                <span>Comment Prefix</span>
+                <DocTooltip docKey="commentPrefix" />
               </label>
               <input
                 id="commentPrefix"
@@ -472,6 +485,46 @@ export function StepViews(props: StepViewsProps) {
                 className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               />
             </div>
+
+            {/* Dedicated Primary '+' Repetition Operator Input (live-rewrites active grammar) */}
+            {(() => {
+              const resolved = resolveGrammarSymbols(props.dialect);
+              const plusVal = resolved.oneOrMore;
+              return (
+                <div>
+                  <div className="flex items-center justify-between gap-1">
+                    <label htmlFor="primaryOneOrMoreOp" className="inline-flex items-center gap-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+                      <span>One-or-More Operator (+)</span>
+                      <DocTooltip docKey="extendedDagSymbols" />
+                    </label>
+                    <span
+                      className={`font-mono text-[10px] ${
+                        plusVal.trim().length > 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-amber-600 dark:text-amber-400'
+                      }`}
+                    >
+                      {plusVal.trim().length > 0 ? 'Enabled' : 'Disabled'}
+                    </span>
+                  </div>
+                  <input
+                    id="primaryOneOrMoreOp"
+                    type="text"
+                    placeholder="Disabled (leave blank)"
+                    value={plusVal}
+                    onChange={(e) =>
+                      props.onDialectChange({
+                        symbols: {
+                          ...resolved,
+                          oneOrMore: e.target.value,
+                        },
+                      })
+                    }
+                    className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-sm text-slate-900 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                  />
+                </div>
+              );
+            })()}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -498,23 +551,24 @@ export function StepViews(props: StepViewsProps) {
             </button>
           </div>
 
-          {/* Extended DAG Symbol Definitions (Enabled when non-empty, Disabled when empty) */}
+          {/* Extended DAG Symbol Definitions (Enabled when non-empty, Disabled when empty; live-rewrites grammar) */}
           <div className="space-y-2.5 rounded-lg border border-slate-200 bg-slate-50/70 p-3 dark:border-slate-800 dark:bg-slate-950/70">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">
-                  Extended DAG Symbol Definitions
+                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                  <span>All Enabled Grammar &amp; Extended DAG Operators</span>
+                  <DocTooltip docKey="extendedDagSymbols" />
                 </div>
                 <div className="text-[11px] text-slate-500 dark:text-slate-400">
-                  Set a symbol value to enable (e.g. <code className="font-mono">+</code> for repetitions) or leave empty to disable.
+                  Configure <code className="font-mono">+</code>, <code className="font-mono">*</code>, <code className="font-mono">?</code>, <code className="font-mono">{'{}'}</code>, <code className="font-mono">()</code>, <code className="font-mono">[]</code>, lookahead/lookbehind, and more. Editing an operator live-rewrites prior occurrences in Active Grammar Rules; clearing disables it.
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => props.onDialectChange({ symbols: { ...DEFAULT_GRAMMAR_SYMBOLS } })}
-                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                className="rounded-md border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
               >
-                Reset Symbols
+                Reset All Operators
               </button>
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -537,7 +591,8 @@ export function StepViews(props: StepViewsProps) {
                               : 'text-amber-600 dark:text-amber-400'
                           }`}
                         >
-                          {isEnabled ? 'on' : 'off'}
+                          <span className="hidden sm:inline">{isEnabled ? 'Enabled' : 'Disabled'}</span>
+                          <span className="sm:hidden">{isEnabled ? 'on' : 'off'}</span>
                         </span>
                       </label>
                       <input
@@ -752,6 +807,7 @@ export function StepViews(props: StepViewsProps) {
         onReorderRules={props.onReorderRules}
         onMergeRules={props.onMergeRules}
         onToggleRuleLock={props.onToggleRuleLock}
+        primaryLanguage={props.primaryLanguage}
         onExportTextFile={props.onExportTextFile}
       />
     );
@@ -767,9 +823,17 @@ export function StepViews(props: StepViewsProps) {
         primarySpan={spans.primary}
         secondarySpan={spans.secondary}
         mutationPolicy={props.mutationPolicy}
+        primaryLanguage={props.primaryLanguage}
+        grammarText={props.grammarText}
+        rules={props.rules}
+        dialect={props.dialect}
+        sampleInput={props.evalPayload}
         initialStatement={props.logicStatement}
         initialLabels={props.logicLabels}
         globalCallbacks={props.globalCallbacks}
+        autocompleteSuggestions={props.autocompleteSuggestions}
+        lintIssues={props.lintIssues}
+        onRippleModuleExport={props.onRippleModuleExport}
         onSaveGlobalCallback={props.onSaveGlobalCallback}
         onDeleteGlobalCallback={props.onDeleteGlobalCallback}
         onLogicStateChange={props.onLogicStateChange}

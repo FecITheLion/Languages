@@ -127,8 +127,8 @@ export function PipelineBreadcrumbs({
       className="relative flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-2.5 dark:border-slate-800 dark:bg-slate-900"
     >
       {/* WAI-ARIA 1.2 Breadcrumb Landmark */}
-      <nav aria-label="Breadcrumb" className="min-w-0 flex-1">
-        <ol className="flex flex-wrap items-center gap-1 text-xs">
+      <nav aria-label="Breadcrumb" className="min-w-0 flex-1 overflow-x-auto no-scrollbar sm:overflow-visible">
+        <ol className="flex flex-nowrap items-center gap-1 text-xs sm:flex-wrap">
           {breadcrumbs.items.map((item, idx) => {
             const hasSiblings = Boolean(item.siblings && item.siblings.length > 1);
             const isMenuOpen = openMenuId === item.id;
@@ -192,7 +192,7 @@ export function PipelineBreadcrumbs({
                 {hasSiblings && isMenuOpen && item.siblings && (
                   <div
                     role="menu"
-                    className="absolute top-full left-0 z-30 mt-1.5 min-w-[230px] rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
+                    className="absolute top-full left-0 z-30 mt-1.5 min-w-[230px] max-w-[calc(100vw-2rem)] rounded-lg border border-slate-200 bg-white p-1 shadow-lg dark:border-slate-700 dark:bg-slate-900"
                   >
                     <div className="px-2.5 py-1 text-[11px] font-medium text-slate-400 dark:text-slate-500">
                       Jump to {item.kind}

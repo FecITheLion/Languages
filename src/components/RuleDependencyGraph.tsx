@@ -9,11 +9,15 @@ import {
   Maximize2,
   Play,
   PlusCircle,
+  Scissors,
+  SlidersHorizontal,
   Undo2,
   Unlock,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
+import { DomEchelonManipulator, type EchelonDomItem } from './DomEchelonManipulator';
+import { DocTooltip } from './DocTooltip';
 import type { RuleDependencyGraphData, RuleGraphNode, RuleMergeStrategy } from '../types/studio';
 
 interface RuleDependencyGraphProps {
@@ -23,6 +27,8 @@ interface RuleDependencyGraphProps {
   onMergeStrategyChange?: (strategy: RuleMergeStrategy) => void;
   onReorderRules?: (sourceName: string, targetName: string, position: 'before' | 'after') => void;
   onMergeRules?: (sourceName: string, targetName: string, strategy?: RuleMergeStrategy) => void;
+  onSplitRule?: (ruleName: string, splitIndex?: number) => void;
+  onEditRuleInModal?: (ruleName: string) => void;
   canUndo?: boolean;
   onUndo?: () => void;
   onSelectRuleForEval?: (ruleName: string) => void;
@@ -202,6 +208,8 @@ export function RuleDependencyGraph({
   onMergeStrategyChange,
   onReorderRules,
   onMergeRules,
+  onSplitRule,
+  onEditRuleInModal,
   canUndo = false,
   onUndo,
   onSelectRuleForEval,
@@ -917,15 +925,41 @@ export function RuleDependencyGraph({
                 </div>
               </div>
 
-              {!activeNode.isMissing && onSelectRuleForEval && (
-                <button
-                  type="button"
-                  onClick={() => onSelectRuleForEval(activeNode.name)}
-                  className="mt-4 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700"
-                >
-                  <Play className="h-3.5 w-3.5" />
-                  Evaluate from &lt;{activeNode.name}&gt;
-                </button>
+              {!activeNode.isMissing && (
+                <div className="mt-4 flex flex-col gap-2">
+                  {onSelectRuleForEval && (
+                    <button
+                      type="button"
+                      onClick={() => onSelectRuleForEval(activeNode.name)}
+                      className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      Evaluate from &lt;{activeNode.name}&gt;
+                    </button>
+                  )}
+                  <div className="grid grid-cols-2 gap-2">
+                    {onSplitRule && (
+                      <button
+                        type="button"
+                        onClick={() => onSplitRule(activeNode.name)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-violet-300 bg-violet-50 px-2.5 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100 dark:border-violet-800 dark:bg-violet-950/40 dark:text-violet-300"
+                      >
+                        <Scissors className="h-3.5 w-3.5" />
+                        Biject / Split
+                      </button>
+                    )}
+                    {onEditRuleInModal && (
+                      <button
+                        type="button"
+                        onClick={() => onEditRuleInModal(activeNode.name)}
+                        className="inline-flex items-center justify-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                      >
+                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                        Edit in Modal
+                      </button>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
 
@@ -1005,6 +1039,53 @@ export function RuleDependencyGraph({
           </div>
         )}
       </div>
+      {/* Higher-Echelon DOM Drag-and-Drop Order, Merge & Biject/Split Interface */}
+      {!compact && onReorderRules && (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+            <span>Rule Graph DOM Interface — Order, Merge &amp; Biject/Split</span>
+            <DocTooltip docKey="domDragSplitMerge" />
+          </div>
+          <DomEchelonManipulator
+            title="Active Grammar Graph Nodes"
+            subtitle="Drag any rule to reveal temporary drop targets for Reorder, Merge, and every possible Split boundary"
+            items={graph.nodes
+              .filter((n) => !n.isMissing)
+              .map<EchelonDomItem>((n) => {
+                const rawTokens = n.expression
+                  .split(/\s*\|\s*/)
+                  .map((s) => s.trim())
+                  .filter(Boolean);
+                const splitOptions =
+                  rawTokens.length >= 2
+                    ? rawTokens.slice(0, -1).map((seg, idx) => ({
+                        index: idx + 1,
+                        label: `Split after "${seg.slice(0, 18)}"`,
+                      }))
+                    : n.expression
+                        .trim()
+                        .split(/\s+/)
+                        .filter(Boolean)
+                        .slice(0, -1)
+                        .map((tok, idx) => ({
+                          index: idx + 1,
+                          label: `Split after "${tok.slice(0, 14)}"`,
+                        }));
+                return {
+                  id: n.name,
+                  label: n.name,
+                  meta: `L${n.lineNumber} · Layer ${n.level} · ${n.branchesCount} branch${n.branchesCount === 1 ? '' : 'es'}`,
+                  preview: n.expression,
+                  splitOptions,
+                };
+              })}
+            onReorder={(src, tgt, pos) => onReorderRules(src, tgt, pos)}
+            onMerge={onMergeRules ? (src, tgt) => onMergeRules(src, tgt, mergeStrategy) : undefined}
+            onSplit={onSplitRule ? (id, splitIndex) => onSplitRule(id, splitIndex) : undefined}
+            onEditInModal={onEditRuleInModal}
+          />
+        </div>
+      )}
     </div>
   );
 }

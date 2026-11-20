@@ -79,14 +79,14 @@ export function analyzeStudioLint(input: {
   // 2. Unused grammar rules (inDegree === 0 and not the active start rule)
   const startRule = input.evalRule.trim() || input.rules[0]?.name || '';
   for (const node of input.graph.nodes) {
-    if (!node.defined) continue;
+    if (node.isMissing) continue;
     if (node.inDegree === 0 && node.name !== startRule && input.rules.length > 1) {
       issues.push({
         id: `unused_rule_${node.name}`,
         severity: 'warning',
         code: 'UNUSED_RULE',
         symbol: node.name,
-        lineNumber: node.lineNumber,
+        lineNumber: node.lineNumber ?? undefined,
         message: `Unused rule <${node.name}> — not referenced by any production or the active start rule <${startRule}>.`,
         suggestion: `Reference <${node.name}> in <${startRule}>, switch Evaluator start rule to <${node.name}>, or remove it.`,
       });
@@ -156,12 +156,13 @@ export function analyzeStudioLint(input: {
     const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`\\b${escaped}\\b`);
     if (!regex.test(combinedLogicCorpus)) {
+      const cbSig = `${clean}(${cb.params.join(', ')})`;
       issues.push({
         id: `unused_global_cb_${cb.id}`,
         severity: 'info',
         code: 'UNUSED_CALLBACK',
         symbol: clean,
-        message: `Unused global callback "${clean}" (${cb.signature}) — saved locally, not currently called in active workspace.`,
+        message: `Unused global callback "${clean}" (${cbSig}) — saved locally, not currently called in active workspace.`,
         suggestion: `Insert "${clean} (...)" into any Rule Property or Logic statement.`,
       });
     }

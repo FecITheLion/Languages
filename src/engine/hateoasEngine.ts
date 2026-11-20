@@ -509,7 +509,7 @@ export class RestHateoasEngineStore {
       enabledSymbolCount: buildMemberDescriptor(
         dialectHref,
         'enabledSymbolCount',
-        graph.symbolRegistry.filter((s) => s.enabled).length,
+        (graph.symbolRegistry ?? []).filter((s) => s.enabled).length,
         false,
         'Computed count of enabled Extended DAG symbols'
       ),
@@ -539,7 +539,7 @@ export class RestHateoasEngineStore {
       },
     });
 
-    for (const sym of graph.symbolRegistry) {
+    for (const sym of graph.symbolRegistry ?? []) {
       const symHref = `${origin}/api/nodes/symbol/${encodeURIComponent(sym.key)}`;
       const members: Record<string, NodeMemberDescriptor> = {
         value: buildMemberDescriptor(symHref, 'value', sym.value, true),
@@ -617,19 +617,20 @@ export class RestHateoasEngineStore {
     // 4. Global Callback nodes
     for (const cb of this.callbacks) {
       const cbHref = `${origin}/api/nodes/callback/${encodeURIComponent(cb.id)}`;
+      const cbSig = `${cb.name}(${cb.params.join(', ')})`;
       const members: Record<string, NodeMemberDescriptor> = {
         name: buildMemberDescriptor(cbHref, 'name', cb.name, true),
         lambdaExpr: buildMemberDescriptor(cbHref, 'lambdaExpr', cb.lambdaExpr, true),
         description: buildMemberDescriptor(cbHref, 'description', cb.description, true),
         id: buildMemberDescriptor(cbHref, 'id', cb.id, false, 'Immutable callback identifier'),
         params: buildMemberDescriptor(cbHref, 'params', cb.params, false, 'Parsed from lambdaExpr'),
-        signature: buildMemberDescriptor(cbHref, 'signature', cb.signature, false, 'Derived from name and params'),
-        updatedAt: buildMemberDescriptor(cbHref, 'updatedAt', cb.updatedAt, false, 'System-managed timestamp'),
+        signature: buildMemberDescriptor(cbHref, 'signature', cbSig, false, 'Derived from name and params'),
+        savedAt: buildMemberDescriptor(cbHref, 'savedAt', cb.savedAt, false, 'System-managed timestamp'),
       };
       nodes.push({
         kind: 'callback',
         id: cb.id,
-        label: `λ ${cb.signature}`,
+        label: `λ ${cbSig}`,
         href: cbHref,
         mutableCount: 3,
         immutableCount: 4,
@@ -848,7 +849,7 @@ export class RestHateoasEngineStore {
         lambdaExpr: nextExpr,
         description: nextDesc,
         source: existing.source,
-      });
+      }).list;
     } else if (kind === 'histolog') {
       const target = this.histolog.find((h) => String(h.generation) === nodeId);
       if (target && memberName === 'summary') {
@@ -962,7 +963,7 @@ export class RestHateoasEngineStore {
   }
 
   public upsertCallback(input: { name: string; lambdaExpr: string; description?: string }) {
-    this.callbacks = upsertGlobalCallback(this.callbacks, { ...input, source: 'manual' });
+    this.callbacks = upsertGlobalCallback(this.callbacks, { ...input, source: 'manual' }).list;
     return this.callbacks.find((c) => c.name === input.name.trim()) || this.callbacks[0];
   }
 
@@ -1002,12 +1003,19 @@ export class RestHateoasEngineStore {
 
   public exportLogic(target: LogicExportTarget) {
     const evalRes = evaluateLogicStatement(this.workspace.logicStatement, this.workspace.logicLabels);
+    const rules = parseGrammar(this.workspace.grammarText, this.workspace.dialect);
     return exportLogicStatement(
       target,
       this.workspace.logicStatement,
       this.workspace.logicLabels,
       evalRes,
-      this.workspace.cauchyConfig
+      this.workspace.cauchyConfig,
+      {
+        grammarText: this.workspace.grammarText,
+        rules,
+        dialect: this.workspace.dialect,
+        sampleInput: this.workspace.evalPayload,
+      }
     );
   }
 

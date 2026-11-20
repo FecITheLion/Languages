@@ -121,13 +121,63 @@ export const STUDIO_DOCS: Record<string, StudioDocEntry> = {
   },
   languageSelection: {
     key: 'languageSelection',
-    title: '12-Language Compilation & Selection',
+    title: '22-Language Compilation & Selection',
     category: 'Workspace & Codegen',
     summary:
-      'Switch the active target language anywhere in the Studio across JSON-LD, Python, Rust, WASM/WABT, TypeScript, JavaScript, Go, Java, C++, C#, PHP, and SQL.',
+      'Switch the active target language anywhere in the Studio across 22 languages: JSON-LD, Python, Rust, WASM/WABT, TypeScript, JavaScript, Go, Java, C++, C#, PHP, SQL, Swift, Kotlin, Ruby, Scala, Haskell, Elixir, Lua, Zig, Dart, and OCaml.',
     syntax: 'Toolbar Language Selector · Rule Properties Export · Logic & Cauchy Export · GET /api/export/:language',
-    example: 'Selecting Go or TypeScript updates the Live State Mirror code output and syncs your default export target across workbenches.',
-    notes: 'All 12 languages are also exposed over HATEOAS at /api/languages.',
+    example: 'Selecting Go, Rust, or TypeScript updates the Live State Mirror code output and syncs your default export target across workbenches.',
+    notes: 'All 22 languages are also exposed over HATEOAS at /api/languages.',
+  },
+  cliLiteralParams: {
+    key: 'cliLiteralParams',
+    title: 'CLI Named Literal Parameters & Editable Strings',
+    category: '03. Export & CLI Codegen',
+    summary:
+      'Every exported script exposes each bound literal variable as a named CLI option (--<name> <literal>), plus editable string overrides (--input, --statement, --grammar), automatically falling back to the embedded defaults when omitted.',
+    syntax: 'python3 logic_lambda_calc.py --price 120 --tax 15  |  --input "price=80 tax=8"  |  --statement "price + tax * 2"  |  (no args = defaults)',
+    example: 'Pass --P true --Q false to override booleans as literals, or pass --input "50 10" to parse all inputs from a single grammar-guided string.',
+    notes: 'Precedence: Embedded Defaults → Grammar-parsed --input / positional string → Explicit --<name> literal flags.',
+  },
+  globalEquationPipeline: {
+    key: 'globalEquationPipeline',
+    title: 'Global Equation Pipeline Creator & Superset-Script',
+    category: '03. Logic & Pipeline Composer',
+    summary:
+      'Collects exported equations from 03. Symbolic Logic, Arithmetic & Lambda Calculus Calculator under referencable call names and composes them into a single executable superset-script with CLI inputs, branching, piping, and nested sub-pipelines.',
+    syntax: 'Export & Parse → Add to Global Pipeline (callName) → Wire Inputs & Branch Guards → Export Superset-Script (.py / .mjs / .ts / .rs)',
+    example: 'Chain calc_subtotal(price, qty) → apply_tax(subtotal) → approve_order(total) into a runnable CLI superset-script.',
+    notes: 'Saved globally in browser storage so you can accumulate equations across sessions and export a unified orchestrator at any time.',
+  },
+  pipelinePipingDelegation: {
+    key: 'pipelinePipingDelegation',
+    title: 'Positional & Named Output Delegation',
+    category: 'Pipeline Piping',
+    summary:
+      'Each pipeline node delegates its evaluated output as a named variable (e.g. calc_tax_out), as a positional bus slot ($1, $2, ..., or prev), or both—so downstream children can wire any parameter to either named or positional outputs.',
+    syntax: 'Delegation: Named | Positional | Both  ·  Child Input Binding: CLI/Default | Pipe Named | Pipe Positional ($N / prev) | Literal',
+    example: 'Node #1 (calc_tax) emits named "tax_total" and positional "$1". Node #2 binds its "amount" parameter to "$1" or "tax_total".',
+    notes: 'Unbound root inputs are automatically hoisted to the superset-script CLI interface as named --<var> literal parameters.',
+  },
+  pipelineBranching: {
+    key: 'pipelineBranching',
+    title: 'Conditional Branch Guards & Fallbacks',
+    category: 'Pipeline Branching',
+    summary:
+      'Attach a branch guard to any child equation so it only invokes when a parent node output satisfies a condition (Truthy, Falsy, >, <, ==, != threshold). When a branch is skipped, an optional fallback literal is delegated downstream.',
+    syntax: 'if <parent_call_name> [is truthy | is falsy | > T | < T | == T | != T] → invoke child, else delegate fallbackValue',
+    example: 'Run discount_tier only when calc_subtotal > 100; otherwise skip and pass fallback 0 to final_total.',
+    notes: 'Branch decisions are traced live in the Pipeline Runner and emitted as explicit conditional branches in the exported superset-script.',
+  },
+  pipelineRecursiveEdit: {
+    key: 'pipelineRecursiveEdit',
+    title: 'Recursive Equation & Sub-Pipeline Editing',
+    category: 'Recursive Composition',
+    summary:
+      'Supports two-level recursive editing: (1) load any saved pipeline equation back into the Step 03 calculator to modify its statement/labels and save changes back in place, or (2) drill into any node as a nested sub-pipeline and compose child stages recursively.',
+    syntax: 'Edit in Calculator (in-place update)  |  Drill Into Sub-Pipeline (breadcrumb stack: Root > Child > Grandchild)',
+    example: 'Drill into "pricing_stage" to add internal "base_calc" → "surcharge" child equations; its final output becomes "pricing_stage" output in the parent pipeline.',
+    notes: 'Recursive sub-pipelines execute live up to depth 8 and compile into nested callable functions in the exported superset-script.',
   },
 };
 

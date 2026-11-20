@@ -32,10 +32,12 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, 'dist');
+const isCloudRun = Boolean(process.env.K_SERVICE || process.env.K_REVISION);
 const isProd =
+  isCloudRun ||
   process.env.NODE_ENV === 'production' ||
   (process.env.NODE_ENV !== 'development' && fs.existsSync(path.join(distDir, 'index.html')));
-const PORT = isProd ? Number(process.env.PORT) || 3000 : 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 function getOrigin(req: express.Request): string {
   const host = req.get('host');
@@ -65,6 +67,10 @@ function sendHal(
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '5mb' }));
+
+  app.get('/healthz', (_req, res) => {
+    res.status(200).json({ ok: true, service: 'grammar2json-studio' });
+  });
 
   // Single lazy MCP registry + stateful REST/CRUD/HATEOAS store kept in sync
   const mcpRegistry = new McpLazyServerRegistry();
@@ -407,11 +413,12 @@ async function startServer() {
   app.get('/api/symbols', (req, res) => {
     const origin = getOrigin(req);
     const graph = restStore.getGraph();
+    const symRegistry = graph.symbolRegistry ?? [];
     sendHal(res, 200, {
-      count: graph.symbolRegistry.length,
-      enabledCount: graph.symbolRegistry.filter((s) => s.enabled).length,
+      count: symRegistry.length,
+      enabledCount: symRegistry.filter((s) => s.enabled).length,
       _embedded: {
-        symbols: graph.symbolRegistry.map((s) => ({
+        symbols: symRegistry.map((s) => ({
           ...s,
           _links: {
             self: { href: `${origin}/api/symbols/${encodeURIComponent(s.key)}`, method: 'GET' },
@@ -430,7 +437,7 @@ async function startServer() {
 
   app.get('/api/symbols/:key', (req, res) => {
     const origin = getOrigin(req);
-    const sym = restStore.getGraph().symbolRegistry.find((s) => s.key === req.params.key);
+    const sym = (restStore.getGraph().symbolRegistry ?? []).find((s) => s.key === req.params.key);
     if (!sym) {
       sendHal(res, 404, { error: `Symbol '${req.params.key}' not found.`, _links: { collection: { href: `${origin}/api/symbols`, method: 'GET' } } });
       return;
@@ -1100,13 +1107,23 @@ async function startServer() {
   } else {
     app.use(express.static(distDir));
     app.get('*', (_req, res) => {
-      res.sendFile(path.join(distDir, 'index.html'));
+      const indexHtml = path.join(distDir, 'index.html');
+      if (fs.existsSync(indexHtml)) {
+        res.sendFile(indexHtml);
+      } else {
+        res.status(503).send('Production bundle missing. Run npm run build.');
+      }
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Grammar2JSON Studio, REST/CRUD/HATEOAS API & Lazy MCP Servers listening on http://localhost:${PORT}`);
+    console.log(
+      `Grammar2JSON Studio (${isProd ? 'production' : 'development'}), REST/CRUD/HATEOAS API & Lazy MCP Servers listening on http://0.0.0.0:${PORT}`
+    );
   });
 }
 
-void startServer();
+startServer().catch((err) => {
+  console.error('Fatal server startup error:', err);
+  process.exit(1);
+});

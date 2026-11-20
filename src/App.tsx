@@ -1,10 +1,26 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
+  Boxes,
   CheckCircle2,
+  Code2,
   Download,
+  Eraser,
+  FileCode2,
+  FileDiff,
+  GitBranch,
+  History,
+  Layers,
+  Link2,
   Moon,
+  Redo2,
+  RotateCcw,
+  Save,
   Search,
+  Server,
+  Share2,
   Sun,
+  Terminal,
   Undo2,
   X,
 } from 'lucide-react';
@@ -26,6 +42,7 @@ import {
   DEFAULT_MUTATION_POLICY,
   deleteGrammarRule,
   evaluateGrammarPayload,
+  exportWorkspaceInLanguage,
   extractLiteralAlternationFromRegex,
   extractRulesFromPythonAst,
   extractRulesFromRustAst,
@@ -43,13 +60,44 @@ import {
   parsePythonToAst,
   parseRustToAst,
   reorderGrammarRules,
+  rewriteGrammarDialectTokens,
   schemaJsonToGrammar,
   sortRulesByPrecedence,
+  splitGrammarRule,
   unparsePythonAst,
   updateGrammarRule,
 } from './engine/bidirectionalEngine';
+import {
+  loadGlobalCallbacks,
+  removeGlobalCallback,
+  saveGlobalCallbacks,
+  upsertGlobalCallback,
+  type GlobalCallbackDef,
+} from './engine/globalCallbacksEngine';
+import {
+  HISTOLOG_FIELD_KEYS,
+  HISTOLOG_FIELD_LABELS,
+  buildHistologIndex,
+  createHistologEntry,
+  importHistologCustom,
+  type HistologEntry,
+  type HistologFieldKey,
+  type HistologSnapshotState,
+} from './engine/histologEngine';
+import { buildDeepLinkUrl, parseDeepLinkFromLocation } from './engine/deepLinkEngine';
+import { analyzeStudioLint } from './engine/htmlOutputFormatter';
 import { LOGIC_CALCULATOR_PRESETS, type LogicLabelBinding } from './engine/logicLambdaEngine';
 import type { McpWorkspaceContext } from './engine/mcpServerEngine';
+import {
+  BUILTIN_REFERENCED_MODULES,
+  buildLiveScopeSuggestions,
+  loadCustomModules,
+  loadLoadedModuleIds,
+  saveCustomModules,
+  saveLoadedModuleIds,
+  type ReferencedModule,
+  type ReferencedModuleExport,
+} from './engine/moduleAutocompleteEngine';
 import { buildPipelineBreadcrumbs } from './engine/pipelineBreadcrumbs';
 import { downloadPhpProjectZip } from './engine/phpZipPackager';
 import {
@@ -63,38 +111,87 @@ import {
   signOutGoogleDrive,
   updateDriveWorkspace,
 } from './services/googleDriveAuth';
+import { ApiStudioWorkbench } from './components/ApiStudioWorkbench';
+import { AutocompleteField } from './components/AutocompleteField';
 import { ConfirmDialog } from './components/ConfirmDialog';
-import { BundleInspector, DslInspector, OpenApiInspector } from './components/InspectorViews';
+import { DocTooltip } from './components/DocTooltip';
+import { HistologWorkbench } from './components/HistologWorkbench';
+import { HtmlCodeOutput } from './components/HtmlCodeOutput';
+import { SpecsBundleView } from './components/InspectorViews';
 import type { PipelineMcpUiEffect } from './components/McpServersWorkbench';
 import { PipelineBreadcrumbs } from './components/PipelineBreadcrumbs';
 import { PipelineGrid } from './components/PipelineGrid';
 import { RuleDependencyGraph } from './components/RuleDependencyGraph';
 import { StepViews } from './components/StepViews';
 import { UniversalWorkbenchModal } from './components/UniversalWorkbenchModal';
-import type {
-  DialectConfig,
-  DialectPresetId,
-  JsonLdSchemaPackage,
-  LineMutation,
-  McpServerId,
-  ModalStructure,
-  MutationPolicy,
-  PipelineGridMode,
-  PipelineStage,
-  PrimaryLanguage,
-  RuleMergeStrategy,
-  RuleOrderConfig,
-  SchemaConfig,
-  SchemaPresetId,
-  TopView,
-  TransformTarget,
-  VaultRecord,
-  ViewportPreset,
-  WorkflowSlug,
-  WorkspaceSnapshot,
+import {
+  SUPPORTED_LANGUAGES,
+  type DialectConfig,
+  type DialectPresetId,
+  type EngineSectionKey,
+  type ExportLanguage,
+  type JsonLdSchemaPackage,
+  type LineMutation,
+  type McpServerId,
+  type ModalStructure,
+  type MutationPolicy,
+  type OpenApiSpec,
+  type PipelineGridMode,
+  type PipelineStage,
+  type PrimaryLanguage,
+  type RuleMergeStrategy,
+  type RuleOrderConfig,
+  type SchemaConfig,
+  type SchemaPresetId,
+  type TopView,
+  type TransformTarget,
+  type VaultRecord,
+  type ViewportPreset,
+  type WorkflowSlug,
+  type WorkspaceSnapshot,
 } from './types/studio';
 
 const DEMO_VAULT_STORAGE_KEY = 'grammar2json_demo_vault_v2';
+const AUTOSAVE_STORAGE_KEY = 'grammar2json_autosave_v1';
+
+interface AutoSavedState {
+  savedAt: string;
+  grammarText: string;
+  dialect: DialectConfig;
+  schemaConfig: SchemaConfig;
+  mutationPolicy: MutationPolicy;
+  mutations: Record<string, LineMutation>;
+  ruleConfigs: Record<string, RuleOrderConfig>;
+  logicStatement: string;
+  logicLabels: LogicLabelBinding[];
+  dslSource: string;
+  evalRule: string;
+  evalPayload: string;
+  primaryLanguage: PrimaryLanguage;
+  verifiedSteps: WorkflowSlug[];
+}
+
+function loadAutoSavedState(): AutoSavedState | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(AUTOSAVE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AutoSavedState;
+    if (!parsed || typeof parsed !== 'object' || typeof parsed.grammarText !== 'string') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveAutoSavedState(state: AutoSavedState): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(AUTOSAVE_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Ignore quota limits
+  }
+}
 
 function loadDemoVaultFromStorage(): VaultRecord[] {
   try {
@@ -132,19 +229,58 @@ export default function App() {
     document.documentElement.classList.toggle('dark', darkMode);
   }, [darkMode]);
 
+  // Auto-save & Deep-Link Hydration
+  const initialDeepLink = useMemo(() => {
+    if (typeof window === 'undefined') return null;
+    const parsed = parseDeepLinkFromLocation(window.location.search, window.location.hash);
+    return parsed.hasDirectLink ? parsed.state : null;
+  }, []);
+  const initialAutoSave = useMemo(() => {
+    if (initialDeepLink?.grammarText) return null;
+    return loadAutoSavedState();
+  }, [initialDeepLink]);
+
   // Top-level navigation & workflow step state
-  const [topView, setTopView] = useState<TopView>('workbench');
-  const [dslSource, setDslSource] = useState(DEFAULT_DSL_SOURCE);
+  const [topView, setTopView] = useState<TopView>(initialDeepLink?.topView ?? 'workbench');
+  const [specsSubTab, setSpecsSubTab] = useState<'openapi' | 'dsl' | 'bundle'>(() =>
+    initialDeepLink?.topView === 'dsl'
+      ? 'dsl'
+      : initialDeepLink?.topView === 'bundle'
+        ? 'bundle'
+        : 'openapi'
+  );
+  const [dslSource, setDslSource] = useState(
+    initialDeepLink?.dslSource ?? initialAutoSave?.dslSource ?? DEFAULT_DSL_SOURCE
+  );
   const parsedDsl = useMemo(() => parseDslFlows(dslSource), [dslSource]);
 
-  const [activePage, setActivePage] = useState<WorkflowSlug>('dialect');
-  const [primaryLanguage, setPrimaryLanguage] = useState<PrimaryLanguage>('json');
-  const [verifiedSteps, setVerifiedSteps] = useState<WorkflowSlug[]>([]);
+  const [activePage, setActivePage] = useState<WorkflowSlug>(initialDeepLink?.activePage ?? 'dialect');
+  const [primaryLanguage, setPrimaryLanguage] = useState<PrimaryLanguage>(
+    initialDeepLink?.primaryLanguage ?? initialAutoSave?.primaryLanguage ?? 'json'
+  );
+  const [verifiedSteps, setVerifiedSteps] = useState<WorkflowSlug[]>(
+    initialAutoSave?.verifiedSteps ?? []
+  );
+
+  // Mobile Workbench/Mirror pane toggle & Mirror output display modes
+  const [mobileWorkbenchPane, setMobileWorkbenchPane] = useState<'workbench' | 'mirror'>('workbench');
+  const [grammarMirrorMode, setGrammarMirrorMode] = useState<'edit' | 'html'>('edit');
+  const [jsonMirrorMode, setJsonMirrorMode] = useState<'edit' | 'html'>('html');
+  const [compiledMirrorMode, setCompiledMirrorMode] = useState<'html' | 'edit'>('html');
+  const [clearMenuOpen, setClearMenuOpen] = useState(false);
+
+  // Auto-Save state
+  const [autoSaveEnabled, setAutoSaveEnabled] = useState(true);
+  const [lastAutoSavedAt, setLastAutoSavedAt] = useState<string | null>(initialAutoSave?.savedAt ?? null);
 
   // Modal state
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalStructure, setModalStructure] = useState<ModalStructure>('split');
-  const [modalViewport, setModalViewport] = useState<ViewportPreset>('responsive');
+  const [modalOpen, setModalOpen] = useState(Boolean(initialDeepLink?.modalOpen));
+  const [modalStructure, setModalStructure] = useState<ModalStructure>(
+    initialDeepLink?.modalStructure ?? 'split'
+  );
+  const [modalViewport, setModalViewport] = useState<ViewportPreset>(
+    initialDeepLink?.viewportPreset ?? 'responsive'
+  );
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -156,9 +292,23 @@ export default function App() {
     setNotice(msg);
   }, []);
 
-  // Drag-and-drop reorder / merge strategy & undo stack
+  // Drag-and-drop reorder / merge strategy
   const [mergeStrategy, setMergeStrategy] = useState<RuleMergeStrategy>('choice');
-  const [undoStack, setUndoStack] = useState<Array<{ grammarText: string; dslSource: string; label: string }>>([]);
+
+  // Local Global Callbacks (persisted in localStorage)
+  const [globalCallbacks, setGlobalCallbacks] = useState<GlobalCallbackDef[]>(() => loadGlobalCallbacks());
+
+  // Referenced Modules for Autocomplete & Live Ripple
+  const [loadedModuleIds, setLoadedModuleIds] = useState<string[]>(() => loadLoadedModuleIds());
+  const [customModules, setCustomModules] = useState<ReferencedModule[]>(() => loadCustomModules());
+  const allAvailableModules = useMemo(
+    () => [...BUILTIN_REFERENCED_MODULES, ...customModules],
+    [customModules]
+  );
+  const loadedModules = useMemo(
+    () => allAvailableModules.filter((m) => loadedModuleIds.includes(m.id)),
+    [allAvailableModules, loadedModuleIds]
+  );
 
   useEffect(() => {
     if (!notice) return;
@@ -168,41 +318,73 @@ export default function App() {
 
   // Core bidirectional workspace state
   const initialPreset = DIALECT_PRESETS.ebnf;
-  const [dialect, setDialect] = useState<DialectConfig>(initialPreset.config);
-  const [schemaConfig, setSchemaConfig] = useState<SchemaConfig>(INITIAL_SCHEMA_CONFIG);
-  const [mutationPolicy, setMutationPolicy] = useState<MutationPolicy>(DEFAULT_MUTATION_POLICY);
+  const [dialect, setDialect] = useState<DialectConfig>(
+    initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config
+  );
+  const [schemaConfig, setSchemaConfig] = useState<SchemaConfig>(
+    initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG
+  );
+  const [mutationPolicy, setMutationPolicy] = useState<MutationPolicy>(
+    initialAutoSave?.mutationPolicy ?? DEFAULT_MUTATION_POLICY
+  );
 
-  const [grammarText, setGrammarText] = useState<string>(initialPreset.sampleGrammar);
+  const [grammarText, setGrammarText] = useState<string>(
+    initialDeepLink?.grammarText ?? initialAutoSave?.grammarText ?? initialPreset.sampleGrammar
+  );
   const rules = useMemo(() => parseGrammar(grammarText, dialect), [grammarText, dialect]);
   const ruleGraph = useMemo(
     () => analyzeRuleDependencies(rules, grammarText, dialect, mutationPolicy.lockedRules),
     [rules, grammarText, dialect, mutationPolicy.lockedRules]
   );
 
-  const [stageFilter, setStageFilter] = useState<'all' | PipelineStage>('all');
-  const [pipelineLayoutMode, setPipelineLayoutMode] = useState<PipelineGridMode>('compact');
-  const [selectedMcpServerId, setSelectedMcpServerId] = useState<McpServerId>('pipeline');
-  const [mutations, setMutations] = useState<Record<string, LineMutation>>(() =>
-    inferLineMutations(parseGrammar(initialPreset.sampleGrammar, initialPreset.config))
+  const [stageFilter, setStageFilter] = useState<'all' | PipelineStage>(
+    initialDeepLink?.stageFilter ?? 'all'
   );
-  const [ruleConfigs, setRuleConfigs] = useState<Record<string, RuleOrderConfig>>(() =>
-    inferRuleOrderConfigs(parseGrammar(initialPreset.sampleGrammar, initialPreset.config))
+  const [pipelineLayoutMode, setPipelineLayoutMode] = useState<PipelineGridMode>(
+    initialDeepLink?.pipelineLayoutMode ?? 'compact'
   );
-  const [logicStatement, setLogicStatement] = useState<string>(LOGIC_CALCULATOR_PRESETS[0].statement);
-  const [logicLabels, setLogicLabels] = useState<LogicLabelBinding[]>(() =>
-    LOGIC_CALCULATOR_PRESETS[0].labels.map((l) => ({ ...l }))
+  const [selectedMcpServerId, setSelectedMcpServerId] = useState<McpServerId>(
+    initialDeepLink?.selectedMcpServerId ?? 'pipeline'
+  );
+  const [mutations, setMutations] = useState<Record<string, LineMutation>>(
+    () =>
+      initialAutoSave?.mutations ??
+      inferLineMutations(parseGrammar(initialPreset.sampleGrammar, initialPreset.config))
+  );
+  const [ruleConfigs, setRuleConfigs] = useState<Record<string, RuleOrderConfig>>(
+    () =>
+      initialAutoSave?.ruleConfigs ??
+      inferRuleOrderConfigs(parseGrammar(initialPreset.sampleGrammar, initialPreset.config))
+  );
+  const [logicStatement, setLogicStatement] = useState<string>(
+    initialDeepLink?.logicStatement ??
+      initialAutoSave?.logicStatement ??
+      LOGIC_CALCULATOR_PRESETS[0].statement
+  );
+  const [logicLabels, setLogicLabels] = useState<LogicLabelBinding[]>(
+    () =>
+      initialDeepLink?.logicLabels ??
+      initialAutoSave?.logicLabels ??
+      LOGIC_CALCULATOR_PRESETS[0].labels.map((l) => ({ ...l }))
   );
 
   const [jsonText, setJsonText] = useState<string>(() => {
-    const initialRules = parseGrammar(initialPreset.sampleGrammar, initialPreset.config);
-    const initialMuts = inferLineMutations(initialRules);
-    const initialCfg = inferRuleOrderConfigs(initialRules);
+    const startGrammar =
+      initialDeepLink?.grammarText ?? initialAutoSave?.grammarText ?? initialPreset.sampleGrammar;
+    const startDialect =
+      initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config;
+    const startSchema =
+      initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG;
+    const startPolicy = initialAutoSave?.mutationPolicy ?? DEFAULT_MUTATION_POLICY;
+    const initialRules = parseGrammar(startGrammar, startDialect);
+    const initialMuts = initialAutoSave?.mutations ?? inferLineMutations(initialRules);
+    const initialCfg = initialAutoSave?.ruleConfigs ?? inferRuleOrderConfigs(initialRules);
     return grammarToSchemaJson(
       initialRules,
-      initialPreset.config,
-      INITIAL_SCHEMA_CONFIG,
+      startDialect,
+      startSchema,
       initialMuts,
-      DEFAULT_MUTATION_POLICY,
+      startPolicy,
       initialCfg
     );
   });
@@ -210,20 +392,27 @@ export default function App() {
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [syncDirection, setSyncDirection] = useState('Grammar → JSON-LD → Python / Rust / WASM / MCP');
 
-  const [evalRule, setEvalRule] = useState(initialPreset.sampleRule);
-  const [evalPayload, setEvalPayload] = useState(initialPreset.samplePayload);
+  const [evalRule, setEvalRule] = useState(
+    initialDeepLink?.evalRule ?? initialAutoSave?.evalRule ?? initialPreset.sampleRule
+  );
+  const [evalPayload, setEvalPayload] = useState(
+    initialDeepLink?.evalPayload ?? initialAutoSave?.evalPayload ?? initialPreset.samplePayload
+  );
   const evalResult = useMemo(
-    () => evaluateGrammarPayload(rules, evalRule, evalPayload, mutations),
-    [rules, evalRule, evalPayload, mutations]
+    () => evaluateGrammarPayload(rules, evalRule, evalPayload, mutations, dialect),
+    [rules, evalRule, evalPayload, mutations, dialect]
   );
 
   // Python AST state
-  const [pythonSource, setPythonSource] = useState<string>(() =>
-    generatePythonFromWorkspace(
-      parseGrammar(initialPreset.sampleGrammar, initialPreset.config),
-      INITIAL_SCHEMA_CONFIG
-    )
-  );
+  const [pythonSource, setPythonSource] = useState<string>(() => {
+    const startGrammar =
+      initialDeepLink?.grammarText ?? initialAutoSave?.grammarText ?? initialPreset.sampleGrammar;
+    const startDialect =
+      initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config;
+    const startSchema =
+      initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG;
+    return generatePythonFromWorkspace(parseGrammar(startGrammar, startDialect), startSchema);
+  });
   const { ast: pythonAst, symbols: pythonSymbols } = useMemo(
     () => parsePythonToAst(pythonSource),
     [pythonSource]
@@ -232,9 +421,16 @@ export default function App() {
 
   // Rust AST state
   const [rustSource, setRustSource] = useState<string>(() => {
-    const initialRules = parseGrammar(initialPreset.sampleGrammar, initialPreset.config);
-    const initialMuts = inferLineMutations(initialRules);
-    return generateRustFromWorkspace(initialRules, INITIAL_SCHEMA_CONFIG, initialMuts, DEFAULT_MUTATION_POLICY);
+    const startGrammar =
+      initialDeepLink?.grammarText ?? initialAutoSave?.grammarText ?? initialPreset.sampleGrammar;
+    const startDialect =
+      initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config;
+    const startSchema =
+      initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG;
+    const startPolicy = initialAutoSave?.mutationPolicy ?? DEFAULT_MUTATION_POLICY;
+    const initialRules = parseGrammar(startGrammar, startDialect);
+    const initialMuts = initialAutoSave?.mutations ?? inferLineMutations(initialRules);
+    return generateRustFromWorkspace(initialRules, startSchema, initialMuts, startPolicy);
   });
   const { ast: rustAst, symbols: rustSymbols } = useMemo(
     () => parseRustToAst(rustSource),
@@ -244,18 +440,276 @@ export default function App() {
 
   // WASM / WABT state
   const [watSource, setWatSource] = useState<string>(() => {
-    const initialRules = parseGrammar(initialPreset.sampleGrammar, initialPreset.config);
-    const initialMuts = inferLineMutations(initialRules);
+    const startGrammar =
+      initialDeepLink?.grammarText ?? initialAutoSave?.grammarText ?? initialPreset.sampleGrammar;
+    const startDialect =
+      initialDeepLink?.dialect ?? initialAutoSave?.dialect ?? initialPreset.config;
+    const startSchema =
+      initialDeepLink?.schemaConfig ?? initialAutoSave?.schemaConfig ?? INITIAL_SCHEMA_CONFIG;
+    const startPolicy = initialAutoSave?.mutationPolicy ?? DEFAULT_MUTATION_POLICY;
+    const initialRules = parseGrammar(startGrammar, startDialect);
+    const initialMuts = initialAutoSave?.mutations ?? inferLineMutations(initialRules);
     const initJson = grammarToSchemaJson(
       initialRules,
-      initialPreset.config,
-      INITIAL_SCHEMA_CONFIG,
+      startDialect,
+      startSchema,
       initialMuts,
-      DEFAULT_MUTATION_POLICY
+      startPolicy
     );
-    return generateWatFromWorkspace(initialRules, INITIAL_SCHEMA_CONFIG.schemaName, initJson);
+    return generateWatFromWorkspace(initialRules, startSchema.schemaName, initJson);
   });
   const wasmResult = useMemo(() => compileWatToWasm(watSource), [watSource]);
+
+  // Live Studio Lint Analysis (unused rules, unused callbacks/labels, unused lambda params, undefined refs, disabled symbols)
+  const studioLintIssues = useMemo(
+    () =>
+      analyzeStudioLint({
+        rules,
+        graph: ruleGraph,
+        evalRule,
+        logicStatement,
+        logicLabels,
+        globalCallbacks,
+        ruleConfigs,
+        jsonValid,
+        jsonError,
+      }),
+    [rules, ruleGraph, evalRule, logicStatement, logicLabels, globalCallbacks, ruleConfigs, jsonValid, jsonError]
+  );
+
+  // Live Scope Autocomplete Suggestions (Grammar rules + Lambdas + Labels + DAG ops + Loaded Referenced Modules)
+  const autocompleteSuggestions = useMemo(
+    () =>
+      buildLiveScopeSuggestions(
+        {
+          rules,
+          dialect,
+          logicLabels,
+          globalCallbacks,
+          loadedModules,
+        },
+        'grammar'
+      ),
+    [rules, dialect, logicLabels, globalCallbacks, loadedModules]
+  );
+
+  // Multi-Language Live Compiled Output (all 22 languages!)
+  const compiledLanguageExport = useMemo(() => {
+    const langKey: ExportLanguage =
+      primaryLanguage === 'json'
+        ? 'jsonld'
+        : primaryLanguage === 'wasm'
+          ? 'wat'
+          : (primaryLanguage as ExportLanguage);
+    return exportWorkspaceInLanguage(langKey, {
+      rules,
+      dialect,
+      schemaConfig,
+      mutations,
+      mutationPolicy,
+      ruleConfigs,
+      grammarText,
+      jsonText,
+      watSource,
+    });
+  }, [primaryLanguage, rules, dialect, schemaConfig, mutations, mutationPolicy, ruleConfigs, grammarText, jsonText, watSource]);
+
+  // Generational Histolog + Chained Undo/Redo + Historic Diff Reference
+  const makeCurrentHistologSnapshot = useCallback(
+    (): HistologSnapshotState => ({
+      dialect,
+      grammarText,
+      jsonText,
+      mutations,
+      ruleConfigs,
+      evalRule,
+      evalPayload,
+      pythonSource,
+      rustSource,
+      watSource,
+      logicStatement,
+      logicLabels,
+      dslSource,
+    }),
+    [
+      dialect,
+      grammarText,
+      jsonText,
+      mutations,
+      ruleConfigs,
+      evalRule,
+      evalPayload,
+      pythonSource,
+      rustSource,
+      watSource,
+      logicStatement,
+      logicLabels,
+      dslSource,
+    ]
+  );
+
+  const [histologEntries, setHistologEntries] = useState<HistologEntry[]>(() => [
+    createHistologEntry({
+      generation: 0,
+      parentGeneration: null,
+      source: 'init',
+      summary: 'Initial studio workspace generation',
+      snapshot: {
+        dialect,
+        grammarText,
+        jsonText,
+        mutations,
+        ruleConfigs,
+        evalRule,
+        evalPayload,
+        pythonSource,
+        rustSource,
+        watSource,
+        logicStatement,
+        logicLabels,
+        dslSource,
+      },
+      previousSnapshot: null,
+    }),
+  ]);
+  const [histologCursor, setHistologCursor] = useState<number>(0);
+  const [lastDiffRef, setLastDiffRef] = useState<{ from: number; to: number } | null>(() =>
+    typeof initialDeepLink?.histologFromGen === 'number' &&
+    typeof initialDeepLink?.histologToGen === 'number'
+      ? { from: initialDeepLink.histologFromGen, to: initialDeepLink.histologToGen }
+      : null
+  );
+  const suppressHistologRef = useRef(false);
+  const histologIndex = useMemo(() => buildHistologIndex(histologEntries), [histologEntries]);
+
+  // Auto-record new Histolog generations on meaningful workspace changes (debounced 450ms)
+  useEffect(() => {
+    if (suppressHistologRef.current) {
+      suppressHistologRef.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const snap = makeCurrentHistologSnapshot();
+      setHistologEntries((prev) => {
+        const current = prev[histologCursor] ?? prev[prev.length - 1];
+        const nextEntry = createHistologEntry({
+          generation: (prev[prev.length - 1]?.generation ?? -1) + 1,
+          parentGeneration: current?.generation ?? null,
+          source: 'mutation',
+          summary: syncDirection,
+          snapshot: snap,
+          previousSnapshot: current?.snapshot ?? null,
+        });
+        if (current && nextEntry.fingerprint === current.fingerprint) {
+          return prev;
+        }
+        const truncated = prev.slice(0, histologCursor + 1);
+        const combined = [...truncated, nextEntry].slice(-60);
+        setHistologCursor(combined.length - 1);
+        return combined;
+      });
+    }, 450);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    grammarText,
+    jsonText,
+    dialect,
+    schemaConfig,
+    mutationPolicy,
+    mutations,
+    ruleConfigs,
+    pythonSource,
+    rustSource,
+    watSource,
+    logicStatement,
+    logicLabels,
+    dslSource,
+    evalRule,
+    evalPayload,
+  ]);
+
+  // Debounced Auto-Save to localStorage
+  useEffect(() => {
+    if (!autoSaveEnabled) return;
+    const timer = window.setTimeout(() => {
+      const savedAt = new Date().toISOString();
+      saveAutoSavedState({
+        savedAt,
+        grammarText,
+        dialect,
+        schemaConfig,
+        mutationPolicy,
+        mutations,
+        ruleConfigs,
+        logicStatement,
+        logicLabels,
+        dslSource,
+        evalRule,
+        evalPayload,
+        primaryLanguage,
+        verifiedSteps,
+      });
+      setLastAutoSavedAt(savedAt);
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [
+    autoSaveEnabled,
+    grammarText,
+    dialect,
+    schemaConfig,
+    mutationPolicy,
+    mutations,
+    ruleConfigs,
+    logicStatement,
+    logicLabels,
+    dslSource,
+    evalRule,
+    evalPayload,
+    primaryLanguage,
+    verifiedSteps,
+  ]);
+
+  // Sync compact route parameters to browser URL (replaceState, no hash clobbering unless state requested)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const nextUrl = buildDeepLinkUrl(
+        window.location.href,
+        {
+          v: 1,
+          topView,
+          activePage,
+          modalOpen,
+          modalStructure,
+          viewportPreset: modalViewport,
+          stageFilter,
+          pipelineLayoutMode,
+          primaryLanguage,
+          selectedMcpServerId,
+          histologFromGen: lastDiffRef?.from,
+          histologToGen: lastDiffRef?.to,
+        },
+        { includeFullState: false }
+      );
+      if (nextUrl !== window.location.href) {
+        window.history.replaceState(null, '', nextUrl);
+      }
+    } catch {
+      // Ignore restricted history APIs in sandboxed iframes
+    }
+  }, [
+    topView,
+    activePage,
+    modalOpen,
+    modalStructure,
+    modalViewport,
+    stageFilter,
+    pipelineLayoutMode,
+    primaryLanguage,
+    selectedMcpServerId,
+    lastDiffRef,
+  ]);
 
   // Google Drive + Offline Demo Vault state
   const [driveMode, setDriveMode] = useState<'drive' | 'demo'>('drive');
@@ -405,6 +859,125 @@ export default function App() {
     setLogicLabels(lbls);
   }, []);
 
+  const handleSaveGlobalCallback = useCallback(
+    (input: {
+      name: string;
+      lambdaExpr: string;
+      description?: string;
+      source?: 'logic_calc' | 'rule_props' | 'manual';
+    }) => {
+      setGlobalCallbacks((prev) => {
+        const next = upsertGlobalCallback(prev, input).list;
+        saveGlobalCallbacks(next);
+        return next;
+      });
+      showNotice(`Saved local global callback "${input.name}" to browser storage.`);
+    },
+    [showNotice]
+  );
+
+  const handleDeleteGlobalCallback = useCallback(
+    (idOrName: string) => {
+      setGlobalCallbacks((prev) => {
+        const next = removeGlobalCallback(prev, idOrName);
+        saveGlobalCallbacks(next);
+        return next;
+      });
+      showNotice(`Removed global callback "${idOrName}".`);
+    },
+    [showNotice]
+  );
+
+  const handleToggleModule = useCallback(
+    (moduleId: string) => {
+      setLoadedModuleIds((prev) => {
+        const next = prev.includes(moduleId)
+          ? prev.filter((id) => id !== moduleId)
+          : [...prev, moduleId];
+        saveLoadedModuleIds(next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const handleAddCustomModule = useCallback(
+    (mod: ReferencedModule) => {
+      setCustomModules((prev) => {
+        const next = [...prev.filter((m) => m.id !== mod.id), mod];
+        saveCustomModules(next);
+        return next;
+      });
+      setLoadedModuleIds((prev) => {
+        if (prev.includes(mod.id)) return prev;
+        const next = [...prev, mod.id];
+        saveLoadedModuleIds(next);
+        return next;
+      });
+      showNotice(`Loaded custom referenced module "${mod.name}" (${mod.exports.length} export${mod.exports.length === 1 ? '' : 's'}).`);
+    },
+    [showNotice]
+  );
+
+  // Live Ripple when a Referenced Module export is selected in ANY modifiable input or output
+  const handleRippleModuleExport = useCallback(
+    (exp: ReferencedModuleExport, moduleName?: string) => {
+      const rippledParts: string[] = [];
+
+      if (exp.rippleGrammarLine) {
+        const ruleNameMatch = exp.rippleGrammarLine.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)/);
+        const alreadyExists = ruleNameMatch && rules.some((r) => r.name === ruleNameMatch[1]);
+        if (!alreadyExists) {
+          const rewritten = rewriteGrammarDialectTokens(
+            exp.rippleGrammarLine,
+            DIALECT_PRESETS.ebnf.config,
+            dialect
+          );
+          const nextGrammar = `${grammarText.trimEnd()}\n${rewritten}\n`;
+          setGrammarText(nextGrammar);
+          recompileFromGrammar(nextGrammar, dialect, schemaConfig);
+          rippledParts.push('grammar rule');
+        }
+      }
+
+      if (exp.rippleCallback) {
+        setGlobalCallbacks((prev) => {
+          const next = upsertGlobalCallback(prev, {
+            name: exp.rippleCallback!.name,
+            lambdaExpr: exp.rippleCallback!.lambdaExpr,
+            description: exp.rippleCallback!.description,
+            source: 'manual',
+          }).list;
+          saveGlobalCallbacks(next);
+          return next;
+        });
+        rippledParts.push(`λ ${exp.rippleCallback.name}`);
+      }
+
+      if (exp.rippleLabel) {
+        setLogicLabels((prev) => {
+          if (prev.some((l) => l.name.trim() === exp.rippleLabel!.name.trim())) return prev;
+          return [
+            ...prev,
+            {
+              id: `lbl_mod_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+              name: exp.rippleLabel!.name,
+              kind: exp.rippleLabel!.kind,
+              value: exp.rippleLabel!.value,
+            },
+          ];
+        });
+        rippledParts.push(`label ${exp.rippleLabel.name}`);
+      }
+
+      if (rippledParts.length > 0) {
+        setSyncDirection(`Module Ripple (${moduleName || 'module'}) → Grammar / λ Callbacks / JSON-LD / AST`);
+        showNotice(`Rippled ${exp.name} (${rippledParts.join(', ')}) across active scope.`);
+      }
+    },
+    [rules, dialect, grammarText, schemaConfig, recompileFromGrammar, showNotice]
+  );
+
   const handleUpdateRule = (
     originalName: string,
     patch: { name?: string; expression?: string; alternatives?: string[] }
@@ -418,10 +991,6 @@ export default function App() {
       showNotice(res.error);
       return;
     }
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: `Update rule ${originalName}` },
-    ]);
     const nextCfgs = { ...ruleConfigs };
     if (res.nextName !== originalName && nextCfgs[originalName]) {
       nextCfgs[res.nextName] = nextCfgs[originalName];
@@ -439,10 +1008,6 @@ export default function App() {
       showNotice(res.error);
       return;
     }
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: `Add rule ${res.name}` },
-    ]);
     setGrammarText(res.grammar);
     recompileFromGrammar(res.grammar, dialect, schemaConfig);
     showNotice(`Added rule <${res.name}>.`);
@@ -458,10 +1023,6 @@ export default function App() {
       showNotice(res.error);
       return;
     }
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: `Delete rule ${name}` },
-    ]);
     setGrammarText(res.grammar);
     recompileFromGrammar(res.grammar, dialect, schemaConfig);
     showNotice(`Deleted rule <${name}>.`);
@@ -497,20 +1058,12 @@ export default function App() {
       showNotice('Rules are already ordered by precedence.');
       return;
     }
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: 'Sort rules by precedence' },
-    ]);
     setGrammarText(sorted);
     recompileFromGrammar(sorted, dialect, schemaConfig, undefined, undefined, ruleConfigs);
     showNotice('Reordered grammar rules by numeric precedence.');
   };
 
   const handleSyncLogicToGrammar = (statement: string, labels: LogicLabelBinding[]) => {
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: 'Sync logic statement to grammar' },
-    ]);
     const op = dialect.ruleOperator ?? '';
     const c = dialect.commentPrefix || '//';
     const lines = [
@@ -539,7 +1092,6 @@ export default function App() {
 
   const handleAutoStubMissingRules = (missingNames: string[]) => {
     if (missingNames.length === 0) return;
-    setUndoStack((prev) => [...prev.slice(-14), { grammarText, dslSource, label: 'Auto-stub missing rules' }]);
     const stubs = missingNames
       .map((name) => formatGrammarRuleLine(name, `'${name}'`, dialect.ruleOperator))
       .join('\n');
@@ -555,10 +1107,6 @@ export default function App() {
       showNotice(res.error);
       return;
     }
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: `Reorder ${sourceName} ${position} ${targetName}` },
-    ]);
     setGrammarText(res.grammar);
     recompileFromGrammar(res.grammar, dialect, schemaConfig);
     setSyncDirection('Rule Reorder → JSON-LD / Python / Rust / WASM');
@@ -580,10 +1128,6 @@ export default function App() {
       showNotice(res.error);
       return;
     }
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: `Merge ${sourceName} → ${targetName}` },
-    ]);
     setGrammarText(res.grammar);
     if (evalRule === sourceName) {
       setEvalRule(targetName);
@@ -593,32 +1137,366 @@ export default function App() {
     showNotice(res.summary);
   };
 
+  const handleSplitRule = (ruleName: string, splitIndex?: number) => {
+    if (mutationPolicy.lockedRules.includes(ruleName)) {
+      showNotice(`Rule "${ruleName}" is locked by declaration. Unlock it before splitting.`);
+      return;
+    }
+    const res = splitGrammarRule(grammarText, rules, ruleName, dialect, splitIndex);
+    if (!res.ok) {
+      showNotice(res.error);
+      return;
+    }
+    setGrammarText(res.grammar);
+    recompileFromGrammar(res.grammar, dialect, schemaConfig);
+    setSyncDirection(`Biject / Split <${ruleName}> → JSON-LD / Python / Rust / WASM`);
+    showNotice(res.summary);
+  };
+
   const handleReorderFlows = (sourceFlowId: string, targetFlowId: string, position: 'before' | 'after') => {
     if (sourceFlowId === targetFlowId) return;
     const nextDsl = reorderDslFlows(dslSource, sourceFlowId, targetFlowId, position);
     if (nextDsl === dslSource) return;
-    setUndoStack((prev) => [
-      ...prev.slice(-14),
-      { grammarText, dslSource, label: `Reorder workbench ${sourceFlowId}` },
-    ]);
     setDslSource(nextDsl);
     setSyncDirection('DSL Carousel Reorder → OpenAPI / Flows');
     showNotice(`Reordered workbench step ${sourceFlowId} ${position} ${targetFlowId}.`);
   };
 
-  const handleUndo = () => {
-    if (undoStack.length === 0) return;
-    const last = undoStack[undoStack.length - 1];
-    setUndoStack((prev) => prev.slice(0, -1));
-    if (last.grammarText !== grammarText) {
-      setGrammarText(last.grammarText);
-      recompileFromGrammar(last.grammarText, dialect, schemaConfig);
-    }
-    if (last.dslSource !== dslSource) {
-      setDslSource(last.dslSource);
-    }
-    showNotice(`Undid: ${last.label}.`);
+  const handleMergeFlows = (sourceFlowId: string, targetFlowId: string) => {
+    if (sourceFlowId === targetFlowId) return;
+    const src = parsedDsl.flows.find((f) => f.id === sourceFlowId);
+    const tgt = parsedDsl.flows.find((f) => f.id === targetFlowId);
+    if (!src || !tgt) return;
+    const mergedLabel = `${tgt.label} + ${src.label.replace(/^\d+\.\s*/, '')}`;
+    const lines = dslSource.split(/\r?\n/);
+    const filtered = lines
+      .filter((line: string) => !line.includes(`flow ${sourceFlowId} `))
+      .map((line: string) =>
+        line.includes(`flow ${targetFlowId} `)
+          ? line.replace(/label="[^"]*"/, `label="${mergedLabel}"`)
+          : line
+      );
+    setDslSource(filtered.join('\n'));
+    setSyncDirection(`DSL Flow Merge (${sourceFlowId} → ${targetFlowId})`);
+    showNotice(`Merged flow ${sourceFlowId} into ${targetFlowId}.`);
   };
+
+  const handleSplitFlow = (flowId: string, splitIndex?: number) => {
+    const target = parsedDsl.flows.find((f) => f.id === flowId);
+    if (!target) return;
+    const suffix = splitIndex ?? 2;
+    const newId = `${flowId}_B${suffix}`;
+    const lines = dslSource.split(/\r?\n/);
+    const out: string[] = [];
+    for (const line of lines) {
+      out.push(line);
+      if (line.includes(`flow ${flowId} `)) {
+        const clone = line
+          .replace(`flow ${flowId} `, `flow ${newId} `)
+          .replace(/label="([^"]*)"/, `label="$1 (Split ${suffix})"`);
+        out.push(clone);
+      }
+    }
+    setDslSource(out.join('\n'));
+    setSyncDirection(`DSL Flow Biject/Split (${flowId} → ${newId})`);
+    showNotice(`Bijected flow ${flowId} into ${flowId} + ${newId}.`);
+  };
+
+  // Apply a full Histolog snapshot cleanly to EVERY input and output area
+  const applyHistologSnapshot = useCallback((snap: HistologSnapshotState) => {
+    suppressHistologRef.current = true;
+    setDialect(snap.dialect);
+    setGrammarText(snap.grammarText);
+    setJsonText(snap.jsonText);
+    setJsonValid(true);
+    setJsonError(null);
+    setMutations(snap.mutations);
+    setRuleConfigs(snap.ruleConfigs);
+    setEvalRule(snap.evalRule);
+    setEvalPayload(snap.evalPayload);
+    setPythonSource(snap.pythonSource);
+    setRustSource(snap.rustSource);
+    setWatSource(snap.watSource);
+    setLogicStatement(snap.logicStatement);
+    setLogicLabels(snap.logicLabels.map((l) => ({ ...l })));
+    setDslSource(snap.dslSource);
+  }, []);
+
+  const canUndo = histologCursor > 0;
+  const canRedo = histologCursor < histologEntries.length - 1;
+
+  const handleUndo = useCallback(() => {
+    if (histologCursor <= 0) return;
+    const fromEntry = histologEntries[histologCursor];
+    const nextCursor = histologCursor - 1;
+    const targetEntry = histologEntries[nextCursor];
+    if (!targetEntry) return;
+    setHistologCursor(nextCursor);
+    applyHistologSnapshot(targetEntry.snapshot);
+    setLastDiffRef({ from: targetEntry.generation, to: fromEntry.generation });
+    setSyncDirection(`Undo → G${targetEntry.generation} (ref diff G${targetEntry.generation}↔G${fromEntry.generation})`);
+    showNotice(`Undid to G${targetEntry.generation} (${targetEntry.summary}) — click Diff G${targetEntry.generation}↔G${fromEntry.generation} to inspect.`);
+  }, [histologCursor, histologEntries, applyHistologSnapshot, showNotice]);
+
+  const handleRedo = useCallback(() => {
+    if (histologCursor >= histologEntries.length - 1) return;
+    const fromEntry = histologEntries[histologCursor];
+    const nextCursor = histologCursor + 1;
+    const targetEntry = histologEntries[nextCursor];
+    if (!targetEntry) return;
+    setHistologCursor(nextCursor);
+    applyHistologSnapshot(targetEntry.snapshot);
+    setLastDiffRef({ from: fromEntry.generation, to: targetEntry.generation });
+    setSyncDirection(`Redo → G${targetEntry.generation} (ref diff G${fromEntry.generation}↔G${targetEntry.generation})`);
+    showNotice(`Redid to G${targetEntry.generation} (${targetEntry.summary}).`);
+  }, [histologCursor, histologEntries, applyHistologSnapshot, showNotice]);
+
+  // Global Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z / Ctrl+Y shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTextField =
+        target &&
+        (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
+      if (isTextField) return;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if (
+        ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'z') ||
+        ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'y')
+      ) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleUndo, handleRedo]);
+
+  const handleCaptureCheckpoint = (note?: string) => {
+    const snap = makeCurrentHistologSnapshot();
+    const current = histologEntries[histologCursor] ?? histologEntries[histologEntries.length - 1];
+    const nextGen = (histologEntries[histologEntries.length - 1]?.generation ?? -1) + 1;
+    const entry = createHistologEntry({
+      generation: nextGen,
+      parentGeneration: current?.generation ?? null,
+      source: 'checkpoint',
+      summary: note?.trim() || `Manual checkpoint G${nextGen}`,
+      snapshot: snap,
+      previousSnapshot: current?.snapshot ?? null,
+    });
+    const nextList = [...histologEntries.slice(0, histologCursor + 1), entry].slice(-60);
+    setHistologEntries(nextList);
+    setHistologCursor(nextList.length - 1);
+    showNotice(`Captured checkpoint G${entry.generation}.`);
+  };
+
+  const handleRestoreGeneration = (entry: HistologEntry) => {
+    const currentGen = histologEntries[histologCursor]?.generation ?? 0;
+    const idx = histologEntries.findIndex((e) => e.generation === entry.generation);
+    if (idx >= 0) setHistologCursor(idx);
+    applyHistologSnapshot(entry.snapshot);
+    setLastDiffRef({ from: entry.generation, to: currentGen });
+    setSyncDirection(`Restored Full Engine → G${entry.generation}`);
+    showNotice(`Restored entire engine to G${entry.generation} (${entry.summary}).`);
+  };
+
+  const handleRestoreSection = (entry: HistologEntry, field: HistologFieldKey) => {
+    const s = entry.snapshot;
+    if (field === 'grammar') {
+      setDialect(s.dialect);
+      setGrammarText(s.grammarText);
+      recompileFromGrammar(s.grammarText, s.dialect, schemaConfig);
+    } else if (field === 'jsonld') {
+      handleJsonEdited(s.jsonText);
+    } else if (field === 'python') {
+      setPythonSource(s.pythonSource);
+    } else if (field === 'rust') {
+      setRustSource(s.rustSource);
+    } else if (field === 'wat') {
+      setWatSource(s.watSource);
+    } else if (field === 'dsl') {
+      setDslSource(s.dslSource);
+    } else if (field === 'logic') {
+      setLogicStatement(s.logicStatement);
+      setLogicLabels(s.logicLabels.map((l) => ({ ...l })));
+    } else if (field === 'mutations') {
+      setMutations(s.mutations);
+      setRuleConfigs(s.ruleConfigs);
+      recompileFromGrammar(grammarText, dialect, schemaConfig, s.mutations, mutationPolicy, s.ruleConfigs);
+    } else if (field === 'evaluator') {
+      setEvalRule(s.evalRule);
+      setEvalPayload(s.evalPayload);
+    }
+    showNotice(`Restored section "${HISTOLOG_FIELD_LABELS[field]}" from G${entry.generation}.`);
+  };
+
+  const handleClearSection = (section: EngineSectionKey | HistologFieldKey) => {
+    if (section === 'all') {
+      handleClearEntireEngine();
+      return;
+    }
+    if (section === 'grammar') {
+      setGrammarText('');
+      recompileFromGrammar('', dialect, schemaConfig, {});
+    } else if (section === 'jsonld') {
+      setJsonText('{}');
+      setJsonValid(true);
+      setJsonError(null);
+    } else if (section === 'mutations') {
+      setMutations({});
+      setRuleConfigs({});
+    } else if (section === 'logic') {
+      setLogicStatement('');
+      setLogicLabels([]);
+    } else if (section === 'evaluator') {
+      setEvalPayload('');
+    } else if (section === 'dsl') {
+      setDslSource(DEFAULT_DSL_SOURCE);
+    } else if (section === 'python') {
+      setPythonSource('# Cleared Python AST module\n');
+    } else if (section === 'rust') {
+      setRustSource('// Cleared Rust AST module\n');
+    } else if (section === 'wat') {
+      setWatSource('(module\n  (memory (export "memory") 1)\n  (func (export "rule_count") (result i32) (i32.const 0))\n)');
+    } else if (section === 'callbacks') {
+      setGlobalCallbacks([]);
+      saveGlobalCallbacks([]);
+    }
+    setClearMenuOpen(false);
+    showNotice(`Cleared section: ${section}.`);
+  };
+
+  const handleClearEntireEngine = () => {
+    setGrammarText('');
+    setJsonText('{}');
+    setJsonValid(true);
+    setJsonError(null);
+    setMutations({});
+    setRuleConfigs({});
+    setEvalPayload('');
+    setLogicStatement('');
+    setLogicLabels([]);
+    setPythonSource('# Empty Python AST module\n');
+    setRustSource('// Empty Rust AST module\n');
+    setWatSource('(module\n  (memory (export "memory") 1)\n  (func (export "rule_count") (result i32) (i32.const 0))\n)');
+    setVerifiedSteps([]);
+    setClearMenuOpen(false);
+    setSyncDirection('Cleared Entire Engine (Undo or Histolog G0 to restore)');
+    showNotice('Cleared entire engine state — click Undo or restore G0 from Histolog at any time.');
+  };
+
+  const handleImportHistolog = (
+    rawText: string,
+    mode: 'replace' | 'merge'
+  ): { ok: true; message: string } | { ok: false; error: string } => {
+    const res = importHistologCustom(rawText, mode, histologEntries);
+    if (!res.ok) return { ok: false, error: res.error };
+    setHistologEntries(res.entries);
+    setHistologCursor(Math.max(0, res.entries.length - 1));
+    const msg = `Imported ${res.importedCount} generation${res.importedCount === 1 ? '' : 's'} (${res.detectedFormat}, mode: ${mode}).`;
+    showNotice(msg);
+    return { ok: true, message: msg };
+  };
+
+  const handleCopyDeepLink = async (options?: { includeFullState?: boolean; forceModalOpen?: boolean; fromGen?: number; toGen?: number }) => {
+    if (typeof window === 'undefined') return;
+    const url = buildDeepLinkUrl(
+      window.location.href,
+      {
+        v: 1,
+        topView: options?.fromGen !== undefined ? 'histolog' : topView,
+        activePage,
+        modalOpen: options?.forceModalOpen ?? modalOpen,
+        modalStructure,
+        viewportPreset: modalViewport,
+        stageFilter,
+        pipelineLayoutMode,
+        primaryLanguage,
+        selectedMcpServerId,
+        histologFromGen: options?.fromGen ?? lastDiffRef?.from,
+        histologToGen: options?.toGen ?? lastDiffRef?.to,
+        ...(options?.includeFullState
+          ? {
+              grammarText,
+              dialect,
+              schemaConfig,
+              evalRule,
+              evalPayload,
+              logicStatement,
+              logicLabels,
+              dslSource,
+            }
+          : {}),
+      },
+      { includeFullState: options?.includeFullState, forceModalOpen: options?.forceModalOpen }
+    );
+    try {
+      await navigator.clipboard.writeText(url);
+      showNotice(
+        options?.includeFullState
+          ? 'Copied full shareable state URL (#state=...) to clipboard.'
+          : 'Copied direct URL link to clipboard.'
+      );
+    } catch {
+      showNotice('Direct URL prepared in address bar.');
+    }
+  };
+
+  const handleSyncWorkspaceToServer = useCallback(async () => {
+    await fetch('/api/workspaces/default', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grammarText,
+        dialect,
+        schemaConfig,
+        mutationPolicy,
+        mutations,
+        ruleConfigs,
+        evalRule,
+        evalPayload,
+        logicStatement,
+        logicLabels,
+        dslSource,
+        primaryLanguage,
+      }),
+    });
+  }, [
+    grammarText,
+    dialect,
+    schemaConfig,
+    mutationPolicy,
+    mutations,
+    ruleConfigs,
+    evalRule,
+    evalPayload,
+    logicStatement,
+    logicLabels,
+    dslSource,
+    primaryLanguage,
+  ]);
+
+  const handlePullServerWorkspace = useCallback(async () => {
+    try {
+      const resp = await fetch('/api/workspaces/default');
+      if (!resp.ok) return;
+      const data = (await resp.json()) as Record<string, unknown>;
+      if (typeof data.grammarText === 'string' && data.grammarText !== grammarText) {
+        const nextDialect = (data.dialect as DialectConfig | undefined) ?? dialect;
+        setDialect(nextDialect);
+        setGrammarText(data.grammarText);
+        recompileFromGrammar(data.grammarText, nextDialect, schemaConfig);
+      }
+      if (typeof data.logicStatement === 'string') setLogicStatement(data.logicStatement);
+      if (Array.isArray(data.logicLabels)) setLogicLabels(data.logicLabels as LogicLabelBinding[]);
+      if (typeof data.dslSource === 'string') setDslSource(data.dslSource);
+      showNotice('Pulled live workspace changes from Express REST API.');
+    } catch {
+      // Ignore offline/static mode
+    }
+  }, [grammarText, dialect, schemaConfig, recompileFromGrammar, showNotice]);
 
   const handleJsonEdited = (nextJson: string) => {
     setJsonText(nextJson);
@@ -668,10 +1546,22 @@ export default function App() {
     showNotice(`Loaded ${p.label} dialect preset.`);
   };
 
+  // Live-rewrite rule operator, choice delimiter, comment prefix, AND Extended DAG operators into grammarText!
   const handleDialectChange = (patch: Partial<DialectConfig>) => {
-    const next = { ...dialect, ...patch };
+    const next: DialectConfig = {
+      ...dialect,
+      ...patch,
+      symbols: patch.symbols ? { ...dialect.symbols, ...patch.symbols } : dialect.symbols,
+    };
+    const rewrittenGrammar = rewriteGrammarDialectTokens(grammarText, dialect, next);
     setDialect(next);
-    recompileFromGrammar(grammarText, next, schemaConfig);
+    if (rewrittenGrammar !== grammarText) {
+      setGrammarText(rewrittenGrammar);
+      recompileFromGrammar(rewrittenGrammar, next, schemaConfig);
+      setSyncDirection('Dialect Token Rewrite → Active Grammar Rules / JSON-LD / AST');
+    } else {
+      recompileFromGrammar(grammarText, next, schemaConfig);
+    }
   };
 
   const handleApplySchemaPreset = (presetId: SchemaPresetId) => {
@@ -816,23 +1706,24 @@ export default function App() {
     showNotice('Reset line mutations to defaults.');
   };
 
-  // Primary Language Switcher
+  // Primary Language Switcher (supports all 22 languages!)
   const handleSelectLanguage = (lang: PrimaryLanguage) => {
     setPrimaryLanguage(lang);
-    setTopView('workbench');
+    const meta = SUPPORTED_LANGUAGES.find((l) => l.id === lang);
     if (lang === 'python') {
+      setTopView('workbench');
       setActivePage('python_ast');
-      showNotice('Switched primary language to Python AST workflow.');
     } else if (lang === 'rust') {
+      setTopView('workbench');
       setActivePage('rust_ast');
-      showNotice('Switched primary language to Rust syn / serde AST workflow.');
     } else if (lang === 'wasm') {
+      setTopView('workbench');
       setActivePage('wasm_wabt');
-      showNotice('Switched primary language to WASM / WABT workflow.');
-    } else {
+    } else if (lang === 'json') {
+      setTopView('workbench');
       setActivePage('schema');
-      showNotice('Switched primary language to Schema.org JSON-LD workflow.');
     }
+    showNotice(`Switched primary language target to ${meta?.label ?? lang}.`);
   };
 
   // Sample workflow triggers
@@ -1439,17 +2330,50 @@ export default function App() {
       if (effect.verifiedSteps) setVerifiedSteps(effect.verifiedSteps);
       if (effect.pipelineLayoutMode) setPipelineLayoutMode(effect.pipelineLayoutMode);
       if (effect.dslSource && effect.dslSource !== dslSource) {
-        setUndoStack((prev) => [
-          ...prev.slice(-14),
-          { grammarText, dslSource, label: 'MCP pipeline reorder' },
-        ]);
         setDslSource(effect.dslSource);
       }
       setSyncDirection('MCP /api/mcp/pipeline → Pipeline Grid & Breadcrumbs');
       showNotice('Applied live Pipeline MCP update to Studio Grid & Breadcrumbs.');
     },
-    [dslSource, grammarText, showNotice]
+    [dslSource, showNotice]
   );
+
+  // Dynamic OpenAPI Spec that reacts live to child rule, dialect, language, and callback mutations
+  const dynamicOpenApiSpec: OpenApiSpec = useMemo(() => {
+    const liveRulePaths: OpenApiSpec['paths'] = {};
+    rules.slice(0, 6).forEach((r) => {
+      liveRulePaths[`/api/nodes/rule/${r.name}`] = {
+        get: {
+          operationId: `getRuleNode_${r.name}`,
+          summary: `Inspect live rule <${r.name}> (${r.alternatives.length} branch${r.alternatives.length === 1 ? '' : 'es'}) & HATEOAS members`,
+          tags: ['Rule Nodes'],
+          'x-language': primaryLanguage,
+          'x-workbench-step': 2,
+          responses: { '200': { description: 'HATEOAS Rule Node & Members' } },
+        },
+        patch: {
+          operationId: `patchRuleNode_${r.name}`,
+          summary: `Mutate rule <${r.name}> expression or precedence via REST`,
+          tags: ['Rule Nodes'],
+          'x-language': primaryLanguage,
+          'x-workbench-step': 2,
+          responses: { '200': { description: 'Updated Rule Node' } },
+        },
+      };
+    });
+    return {
+      ...OPENAPI_SPEC,
+      info: {
+        ...OPENAPI_SPEC.info,
+        title: `${schemaConfig.schemaName} · Grammar2JSON OpenAPI`,
+        description: `${OPENAPI_SPEC.info.description} Active dialect: ${dialect.preset} (${rules.length} rules, ${globalCallbacks.length} global callbacks, target: ${primaryLanguage}).`,
+      },
+      paths: {
+        ...OPENAPI_SPEC.paths,
+        ...liveRulePaths,
+      },
+    };
+  }, [rules, dialect.preset, globalCallbacks.length, primaryLanguage, schemaConfig.schemaName]);
 
   const stepByOffset = (delta: number) => {
     if (flows.length === 0) return;
@@ -1502,14 +2426,14 @@ export default function App() {
     () =>
       searchStudio(
         searchQuery,
-        OPENAPI_SPEC,
+        dynamicOpenApiSpec,
         parsedDsl,
         rules,
         pythonSymbols,
         rustSymbols,
         wasmResult.exports.map((e) => e.name)
       ),
-    [searchQuery, parsedDsl, rules, pythonSymbols, rustSymbols, wasmResult.exports]
+    [searchQuery, dynamicOpenApiSpec, parsedDsl, rules, pythonSymbols, rustSymbols, wasmResult.exports]
   );
 
   // Shared props for StepViews (both inline & modal)
@@ -1666,6 +2590,9 @@ export default function App() {
     ruleConfigs,
     logicStatement,
     logicLabels,
+    globalCallbacks,
+    onSaveGlobalCallback: handleSaveGlobalCallback,
+    onDeleteGlobalCallback: handleDeleteGlobalCallback,
     mcpWorkspaceContext,
     selectedMcpServerId,
     onPipelineMcpEffect: handlePipelineMcpEffect,
@@ -1683,46 +2610,105 @@ export default function App() {
     onMergeStrategyChange: setMergeStrategy,
     onReorderRules: handleReorderRules,
     onMergeRules: handleMergeRules,
-    canUndo: undoStack.length > 0,
+    onSplitRule: handleSplitRule,
+    onOpenEditModal: (page: WorkflowSlug) => {
+      setActivePage(page);
+      setModalOpen(true);
+    },
+    primaryLanguage,
+    autocompleteSuggestions,
+    lintIssues: studioLintIssues,
+    onRippleModuleExport: handleRippleModuleExport,
+    canUndo,
     onUndo: handleUndo,
   };
 
+  const isSpecsView = topView === 'openapi' || topView === 'dsl' || topView === 'bundle';
+  const activeSpecsTab: 'openapi' | 'dsl' | 'bundle' =
+    topView === 'dsl' ? 'dsl' : topView === 'bundle' ? 'bundle' : specsSubTab;
+
+  const selectedLangMeta =
+    SUPPORTED_LANGUAGES.find((l) => l.id === primaryLanguage) ?? SUPPORTED_LANGUAGES[0];
+
+  const primaryNavItems: Array<{
+    id: 'workbench' | 'graph' | 'histolog' | 'api' | 'specs';
+    fullLabel: string;
+    compactLabel: string;
+    icon: typeof Layers;
+    active: boolean;
+    onClick: () => void;
+  }> = [
+    {
+      id: 'workbench',
+      fullLabel: 'Workbench',
+      compactLabel: 'Work',
+      icon: Layers,
+      active: topView === 'workbench',
+      onClick: () => setTopView('workbench'),
+    },
+    {
+      id: 'graph',
+      fullLabel: 'Rule Dependency Graph',
+      compactLabel: 'Graph',
+      icon: GitBranch,
+      active: topView === 'graph',
+      onClick: () => setTopView('graph'),
+    },
+    {
+      id: 'histolog',
+      fullLabel: 'Histolog & Diff',
+      compactLabel: 'History',
+      icon: History,
+      active: topView === 'histolog',
+      onClick: () => setTopView('histolog'),
+    },
+    {
+      id: 'api',
+      fullLabel: 'API Studio',
+      compactLabel: 'API',
+      icon: Terminal,
+      active: topView === 'api',
+      onClick: () => setTopView('api'),
+    },
+    {
+      id: 'specs',
+      fullLabel: 'Specifications & Bundle',
+      compactLabel: 'Specs',
+      icon: FileCode2,
+      active: isSpecsView,
+      onClick: () => setTopView(activeSpecsTab),
+    },
+  ];
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
-      {/* STRICT 3-ZONE TOP BAR CONTRACT */}
+      {/* STRICT 3-ZONE TOP BAR CONTRACT (compact on mobile <= 56px, full labels on desktop) */}
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-xs dark:border-slate-800 dark:bg-slate-900/95">
-        <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-8 px-4 py-3.5 sm:px-6">
+        <div className="mx-auto flex max-w-[1440px] items-center justify-between gap-4 px-4 py-2.5 sm:px-6 md:py-3.5">
           {/* Zone 1: Single-line Brand Wordmark */}
           <button
             type="button"
             onClick={() => setTopView('workbench')}
-            className="shrink-0 whitespace-nowrap text-base font-bold tracking-tight text-slate-900 dark:text-slate-100"
+            className="shrink-0 whitespace-nowrap text-sm font-bold tracking-tight text-slate-900 sm:text-base dark:text-slate-100"
           >
             Grammar2JSON Studio
           </button>
 
-          {/* Zone 2: 5 Clean Single-Line Nav Links */}
-          <nav className="hidden items-center gap-6 md:flex" aria-label="Primary sections">
-            {(
-              [
-                ['workbench', 'Workbench'],
-                ['graph', 'Rule Graph'],
-                ['openapi', 'OpenAPI Spec'],
-                ['dsl', 'DSL Flows'],
-                ['bundle', 'Export Bundle'],
-              ] as const
-            ).map(([id, label]) => (
+          {/* Zone 2: 5 Clean Non-Redundant Single-Line Nav Links (abbreviate ONLY when narrow viewport demands it) */}
+          <nav className="hidden items-center gap-4 md:flex lg:gap-6" aria-label="Primary sections">
+            {primaryNavItems.map((item) => (
               <button
-                key={id}
+                key={item.id}
                 type="button"
-                onClick={() => setTopView(id)}
+                onClick={item.onClick}
                 className={`shrink-0 whitespace-nowrap border-b-2 py-1 text-sm font-medium transition-colors ${
-                  topView === id
+                  item.active
                     ? 'border-blue-600 text-slate-900 dark:border-blue-400 dark:text-slate-100'
                     : 'border-transparent text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
                 }`}
               >
-                {label}
+                <span className="hidden xl:inline">{item.fullLabel}</span>
+                <span className="xl:hidden">{item.compactLabel}</span>
               </button>
             ))}
           </nav>
@@ -1732,47 +2718,22 @@ export default function App() {
             <button
               type="button"
               onClick={handleDownloadProjectZip}
-              className="inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-4 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-700 sm:px-4"
             >
               <Download className="h-3.5 w-3.5" />
-              Download ZIP
+              <span className="hidden sm:inline">Download Project ZIP</span>
+              <span className="sm:hidden">ZIP</span>
             </button>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1440px] space-y-6 px-4 py-6 sm:px-6">
-        {/* Mobile Navigation Fallback */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 md:hidden">
-          {(
-            [
-              ['workbench', 'Workbench'],
-              ['graph', 'Rule Graph'],
-              ['openapi', 'OpenAPI Spec'],
-              ['dsl', 'DSL Flows'],
-              ['bundle', 'Export Bundle'],
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTopView(id)}
-              className={`shrink-0 whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium ${
-                topView === id
-                  ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
-                  : 'border border-slate-200 bg-white text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {/* WORKSPACE TOOLBAR: GLOBAL SEARCH, LANGUAGE SWITCHER, SAMPLES & THEME */}
-        <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+      <main className="mx-auto max-w-[1440px] space-y-5 px-3 py-4 pb-20 sm:px-6 sm:py-6 md:pb-8">
+        {/* WORKSPACE TOOLBAR: GLOBAL SEARCH, 22-LANGUAGE SWITCHER, AUTO-SAVE, UNDO/REDO, CLEAR/RESTORE, DEEP LINKS */}
+        <section className="rounded-xl border border-slate-200 bg-white p-3.5 sm:p-4 dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             {/* Search Box */}
-            <div className="relative flex-1 lg:max-w-lg">
+            <div className="relative flex-1 lg:max-w-md">
               <Search className="pointer-events-none absolute top-1/2 left-3.5 h-4 w-4 -translate-y-1/2 text-slate-400" />
               <input
                 type="search"
@@ -1785,7 +2746,7 @@ export default function App() {
                   setSearchQuery(e.target.value);
                   setSearchOpen(true);
                 }}
-                placeholder="Search OpenAPI routes, DSL flows, rules, Python/Rust AST, or WASM exports..."
+                placeholder="Search OpenAPI routes, DSL flows, rules, AST symbols, or WASM exports..."
                 className="w-full rounded-lg border border-slate-200 bg-slate-50 py-2 pr-9 pl-10 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               />
               {searchQuery && (
@@ -1817,7 +2778,7 @@ export default function App() {
                   </div>
                   {searchHits.length === 0 ? (
                     <div className="px-3 py-4 text-xs text-slate-500">
-                      No OpenAPI operations, DSL flows, rules, or AST symbols match "{searchQuery}".
+                      No OpenAPI operations, DSL flows, rules, or AST symbols match &quot;{searchQuery}&quot;.
                     </div>
                   ) : (
                     <div className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -1851,57 +2812,146 @@ export default function App() {
               )}
             </div>
 
-            {/* Language Switcher (JSON-LD | Python | Rust | WASM/WABT) + Quick Samples + Theme */}
+            {/* 22-Language Selector + Quick Target Tabs + Samples + Deep Link + Clear/Restore + Theme */}
             <div className="flex flex-wrap items-center gap-2">
-              <div
-                className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
-                role="group"
-                aria-label="Primary language target"
-              >
-                {(
-                  [
-                    ['json', 'JSON-LD'],
-                    ['python', 'Python'],
-                    ['rust', 'Rust'],
-                    ['wasm', 'WASM / WABT'],
-                  ] as const
-                ).map(([lang, label]) => (
-                  <button
-                    key={lang}
-                    type="button"
-                    onClick={() => handleSelectLanguage(lang)}
-                    className={`whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                      primaryLanguage === lang
-                        ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
-                        : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
+              <div className="inline-flex items-center gap-1.5">
+                <div
+                  className="hidden items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5 sm:inline-flex dark:border-slate-800 dark:bg-slate-950"
+                  role="group"
+                  aria-label="Primary language quick switcher"
+                >
+                  {(
+                    [
+                      ['json', 'JSON-LD'],
+                      ['python', 'Python'],
+                      ['rust', 'Rust'],
+                      ['wasm', 'WASM'],
+                    ] as const
+                  ).map(([lang, label]) => (
+                    <button
+                      key={lang}
+                      type="button"
+                      onClick={() => handleSelectLanguage(lang)}
+                      className={`whitespace-nowrap rounded-md px-2.5 py-1 text-xs font-medium transition-colors ${
+                        primaryLanguage === lang
+                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-800 dark:text-slate-100'
+                          : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <select
+                  aria-label="Select target programming language (22 supported)"
+                  value={primaryLanguage}
+                  onChange={(e) => handleSelectLanguage(e.target.value as PrimaryLanguage)}
+                  className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-800 focus:border-blue-500 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                >
+                  {SUPPORTED_LANGUAGES.map((lang) => (
+                    <option key={lang.id} value={lang.id}>
+                      {lang.label} ({lang.extension})
+                    </option>
+                  ))}
+                </select>
+                <DocTooltip docKey="languageSelection" />
               </div>
 
+              {/* Clear / Restore Menu */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setClearMenuOpen((o) => !o)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <Eraser className="h-3.5 w-3.5" />
+                  <span className="hidden md:inline">Clear / Restore</span>
+                  <span className="md:hidden">Clear</span>
+                </button>
+                {clearMenuOpen && (
+                  <div className="absolute right-0 z-30 mt-2 w-72 rounded-xl border border-slate-200 bg-white p-3 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                    <div className="mb-2 flex items-center justify-between text-xs font-semibold text-slate-800 dark:text-slate-200">
+                      <span>Clear Engine or Section</span>
+                      <button
+                        type="button"
+                        onClick={() => setClearMenuOpen(false)}
+                        className="text-slate-400 hover:text-slate-600"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {(
+                        [
+                          ['grammar', 'Grammar Rules'],
+                          ['jsonld', 'JSON-LD Schema'],
+                          ['logic', 'Logic & λ Calc'],
+                          ['mutations', 'Line Mutations'],
+                          ['evaluator', 'Eval Payload'],
+                          ['python', 'Python AST'],
+                          ['rust', 'Rust AST'],
+                          ['wat', 'WASM / WAT'],
+                          ['dsl', 'Reset DSL Flows'],
+                          ['callbacks', 'Global Callbacks'],
+                        ] as Array<[EngineSectionKey, string]>
+                      ).map(([sec, lbl]) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => handleClearSection(sec)}
+                          className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-left text-[11px] font-medium text-slate-700 hover:border-amber-400 hover:bg-amber-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="mt-2.5 flex flex-col gap-1.5 border-t border-slate-100 pt-2.5 dark:border-slate-800">
+                      <button
+                        type="button"
+                        onClick={handleClearEntireEngine}
+                        className="w-full rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-red-700"
+                      >
+                        Clear Entire Engine
+                      </button>
+                      {histologEntries[0] && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handleRestoreGeneration(histologEntries[0]);
+                            setClearMenuOpen(false);
+                          }}
+                          className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          Restore Initial Generation (G0)
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Direct Link & Shareable State Link */}
               <button
                 type="button"
-                onClick={handleRunPythonSample}
-                className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={() => void handleCopyDeepLink({ includeFullState: false })}
+                title="Copy direct URL for current view & workbench"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                Python Sample
+                <Link2 className="h-3.5 w-3.5" />
+                <span className="hidden lg:inline">Copy Link</span>
               </button>
               <button
                 type="button"
-                onClick={handleRunRustSample}
-                className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={() => void handleCopyDeepLink({ includeFullState: true })}
+                title="Copy full shareable URL encoding workspace state (#state=...)"
+                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                Rust Sample
+                <Share2 className="h-3.5 w-3.5" />
+                <span className="hidden xl:inline">Share State</span>
               </button>
-              <button
-                type="button"
-                onClick={handleRunWasmSample}
-                className="whitespace-nowrap rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
-              >
-                WASM Sample
-              </button>
+
               <button
                 type="button"
                 onClick={() => setDarkMode((d) => !d)}
@@ -1913,8 +2963,8 @@ export default function App() {
             </div>
           </div>
 
-          {/* Clean unboxed typographic metadata bar */}
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 text-xs text-slate-500 dark:border-slate-800/80 dark:text-slate-400">
+          {/* Clean unboxed typographic metadata bar with Auto-Save + Chained Undo/Redo + Historic Diff Link */}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-xs text-slate-500 dark:border-slate-800/80 dark:text-slate-400">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono">{currentFlow.id}</span>
               <span aria-hidden="true">·</span>
@@ -1922,26 +2972,74 @@ export default function App() {
                 Step {currentFlow.step} of {flows.length}
               </span>
               <span aria-hidden="true">·</span>
-              <span>Sync: {syncDirection}</span>
+              <span className="hidden sm:inline">Sync: {syncDirection}</span>
+              <span className="sm:hidden">{selectedLangMeta.label}</span>
               <span aria-hidden="true">·</span>
-              <span className="tabular-nums">{verifiedSteps.length} verified</span>
+              <button
+                type="button"
+                onClick={() => setAutoSaveEnabled((v) => !v)}
+                title="Toggle automatic localStorage workspace persistence"
+                className={`inline-flex items-center gap-1 font-medium ${
+                  autoSaveEnabled
+                    ? 'text-emerald-600 dark:text-emerald-400'
+                    : 'text-amber-600 dark:text-amber-400'
+                }`}
+              >
+                <Save className="h-3 w-3" />
+                <span>
+                  {autoSaveEnabled
+                    ? lastAutoSavedAt
+                      ? `Auto-saved ${new Date(lastAutoSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+                      : 'Auto-Save On'
+                    : 'Auto-Save Paused'}
+                </span>
+              </button>
             </div>
-            <div className="flex items-center gap-3">
+
+            <div className="flex flex-wrap items-center gap-2">
               {notice && (
                 <div className="font-medium text-blue-600 dark:text-blue-400" role="status">
                   {notice}
                 </div>
               )}
-              {undoStack.length > 0 && (
+
+              {/* Chained Undo / Redo + Clickable Historic Diff Reference */}
+              <div className="inline-flex items-center gap-1">
                 <button
                   type="button"
+                  disabled={!canUndo}
                   onClick={handleUndo}
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  title="Undo to previous Histolog generation (Ctrl/Cmd+Z)"
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
                 >
                   <Undo2 className="h-3 w-3" />
-                  Undo
+                  <span>Undo</span>
                 </button>
-              )}
+                <button
+                  type="button"
+                  disabled={!canRedo}
+                  onClick={handleRedo}
+                  title="Redo to next Histolog generation (Ctrl/Cmd+Shift+Z)"
+                  className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <Redo2 className="h-3 w-3" />
+                  <span>Redo</span>
+                </button>
+                <span className="font-mono text-[11px] tabular-nums text-slate-400">
+                  G{histologEntries[histologCursor]?.generation ?? 0}/{histologEntries[histologEntries.length - 1]?.generation ?? 0}
+                </span>
+                {lastDiffRef && (
+                  <button
+                    type="button"
+                    onClick={() => setTopView('histolog')}
+                    title="Inspect historic diff in Histolog"
+                    className="inline-flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 font-mono text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:bg-blue-950/40 dark:text-blue-300"
+                  >
+                    <FileDiff className="h-3 w-3" />
+                    Diff G{lastDiffRef.from}↔G{lastDiffRef.to}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </section>
@@ -1956,14 +3054,20 @@ export default function App() {
 
         {/* TOP VIEW ROUTER */}
         {topView === 'graph' ? (
-          <section className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+          <section className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5 dark:border-slate-800 dark:bg-slate-900">
             <RuleDependencyGraph
               graph={ruleGraph}
               mergeStrategy={mergeStrategy}
               onMergeStrategyChange={setMergeStrategy}
               onReorderRules={handleReorderRules}
               onMergeRules={handleMergeRules}
-              canUndo={undoStack.length > 0}
+              onSplitRule={handleSplitRule}
+              onEditRuleInModal={(ruleName) => {
+                setEvalRule(ruleName);
+                setActivePage('rule_props');
+                setModalOpen(true);
+              }}
+              canUndo={canUndo}
               onUndo={handleUndo}
               onSelectRuleForEval={(ruleName) => {
                 setEvalRule(ruleName);
@@ -1975,18 +3079,45 @@ export default function App() {
               onAutoStubMissingRules={handleAutoStubMissingRules}
             />
           </section>
-        ) : topView === 'openapi' ? (
-          <OpenApiInspector
-            spec={OPENAPI_SPEC}
-            onJumpToPage={(page) => {
-              setActivePage(page);
-              setTopView('workbench');
-            }}
+        ) : topView === 'histolog' ? (
+          <HistologWorkbench
+            entries={histologEntries}
+            index={histologIndex}
+            schemaName={schemaConfig.schemaName}
+            initialFromGen={lastDiffRef?.from}
+            initialToGen={lastDiffRef?.to}
+            onCaptureCheckpoint={handleCaptureCheckpoint}
+            onRestoreGeneration={handleRestoreGeneration}
+            onRestoreSection={handleRestoreSection}
+            onClearSection={(field) => handleClearSection(field)}
+            onClearEntireEngine={handleClearEntireEngine}
+            onImportHistolog={handleImportHistolog}
+            onDownloadFile={triggerTextDownload}
+            onCopyDiffLink={(fromGen, toGen) =>
+              void handleCopyDeepLink({ includeFullState: false, fromGen, toGen })
+            }
           />
-        ) : topView === 'dsl' ? (
-          <DslInspector
+        ) : topView === 'api' ? (
+          <ApiStudioWorkbench
+            onSyncWorkspaceToServer={handleSyncWorkspaceToServer}
+            onPullServerWorkspace={handlePullServerWorkspace}
+            onDownloadFile={triggerTextDownload}
+            onNotify={showNotice}
+          />
+        ) : isSpecsView ? (
+          <SpecsBundleView
+            activeSubTab={activeSpecsTab}
+            onSubTabChange={(sub) => {
+              setSpecsSubTab(sub);
+              setTopView(sub);
+            }}
+            openapi={dynamicOpenApiSpec}
             dslSource={dslSource}
             parsedDsl={parsedDsl}
+            snapshot={buildSnapshot()}
+            lintIssues={studioLintIssues}
+            autocompleteSuggestions={autocompleteSuggestions}
+            onRippleModuleExport={handleRippleModuleExport}
             onChangeDsl={setDslSource}
             onResetDsl={() => {
               setDslSource(DEFAULT_DSL_SOURCE);
@@ -1996,13 +3127,15 @@ export default function App() {
               setActivePage(page);
               setTopView('workbench');
             }}
-          />
-        ) : topView === 'bundle' ? (
-          <BundleInspector
-            openapi={OPENAPI_SPEC}
-            dslSource={dslSource}
-            snapshot={buildSnapshot()}
+            onOpenEditModal={(page) => {
+              setActivePage(page);
+              setModalOpen(true);
+            }}
+            onReorderFlows={handleReorderFlows}
+            onMergeFlows={handleMergeFlows}
+            onSplitFlow={handleSplitFlow}
             onDownloadZip={handleDownloadProjectZip}
+            onNotify={showNotice}
           />
         ) : (
           <>
@@ -2024,13 +3157,52 @@ export default function App() {
               onLayoutModeChange={setPipelineLayoutMode}
               onStepOffset={stepByOffset}
               onReorderFlows={handleReorderFlows}
+              onMergeFlows={handleMergeFlows}
+              onSplitFlow={handleSplitFlow}
               onOpenMcpServer={handleOpenMcpServer}
             />
+
+            {/* Mobile/Tablet Pane Switcher between Active Workbench & Live State Mirror */}
+            <div className="flex items-center justify-between gap-2 xl:hidden">
+              <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 dark:border-slate-800 dark:bg-slate-900">
+                <button
+                  type="button"
+                  onClick={() => setMobileWorkbenchPane('workbench')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                    mobileWorkbenchPane === 'workbench'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  Active Workbench
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileWorkbenchPane('mirror')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                    mobileWorkbenchPane === 'mirror'
+                      ? 'bg-blue-600 text-white'
+                      : 'text-slate-600 dark:text-slate-300'
+                  }`}
+                >
+                  Live State Mirror
+                </button>
+              </div>
+              {studioLintIssues.length > 0 && (
+                <span className="font-mono text-xs text-amber-600 dark:text-amber-400">
+                  {studioLintIssues.length} lint notice{studioLintIssues.length === 1 ? '' : 's'}
+                </span>
+              )}
+            </div>
 
             {/* ACTIVE DSL-CONTROLLED SPLIT PAGE + BIDIRECTIONAL LIVE STATE MIRROR */}
             <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
               {/* Left 7 Cols: Active Split Page */}
-              <section className="flex flex-col rounded-xl border border-slate-200 bg-white p-5 xl:col-span-7 dark:border-slate-800 dark:bg-slate-900">
+              <section
+                className={`flex flex-col rounded-xl border border-slate-200 bg-white p-4 sm:p-5 xl:col-span-7 dark:border-slate-800 dark:bg-slate-900 ${
+                  mobileWorkbenchPane === 'mirror' ? 'hidden xl:flex' : 'flex'
+                }`}
+              >
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3.5 dark:border-slate-800">
                   <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                     <span className="font-mono font-medium text-slate-800 dark:text-slate-200">
@@ -2057,22 +3229,78 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Right 5 Cols: Synchronized Multi-Language Live Mirror */}
-              <section className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5 xl:col-span-5 dark:border-slate-800 dark:bg-slate-900">
-                <div className="flex items-center justify-between gap-2 border-b border-slate-200 pb-3.5 dark:border-slate-800">
-                  <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    Bidirectional Live State Mirror
-                  </h2>
-                  <span
-                    className={`font-mono text-xs font-medium ${
-                      jsonValid
-                        ? 'text-emerald-600 dark:text-emerald-400'
-                        : 'text-red-600 dark:text-red-400'
-                    }`}
-                  >
-                    {jsonValid ? 'Valid JSON-LD' : 'Invalid JSON'}
-                  </span>
+              {/* Right 5 Cols: Synchronized Multi-Language Live Mirror (Syntax Coloring + Autocomplete + HTML Output + Lint Tooltips) */}
+              <section
+                className={`flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 sm:p-5 xl:col-span-5 dark:border-slate-800 dark:bg-slate-900 ${
+                  mobileWorkbenchPane === 'workbench' ? 'hidden xl:flex' : 'flex'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800">
+                  <div className="flex items-center gap-1.5">
+                    <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Bidirectional Live State Mirror
+                    </h2>
+                    <DocTooltip docKey="liveMirror" />
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                      <Boxes className="h-3 w-3 text-blue-500" />
+                      {loadedModules.length} mod{loadedModules.length === 1 ? '' : 's'}
+                    </span>
+                    <span
+                      className={`font-mono text-xs font-medium ${
+                        jsonValid
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-red-600 dark:text-red-400'
+                      }`}
+                    >
+                      {jsonValid ? 'Valid JSON-LD' : 'Invalid JSON'}
+                    </span>
+                  </div>
                 </div>
+
+                {/* Live Studio Lint Strip (Unused calls, undefined refs, unused lambda params, disabled operators) with hover tooltips */}
+                {studioLintIssues.length > 0 && (
+                  <div className="space-y-1.5 rounded-lg border border-amber-200 bg-amber-50/60 p-2.5 dark:border-amber-900/60 dark:bg-amber-950/20">
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-amber-800 dark:text-amber-300">
+                      <span className="inline-flex items-center gap-1">
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        Live Lint Diagnostics ({studioLintIssues.length})
+                      </span>
+                      <span className="font-normal text-amber-700/80 dark:text-amber-400/80">
+                        Hover item for details
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {studioLintIssues.slice(0, 8).map((issue) => (
+                        <div key={issue.id} className="group relative">
+                          <span
+                            tabIndex={0}
+                            className={`inline-flex cursor-help items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[10px] font-medium underline decoration-wavy underline-offset-2 ${
+                              issue.severity === 'error'
+                                ? 'border-red-300 bg-red-50 text-red-700 decoration-red-500 dark:border-red-800 dark:bg-red-950/60 dark:text-red-300'
+                                : issue.severity === 'warning'
+                                  ? 'border-amber-300 bg-white text-amber-800 decoration-amber-500 dark:border-amber-800 dark:bg-slate-900 dark:text-amber-300'
+                                  : 'border-sky-300 bg-white text-sky-700 decoration-sky-500 dark:border-sky-800 dark:bg-slate-900 dark:text-sky-300'
+                            }`}
+                          >
+                            {issue.symbol}
+                            <span className="text-[9px] uppercase opacity-70">{issue.code.replace(/_/g, ' ')}</span>
+                          </span>
+                          <div className="pointer-events-none invisible absolute bottom-full left-0 z-40 mb-1.5 w-64 rounded-lg border border-slate-700 bg-slate-950 p-2.5 text-left text-[11px] text-slate-100 opacity-0 shadow-xl transition-opacity group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
+                            <div className="font-semibold text-amber-300">
+                              {issue.code} · {issue.symbol}
+                            </div>
+                            <p className="mt-1 text-slate-200">{issue.message}</p>
+                            {issue.suggestion && (
+                              <p className="mt-1 text-[10px] text-sky-300">Fix: {issue.suggestion}</p>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {!jsonValid && jsonError && (
                   <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 font-mono text-xs text-red-700 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300">
@@ -2080,50 +3308,238 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Pane 1: Active Grammar Rules (Syntax-Colored Autocomplete Editor <-> Formatted HTML Output) */}
                 <div>
-                  <div className="mb-1.5 flex items-center justify-between text-xs">
+                  <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
                     <label htmlFor="mainGrammarInput" className="font-medium text-slate-700 dark:text-slate-300">
-                      Active Grammar Rules ({dialect.preset})
+                      Active Grammar Rules ({dialect.preset}) · {rules.length} rule{rules.length === 1 ? '' : 's'}
                     </label>
-                    <span className="font-mono tabular-nums text-slate-400">
-                      {rules.length} rule{rules.length === 1 ? '' : 's'}
-                    </span>
+                    <div className="inline-flex rounded border border-slate-200 bg-slate-100 p-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-950">
+                      <button
+                        type="button"
+                        onClick={() => setGrammarMirrorMode('edit')}
+                        className={`rounded px-2 py-0.5 font-medium ${
+                          grammarMirrorMode === 'edit'
+                            ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        Syntax Editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGrammarMirrorMode('html')}
+                        className={`rounded px-2 py-0.5 font-medium ${
+                          grammarMirrorMode === 'html'
+                            ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        HTML Output
+                      </button>
+                    </div>
                   </div>
-                  <textarea
-                    id="mainGrammarInput"
-                    rows={7}
-                    value={grammarText}
-                    onChange={(e) => handleGrammarEdited(e.target.value)}
-                    spellCheck={false}
-                    placeholder="Enter EBNF, BNF, PEG, Python, Rust, or WAT grammar rules..."
-                    className="w-full rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-100 focus:border-blue-500 focus:outline-none dark:border-slate-800"
-                  />
+                  {grammarMirrorMode === 'edit' ? (
+                    <AutocompleteField
+                      inputId="mainGrammarInput"
+                      value={grammarText}
+                      onChange={handleGrammarEdited}
+                      suggestions={autocompleteSuggestions}
+                      onRippleModuleExport={handleRippleModuleExport}
+                      multiline
+                      rows={7}
+                      syntaxMode="grammar"
+                      commentPrefix={dialect.commentPrefix}
+                      showModuleLoader
+                      loadedModules={loadedModules}
+                      allAvailableModules={allAvailableModules}
+                      onToggleModule={handleToggleModule}
+                      onAddCustomModule={handleAddCustomModule}
+                      placeholder="Enter EBNF, BNF, PEG, Python, Rust, or WAT grammar rules..."
+                    />
+                  ) : (
+                    <HtmlCodeOutput
+                      code={grammarText}
+                      language="grammar"
+                      title={`Active Grammar Rules (${dialect.preset})`}
+                      filename={`${schemaConfig.schemaName || 'grammar'}.ebnf`}
+                      lintIssues={studioLintIssues}
+                      maxHeightClass="max-h-56"
+                    />
+                  )}
                 </div>
 
+                {/* Pane 2: Editable Schema.org JSON-LD (HTML Output <-> Syntax-Colored Autocomplete Editor) */}
                 <div className="flex flex-1 flex-col">
-                  <div className="mb-1.5 flex items-center justify-between text-xs">
+                  <div className="mb-1.5 flex items-center justify-between gap-2 text-xs">
                     <label htmlFor="mainJsonEditor" className="font-medium text-slate-700 dark:text-slate-300">
-                      Editable Schema.org JSON-LD &amp; Generated Schema
+                      Schema.org JSON-LD ({schemaConfig.schemaOrgType})
                     </label>
-                    <span className="font-mono text-slate-400">{schemaConfig.schemaOrgType}</span>
+                    <div className="inline-flex rounded border border-slate-200 bg-slate-100 p-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-950">
+                      <button
+                        type="button"
+                        onClick={() => setJsonMirrorMode('html')}
+                        className={`rounded px-2 py-0.5 font-medium ${
+                          jsonMirrorMode === 'html'
+                            ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        HTML Output
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setJsonMirrorMode('edit')}
+                        className={`rounded px-2 py-0.5 font-medium ${
+                          jsonMirrorMode === 'edit'
+                            ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        Edit JSON-LD
+                      </button>
+                    </div>
                   </div>
-                  <textarea
-                    id="mainJsonEditor"
-                    rows={12}
-                    value={jsonText}
-                    onChange={(e) => handleJsonEdited(e.target.value)}
-                    spellCheck={false}
-                    placeholder='{ "@context": "https://schema.org" }'
-                    className="min-h-[240px] w-full flex-1 rounded-lg border border-slate-200 bg-slate-950 p-3.5 font-mono text-xs leading-relaxed text-slate-100 focus:border-blue-500 focus:outline-none dark:border-slate-800"
-                  />
+                  {jsonMirrorMode === 'html' ? (
+                    <HtmlCodeOutput
+                      code={jsonText}
+                      language="json"
+                      title={`Schema.org JSON-LD · ${schemaConfig.schemaName}`}
+                      filename={`${schemaConfig.schemaName || 'schema'}.jsonld`}
+                      lintIssues={studioLintIssues}
+                      maxHeightClass="max-h-64"
+                    />
+                  ) : (
+                    <AutocompleteField
+                      inputId="mainJsonEditor"
+                      value={jsonText}
+                      onChange={handleJsonEdited}
+                      suggestions={autocompleteSuggestions}
+                      onRippleModuleExport={handleRippleModuleExport}
+                      multiline
+                      rows={11}
+                      syntaxMode="json"
+                      placeholder='{ "@context": "https://schema.org" }'
+                    />
+                  )}
                 </div>
+
+                {/* Pane 3: Live Compiled Output for Any of the 22 Selected Languages (HTML Output + Download) */}
+                {primaryLanguage !== 'json' && (
+                  <div className="space-y-1.5 border-t border-slate-100 pt-3 dark:border-slate-800">
+                    <div className="flex items-center justify-between gap-2 text-xs">
+                      <span className="inline-flex items-center gap-1.5 font-medium text-slate-700 dark:text-slate-300">
+                        <Code2 className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" />
+                        Compiled Target: {selectedLangMeta.label} ({selectedLangMeta.extension})
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <div className="inline-flex rounded border border-slate-200 bg-slate-100 p-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-950">
+                          <button
+                            type="button"
+                            onClick={() => setCompiledMirrorMode('html')}
+                            className={`rounded px-2 py-0.5 font-medium ${
+                              compiledMirrorMode === 'html'
+                                ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                                : 'text-slate-500'
+                            }`}
+                          >
+                            HTML Output
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setCompiledMirrorMode('edit')}
+                            className={`rounded px-2 py-0.5 font-medium ${
+                              compiledMirrorMode === 'edit'
+                                ? 'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100'
+                                : 'text-slate-500'
+                            }`}
+                          >
+                            Editable
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            triggerTextDownload(
+                              compiledLanguageExport.content,
+                              compiledLanguageExport.filename,
+                              compiledLanguageExport.mime
+                            )
+                          }
+                          className="rounded border border-slate-200 px-2 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-50 dark:border-slate-700 dark:text-blue-400"
+                        >
+                          Export {selectedLangMeta.extension}
+                        </button>
+                      </div>
+                    </div>
+                    {compiledMirrorMode === 'html' ? (
+                      <HtmlCodeOutput
+                        code={compiledLanguageExport.content}
+                        language={primaryLanguage}
+                        title={`${selectedLangMeta.label} Export · ${compiledLanguageExport.filename}`}
+                        filename={compiledLanguageExport.filename}
+                        lintIssues={studioLintIssues}
+                        maxHeightClass="max-h-56"
+                      />
+                    ) : (
+                      <AutocompleteField
+                        value={
+                          primaryLanguage === 'python'
+                            ? pythonSource
+                            : primaryLanguage === 'rust'
+                              ? rustSource
+                              : primaryLanguage === 'wasm'
+                                ? watSource
+                                : compiledLanguageExport.content
+                        }
+                        onChange={(val) => {
+                          if (primaryLanguage === 'python') setPythonSource(val);
+                          else if (primaryLanguage === 'rust') setRustSource(val);
+                          else if (primaryLanguage === 'wasm') setWatSource(val);
+                        }}
+                        suggestions={autocompleteSuggestions}
+                        onRippleModuleExport={handleRippleModuleExport}
+                        multiline
+                        rows={8}
+                        syntaxMode="code"
+                      />
+                    )}
+                  </div>
+                )}
               </section>
             </div>
           </>
         )}
       </main>
 
-      {/* UNIVERSAL WORKBENCH MODAL (Selectable Structures + Hardcoded Viewport Frames) */}
+      {/* MOBILE BOTTOM TAB BAR (5 destinations, >=44px touch targets, safe-area inset) */}
+      <nav
+        aria-label="Mobile navigation"
+        className="pb-safe fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 backdrop-blur-xs md:hidden dark:border-slate-800 dark:bg-slate-900/95"
+      >
+        <div className="grid h-14 grid-cols-5">
+          {primaryNavItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={item.onClick}
+                className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 text-[10px] font-medium transition-colors ${
+                  item.active
+                    ? 'text-blue-600 dark:text-blue-400'
+                    : 'text-slate-500 dark:text-slate-400'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                <span>{item.compactLabel}</span>
+              </button>
+            );
+          })}
+        </div>
+      </nav>
+
+      {/* UNIVERSAL WORKBENCH MODAL (Selectable Structures + Hardcoded Viewport Frames + Direct Modal Link) */}
       <UniversalWorkbenchModal
         open={modalOpen}
         flow={currentFlow}
@@ -2134,6 +3550,7 @@ export default function App() {
         onViewportChange={setModalViewport}
         onPrevStep={() => stepByOffset(-1)}
         onVerifyAndAdvance={() => handleVerifyAndAdvance(true)}
+        onCopyModalLink={() => void handleCopyDeepLink({ includeFullState: false, forceModalOpen: true })}
         onClose={() => setModalOpen(false)}
       >
         <StepViews {...stepViewProps} layoutStructure={modalStructure} />

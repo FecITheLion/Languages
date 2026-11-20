@@ -1,5 +1,5 @@
 import { useEffect, type ReactNode } from 'react';
-import { ArrowLeft, CheckCircle2, Monitor, X } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Link2, Monitor, X } from 'lucide-react';
 import type { DslFlowNode, ModalStructure, ViewportPreset } from '../types/studio';
 
 interface UniversalWorkbenchModalProps {
@@ -12,6 +12,7 @@ interface UniversalWorkbenchModalProps {
   onViewportChange: (v: ViewportPreset) => void;
   onPrevStep: () => void;
   onVerifyAndAdvance: () => void;
+  onCopyModalLink?: () => void;
   onClose: () => void;
   children: ReactNode;
 }
@@ -41,6 +42,7 @@ export function UniversalWorkbenchModal({
   onViewportChange,
   onPrevStep,
   onVerifyAndAdvance,
+  onCopyModalLink,
   onClose,
   children,
 }: UniversalWorkbenchModalProps) {
@@ -62,14 +64,14 @@ export function UniversalWorkbenchModal({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/65 p-3 sm:p-5 backdrop-blur-xs"
+      className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/65 p-0 sm:p-5 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-labelledby="modal-wb-title"
     >
-      <div className="flex max-h-[92vh] w-full max-w-[1340px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+      <div className="flex h-[100dvh] w-full max-w-[1340px] flex-col overflow-hidden rounded-none border-slate-200 bg-white shadow-2xl sm:h-auto sm:max-h-[92vh] sm:rounded-xl sm:border dark:border-slate-800 dark:bg-slate-900">
         {/* Modal Header */}
-        <div className="flex items-center justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-4 py-3 sm:px-5 sm:py-4 dark:border-slate-800">
           <div className="min-w-0">
             <h2 id="modal-wb-title" className="truncate text-base font-semibold text-slate-900 dark:text-slate-100">
               {flow.label}
@@ -84,14 +86,26 @@ export function UniversalWorkbenchModal({
               <span>Target: {flow.lang}</span>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close modal workbench"
-            className="rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex shrink-0 items-center gap-1.5">
+            {onCopyModalLink && (
+              <button
+                type="button"
+                onClick={onCopyModalLink}
+                className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:border-slate-700 dark:bg-slate-900 dark:text-blue-400 dark:hover:bg-blue-950/40"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Copy Modal Link</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close modal workbench"
+              className="inline-flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
 
         {/* Selectable Structure + Hardcoded Viewport Resolution Subbar */}

@@ -11,8 +11,10 @@ import {
   Link2,
   RotateCcw,
   Search,
+  Trash2,
   Upload,
 } from 'lucide-react';
+import { DocTooltip } from './DocTooltip';
 import {
   HISTOLOG_FIELD_KEYS,
   HISTOLOG_FIELD_LABELS,
@@ -33,6 +35,9 @@ interface HistologWorkbenchProps {
   initialToGen?: number;
   onCaptureCheckpoint: (note?: string) => void;
   onRestoreGeneration: (entry: HistologEntry) => void;
+  onRestoreSection?: (entry: HistologEntry, field: HistologFieldKey) => void;
+  onClearSection?: (field: HistologFieldKey) => void;
+  onClearEntireEngine?: () => void;
   onImportHistolog: (
     rawText: string,
     mode: 'replace' | 'merge'
@@ -58,6 +63,9 @@ export function HistologWorkbench({
   initialToGen,
   onCaptureCheckpoint,
   onRestoreGeneration,
+  onRestoreSection,
+  onClearSection,
+  onClearEntireEngine,
   onImportHistolog,
   onDownloadFile,
   onCopyDiffLink,
@@ -190,6 +198,17 @@ export function HistologWorkbench({
               <h1 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                 Histolog Generational Index &amp; Historical Diff
               </h1>
+              <DocTooltip docKey="histologUndoRedo" />
+              {onClearEntireEngine && (
+                <button
+                  type="button"
+                  onClick={onClearEntireEngine}
+                  className="inline-flex items-center gap-1 rounded-md border border-red-200 bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 hover:bg-red-100 dark:border-red-900/60 dark:bg-red-950/40 dark:text-red-300"
+                >
+                  <Trash2 className="h-3 w-3" />
+                  Clear Entire Engine
+                </button>
+              )}
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
               <span className="font-mono tabular-nums">
@@ -746,21 +765,41 @@ export function HistologWorkbench({
                   key={diff.field}
                   className="overflow-hidden rounded-lg border border-slate-200 bg-slate-950 dark:border-slate-800"
                 >
-                  <div className="flex items-center justify-between border-b border-slate-800 bg-slate-900 px-3 py-1.5 font-mono text-[11px] text-slate-300">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900 px-3 py-1.5 font-mono text-[11px] text-slate-300">
                     <span>
-                      {diff.label} (G{effectiveFromEntry?.generation ?? 0} → G
+                      {diff.label} (Generation {effectiveFromEntry?.generation ?? 0} → Generation{' '}
                       {effectiveToEntry?.generation ?? 0})
                     </span>
-                    <span className="tabular-nums">
-                      {diff.changed ? (
-                        <>
-                          <span className="text-emerald-400">+{diff.added}</span>{' '}
-                          <span className="text-red-400">-{diff.removed}</span>
-                        </>
-                      ) : (
-                        <span className="text-slate-500">unchanged</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="tabular-nums">
+                        {diff.changed ? (
+                          <>
+                            <span className="text-emerald-400">+{diff.added}</span>{' '}
+                            <span className="text-red-400">-{diff.removed}</span>
+                          </>
+                        ) : (
+                          <span className="text-slate-500">unchanged</span>
+                        )}
+                      </span>
+                      {onRestoreSection && effectiveFromEntry && (
+                        <button
+                          type="button"
+                          onClick={() => onRestoreSection(effectiveFromEntry, diff.field)}
+                          className="rounded border border-slate-700 bg-slate-800 px-2 py-0.5 font-sans text-[10px] font-medium text-blue-300 hover:border-blue-500 hover:text-white"
+                        >
+                          Restore Section to G{effectiveFromEntry.generation}
+                        </button>
                       )}
-                    </span>
+                      {onClearSection && (
+                        <button
+                          type="button"
+                          onClick={() => onClearSection(diff.field)}
+                          className="rounded border border-slate-700 bg-slate-800 px-2 py-0.5 font-sans text-[10px] font-medium text-red-300 hover:border-red-500 hover:text-white"
+                        >
+                          Clear Section
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {!diff.changed ? (

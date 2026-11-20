@@ -1222,7 +1222,24 @@ export function rewriteGrammarDialectTokens(
   const prevComment = prevDialect.commentPrefix.trim();
   const nextComment = nextDialect.commentPrefix.trim();
 
-  if (prevOp === nextOp && prevChoice === nextChoice && prevComment === nextComment) {
+  const prevSyms = resolveGrammarSymbols(prevDialect);
+  const nextSyms = resolveGrammarSymbols(nextDialect);
+  const singleTokenSymKeys: Array<keyof typeof prevSyms> = [
+    'oneOrMore',
+    'zeroOrMore',
+    'optional',
+    'posLookahead',
+    'negLookahead',
+    'posLookbehind',
+    'negLookbehind',
+    'wildcard',
+    'regexDelimiter',
+  ];
+  const anySymbolChanged = singleTokenSymKeys.some(
+    (k) => prevSyms[k].trim() !== nextSyms[k].trim()
+  );
+
+  if (prevOp === nextOp && prevChoice === nextChoice && prevComment === nextComment && !anySymbolChanged) {
     return rawGrammarText;
   }
 
@@ -1257,10 +1274,32 @@ export function rewriteGrammarDialectTokens(
       rhs = trimmed.slice(idx + prevOp.length).trim();
     }
 
-    const updatedRhs =
+    let updatedRhs =
       prevChoice && nextChoice && prevChoice !== nextChoice
         ? replaceUnquotedDelimiter(rhs, prevChoice, nextChoice)
         : rhs;
+
+    // Also live-rewrite any changed Extended DAG Symbol operators (e.g., '+', '*', '?', '&', '!', etc.)
+    const prevSyms = resolveGrammarSymbols(prevDialect);
+    const nextSyms = resolveGrammarSymbols(nextDialect);
+    const singleTokenSymKeys: Array<keyof typeof prevSyms> = [
+      'oneOrMore',
+      'zeroOrMore',
+      'optional',
+      'posLookahead',
+      'negLookahead',
+      'posLookbehind',
+      'negLookbehind',
+      'wildcard',
+      'regexDelimiter',
+    ];
+    for (const symKey of singleTokenSymKeys) {
+      const fromSym = prevSyms[symKey].trim();
+      const toSym = nextSyms[symKey].trim();
+      if (fromSym && toSym && fromSym !== toSym) {
+        updatedRhs = replaceUnquotedDelimiter(updatedRhs, fromSym, toSym);
+      }
+    }
 
     return `${indent}${formatGrammarRuleLine(lhs, updatedRhs, nextDialect.ruleOperator)}`;
   });
@@ -1435,6 +1474,22 @@ export function exportWorkspaceInLanguage(
         .join(', ');
       return `    ${formatPythonStringLiteral(r.name)}: {${entries}},`;
     });
+    const allPropNames = Array.from(
+      new Set(
+        orderedRules.flatMap((r) =>
+          (params.ruleConfigs[r.name]?.properties || [])
+            .map((p) => p.name.trim())
+            .filter((n) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(n))
+        )
+      )
+    );
+    const cliPropEntries = allPropNames.map((name) => {
+      const firstVal =
+        orderedRules
+          .flatMap((r) => params.ruleConfigs[r.name]?.properties || [])
+          .find((p) => p.name.trim() === name)?.value ?? '';
+      return `    (${formatPythonStringLiteral(name)}, ${formatPythonStringLiteral(firstVal)}),`;
+    });
     const content = `${base}
 ORDER_OF_OPERATIONS = [
 ${orderLines.join('\n')}
@@ -1443,6 +1498,44 @@ ${orderLines.join('\n')}
 RULE_PROPERTIES = {
 ${propLines.join('\n')}
 }
+
+CLI_NAMED_PARAMETERS = [
+${cliPropEntries.join('\n')}
+]
+
+def _coerce_cli_value(raw: str):
+    t = raw.strip()
+    if t.lower() == 'true':
+        return True
+    if t.lower() == 'false':
+        return False
+    try:
+        return int(t) if t.lstrip('-').isdigit() else float(t)
+    except ValueError:
+        return t
+
+def run_workspace_cli(argv=None):
+    """Exposes named rule properties as literal CLI options, allows editing strings, or uses defaults."""
+    import argparse, json, sys
+    parser = argparse.ArgumentParser(description=f"Grammar2JSON Workspace CLI ({SCHEMA_NAME})")
+    parser.add_argument("--schema-name", default=SCHEMA_NAME, help=f"Edit SCHEMA_NAME string (default: {SCHEMA_NAME})")
+    parser.add_argument("--rule", action="append", default=[], help="Override a rule string as name=expression")
+    for p_name, p_default in CLI_NAMED_PARAMETERS:
+        parser.add_argument(f"--{p_name}", dest=f"param__{p_name}", default=None, help=f"Literal value for '{p_name}' (default: {p_default})")
+    args = parser.parse_args(argv if argv is not None else sys.argv[1:])
+    resolved_params = {
+        p_name: _coerce_cli_value(getattr(args, f"param__{p_name}") if getattr(args, f"param__{p_name}") is not None else p_default)
+        for p_name, p_default in CLI_NAMED_PARAMETERS
+    }
+    edited_rules = dict(GRAMMAR_RULES) if "GRAMMAR_RULES" in globals() else {}
+    for override in args.rule:
+        if "=" in override:
+            k, v = override.split("=", 1)
+            edited_rules[k.strip()] = v.strip()
+    print(json.dumps({"schemaName": args.schema_name, "parameters": resolved_params, "ruleCount": len(ORDER_OF_OPERATIONS), "rules": edited_rules}, indent=2))
+
+if __name__ == "__main__":
+    run_workspace_cli()
 `;
     return {
       content,
@@ -1515,6 +1608,7 @@ ${propTuples.join('\n') || '    // Add custom rule properties in the Rule Proper
 
   if (language === 'javascript') {
     const jsContent = `// Auto-generated JavaScript (ESM) Grammar & Order-of-Operations Module (${slug})
+// Exposes named parameters (--<name> <literal>), editable strings (--schema-name, --rule name=expr), or defaults.
 export const SCHEMA_NAME = ${JSON.stringify(slug)};
 export const DIALECT_PRESET = ${JSON.stringify(params.dialect.preset)};
 
@@ -1524,6 +1618,34 @@ export function getRuleOrderOfOperations() {
   return [...GRAMMAR_RULES]
     .sort((a, b) => a.precedence - b.precedence)
     .map((rule) => rule.name);
+}
+
+export function runWorkspaceCli(argv = typeof process !== 'undefined' ? process.argv.slice(2) : []) {
+  let schemaName = SCHEMA_NAME;
+  const overrides = {};
+  const rules = GRAMMAR_RULES.map((r) => ({ ...r, properties: { ...r.properties } }));
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg.startsWith('--')) continue;
+    const body = arg.slice(2);
+    const eq = body.indexOf('=');
+    const key = eq >= 0 ? body.slice(0, eq) : body;
+    const val = eq >= 0 ? body.slice(eq + 1) : argv[++i];
+    if (key === 'schema-name' && val !== undefined) schemaName = val;
+    else if (key === 'rule' && val && val.includes('=')) {
+      const idx = val.indexOf('=');
+      const rName = val.slice(0, idx).trim();
+      const rExpr = val.slice(idx + 1).trim();
+      const hit = rules.find((r) => r.name === rName);
+      if (hit) hit.expression = rExpr;
+    } else if (val !== undefined) {
+      const coerced = val === 'true' ? true : val === 'false' ? false : !Number.isNaN(Number(val)) ? Number(val) : val;
+      overrides[key.replace(/-/g, '_')] = coerced;
+    }
+  }
+  const out = { schemaName, dialect: DIALECT_PRESET, overrides, rules };
+  console.log(JSON.stringify(out, null, 2));
+  return out;
 }
 `;
     return {

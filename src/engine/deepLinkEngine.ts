@@ -1,14 +1,15 @@
+import type { LogicLabelBinding } from './logicLambdaEngine.ts';
 import type {
   DialectConfig,
   DialectPresetId,
   LineMutation,
-  LogicLabelBinding,
   McpServerId,
   ModalStructure,
   PipelineGridMode,
   PipelineStage,
   PrimaryLanguage,
   RuleOrderConfig,
+  SchemaConfig,
   TopView,
   ViewportPreset,
   WorkflowSlug,
@@ -32,13 +33,15 @@ export interface DeepLinkRouteState {
 }
 
 export interface DeepLinkFullState extends DeepLinkRouteState {
-  v: 1;
+  v?: 1;
   grammarText?: string;
   dialect?: DialectConfig;
+  schemaConfig?: SchemaConfig;
   mutations?: Record<string, LineMutation>;
   ruleConfigs?: Record<string, RuleOrderConfig>;
   logicStatement?: string;
   logicLabels?: LogicLabelBinding[];
+  dslSource?: string;
   schemaName?: string;
 }
 
@@ -130,7 +133,6 @@ const VALID_MCP_SERVERS: readonly McpServerId[] = [
   'python',
   'rust',
   'wasm',
-  'dsl',
 ];
 
 function toBase64Url(input: string): string {

@@ -4,10 +4,12 @@ import {
   ChevronLeft,
   ChevronRight,
   Columns3,
+  GitMerge,
   GripVertical,
   LayoutGrid,
   Maximize2,
   Rows3,
+  Scissors,
   Server,
 } from 'lucide-react';
 import { PAGE_TO_MCP_SERVER, type StageProgressSummary } from '../engine/pipelineBreadcrumbs';
@@ -33,6 +35,8 @@ interface PipelineGridProps {
   onLayoutModeChange: (mode: PipelineGridMode) => void;
   onStepOffset: (offset: number) => void;
   onReorderFlows: (sourceFlowId: string, targetFlowId: string, position: 'before' | 'after') => void;
+  onMergeFlows?: (sourceFlowId: string, targetFlowId: string) => void;
+  onSplitFlow?: (flowId: string, splitIndex?: number) => void;
   onOpenMcpServer: (serverId: McpServerId) => void;
 }
 
@@ -56,6 +60,8 @@ export function PipelineGrid({
   onLayoutModeChange,
   onStepOffset,
   onReorderFlows,
+  onMergeFlows,
+  onSplitFlow,
   onOpenMcpServer,
 }: PipelineGridProps) {
   const [draggedFlowId, setDraggedFlowId] = useState<string | null>(null);
@@ -171,18 +177,20 @@ export function PipelineGrid({
               type="button"
               onClick={() => onStepOffset(-1)}
               aria-label="Previous pipeline step"
-              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
+              className="inline-flex min-h-[36px] items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 sm:min-h-0 dark:text-slate-200 dark:hover:bg-slate-800"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Prev</span>
+              <span className="hidden lg:inline">Previous Step</span>
+              <span className="hidden sm:inline lg:hidden">Prev</span>
             </button>
             <button
               type="button"
               onClick={() => onStepOffset(1)}
               aria-label="Next pipeline step"
-              className="inline-flex items-center gap-1 border-l border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+              className="inline-flex min-h-[36px] items-center gap-1 border-l border-slate-200 px-2.5 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 sm:min-h-0 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
             >
-              <span className="hidden sm:inline">Next</span>
+              <span className="hidden lg:inline">Next Step</span>
+              <span className="hidden sm:inline lg:hidden">Next</span>
               <ChevronRight className="h-3.5 w-3.5" />
             </button>
           </div>
@@ -190,7 +198,7 @@ export function PipelineGrid({
           <button
             type="button"
             onClick={() => onOpenModalForPage(activePage)}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700"
+            className="inline-flex min-h-[36px] items-center gap-1.5 whitespace-nowrap rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-700 sm:min-h-0"
           >
             <Maximize2 className="h-3.5 w-3.5" />
             Modal Workbench
@@ -198,10 +206,69 @@ export function PipelineGrid({
         </div>
       </div>
 
+      {/* Temporary Drop Option Places for Biject/Split & Merge while dragging a Pipeline Step */}
+      {draggedFlowId && (onSplitFlow || onMergeFlows) && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-violet-400 bg-violet-50/70 px-3 py-2 text-xs dark:border-violet-600 dark:bg-violet-950/35">
+          <span className="font-medium text-violet-800 dark:text-violet-200">
+            Dragging <code className="font-mono">{draggedFlowId}</code> — Temporary Drop Options:
+          </span>
+          {onSplitFlow && (
+            <>
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const src = draggedFlowId || e.dataTransfer.getData('text/plain');
+                  clearDrag();
+                  if (src) onSplitFlow(src, 1);
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-dashed border-violet-500 bg-white px-2.5 py-1 font-medium text-violet-700 dark:bg-slate-900 dark:text-violet-300"
+              >
+                <Scissors className="h-3 w-3" />
+                Drop to Biject Split (Pre + Post)
+              </div>
+              <div
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  const src = draggedFlowId || e.dataTransfer.getData('text/plain');
+                  clearDrag();
+                  if (src) onSplitFlow(src, 2);
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-dashed border-violet-500 bg-white px-2.5 py-1 font-medium text-violet-700 dark:bg-slate-900 dark:text-violet-300"
+              >
+                <Scissors className="h-3 w-3" />
+                Drop to Split Parallel Branch
+              </div>
+            </>
+          )}
+          {onMergeFlows &&
+            visibleFlows
+              .filter((f) => f.id !== draggedFlowId)
+              .slice(0, 3)
+              .map((tgt) => (
+                <div
+                  key={`merge-${tgt.id}`}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const src = draggedFlowId || e.dataTransfer.getData('text/plain');
+                    clearDrag();
+                    if (src && src !== tgt.id) onMergeFlows(src, tgt.id);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-md border border-dashed border-emerald-500 bg-white px-2.5 py-1 font-medium text-emerald-700 dark:bg-slate-900 dark:text-emerald-300"
+                >
+                  <GitMerge className="h-3 w-3" />
+                  Merge into {tgt.label.replace(/^\d+\.\s*/, '')}
+                </div>
+              ))}
+        </div>
+      )}
+
       {/* Row 2: Stage Filter Strip with Per-Stage Verified Counters + Active MCP Endpoint */}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 dark:border-slate-800/80">
         <div
-          className="inline-flex flex-wrap items-center gap-1 rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
+          className="no-scrollbar inline-flex max-w-full items-center gap-1 overflow-x-auto rounded-lg border border-slate-200 bg-slate-100 p-0.5 dark:border-slate-800 dark:bg-slate-950"
           role="group"
           aria-label="Filter pipeline by compiler stage"
         >

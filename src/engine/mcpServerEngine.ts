@@ -1891,7 +1891,12 @@ export class McpLazyServerRegistry {
           ? String(args.target)
           : 'python') as LogicExportTarget;
         const evalRes = evaluateLogicStatement(statement, labels);
-        const exported = exportLogicStatement(target, statement, labels, evalRes);
+        const exported = exportLogicStatement(target, statement, labels, evalRes, undefined, {
+          grammarText: ctx.grammarText,
+          rules: parseGrammar(ctx.grammarText, ctx.dialect),
+          dialect: ctx.dialect,
+          sampleInput: ctx.evalPayload,
+        });
         return {
           target,
           filename: exported.filename,
