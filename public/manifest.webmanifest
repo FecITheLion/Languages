@@ -1,0 +1,13 @@
+{
+  "name": "Grammar2JSON Studio",
+  "short_name": "G2J Studio",
+  "description": "Single-page bidirectional grammar, schema, AST and WASM workbench.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
